@@ -113,6 +113,19 @@ def sign_provider_request(
     )
 
 
+def validate_provider_credential_ref(value: object) -> None:
+    """Admit the one credential-reference grammar used by provider signing."""
+
+    if (
+        type(value) is not str
+        or len(value) > 128
+        or _CREDENTIAL_REF.fullmatch(value) is None
+    ):
+        raise ValueError(
+            "Provider request signing requires a valid credential reference"
+        )
+
+
 def _signature_parameters(
     *,
     components: list[str],
@@ -142,14 +155,7 @@ def _validate_request_inputs(
 ) -> None:
     if not isinstance(private_key, Ed25519PrivateKey):
         raise TypeError("Provider request signing requires an Ed25519 private key")
-    if (
-        type(credential_ref) is not str
-        or len(credential_ref) > 128
-        or _CREDENTIAL_REF.fullmatch(credential_ref) is None
-    ):
-        raise ValueError(
-            "Provider request signing requires a valid credential reference"
-        )
+    validate_provider_credential_ref(credential_ref)
     if type(method) is not str or method not in {"GET", "POST", "PUT"}:
         raise ValueError("Provider request signing requires an admitted HTTP method")
     if type(authority) is not str or not is_canonical_https_authority(authority):
