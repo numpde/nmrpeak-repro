@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from base64 import b64encode
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import re
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -23,9 +23,6 @@ _CURSOR = re.compile(
     r"(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048]|"
     r"[A-Za-z0-9_-]{4})"
 )
-_PREPARED_REQUEST_CREATION = object()
-
-
 @dataclass(frozen=True, slots=True)
 class _PreparedProviderRequest:
     """One operation's exact unsigned target and canonical body bytes."""
@@ -35,29 +32,6 @@ class _PreparedProviderRequest:
     path: str
     query: str
     body: bytes | None
-    _creation: object = field(repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        self._require_valid_creation()
-
-    def _require_valid_creation(self) -> None:
-        expected_creation = (
-            _PREPARED_REQUEST_CREATION,
-            self.operation,
-            self.method,
-            self.path,
-            self.query,
-            self.body,
-        )
-        if (
-            type(self._creation) is not tuple
-            or len(self._creation) != len(expected_creation)
-            or self._creation[0] is not _PREPARED_REQUEST_CREATION
-            or self._creation[1:] != expected_creation[1:]
-        ):
-            raise TypeError(
-                "Prepared provider requests must come from an operation preparer"
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,7 +285,6 @@ def sign_prepared_provider_request(
 
     if type(prepared) is not _PreparedProviderRequest:
         raise TypeError("Provider signing requires an exact prepared request")
-    prepared._require_valid_creation()
     return sign_provider_request(
         private_key=private_key,
         credential_ref=credential_ref,
@@ -331,14 +304,12 @@ def _bodyless(
     path: str,
     query: str,
 ) -> _PreparedProviderRequest:
-    creation = _prepared_creation(operation, "GET", path, query, None)
     return _PreparedProviderRequest(
         operation,
         "GET",
         path,
         query,
         None,
-        creation,
     )
 
 
@@ -354,25 +325,13 @@ def _command(
         else "POST"
     )
     body = canonical_json_bytes(document)
-    creation = _prepared_creation(operation, method, path, "", body)
     return _PreparedProviderRequest(
         operation,
         method,
         path,
         "",
         body,
-        creation,
     )
-
-
-def _prepared_creation(
-    operation: ProviderOperation,
-    method: str,
-    path: str,
-    query: str,
-    body: bytes | None,
-) -> tuple[object, ProviderOperation, str, str, str, bytes | None]:
-    return (_PREPARED_REQUEST_CREATION, operation, method, path, query, body)
 
 
 def _append_page_fields(

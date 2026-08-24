@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from base64 import b64decode
-from dataclasses import replace
 import json
 import unittest
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-import nmrpeak_provider.provider_requests as provider_requests
 from nmrpeak_provider.provider_https import ProviderOperation
 from nmrpeak_provider.provider_requests import (
     HelloOffering,
@@ -189,41 +187,6 @@ class ProviderRequestTests(unittest.TestCase):
         self.assertEqual(first.body, second.body)
         self.assertEqual(first.raw_target, second.raw_target)
         self.assertNotEqual(first.headers["Signature"], second.headers["Signature"])
-
-    def test_direct_prepared_request_construction_cannot_bypass_validation(self) -> None:
-        with self.assertRaisesRegex(TypeError, "operation preparer"):
-            provider_requests._PreparedProviderRequest(
-                ProviderOperation.JOBS_LIST,
-                "GET",
-                "/unowned",
-                "",
-                None,
-                object(),
-            )
-
-    def test_replacing_a_prepared_field_invalidates_its_creation_proof(self) -> None:
-        prepared = prepare_execution_attempt_start(
-            job_ref="job:test",
-            provider_attempt_key="attempt:test",
-        )
-        with self.assertRaisesRegex(TypeError, "operation preparer"):
-            replace(prepared, path="/provider/v1/jobs")
-
-    def test_post_construction_mutation_cannot_reach_the_signer(self) -> None:
-        prepared = prepare_execution_attempt_start(
-            job_ref="job:test",
-            provider_attempt_key="attempt:test",
-        )
-        object.__setattr__(prepared, "path", "/provider/v1/jobs")
-        with self.assertRaisesRegex(TypeError, "operation preparer"):
-            sign_prepared_provider_request(
-                prepared,
-                private_key=PRIVATE_KEY,
-                credential_ref="credential:provider:test",
-                authority="api.example.test",
-                created=1_700_000_000,
-                nonce=bytes(range(16)),
-            )
 
     def test_reference_query_and_page_bounds_fail_before_signing(self) -> None:
         invalid_calls = (
