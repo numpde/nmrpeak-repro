@@ -11,7 +11,11 @@ from nmrpeak_provider.chf_binding import (
     ChfRunnerInput,
     ChfRunnerProtonPeak,
 )
-from nmrpeak_provider.chf_runner_protocol import ReadyFrame, RetireFrame
+from nmrpeak_provider.chf_runner_protocol import (
+    CHF_RUNNER_CONTRACT_ID,
+    ReadyFrame,
+    RetireFrame,
+)
 from nmrpeak_provider.chf_runner_session import (
     ChfInputRejected,
     ChfRunnerAdmissionError,
@@ -36,7 +40,7 @@ ATTEMPT_REF = "execution_attempt:sha256:" + "2" * 64
 ATTEMPT_KEY = "nmrpeak-provider.v1:" + "3" * 64
 FACTS = ProviderResultFacts(
     identity=CHF_RESULT_IDENTITY,
-    runner_contract_id="nmrpeak.runner_session.chf.v1",
+    runner_contract_id=CHF_RUNNER_CONTRACT_ID,
     checkpoint_ref="sha256:" + "4" * 64,
     image_input_ref="sha256:" + "5" * 64,
 )

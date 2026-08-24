@@ -28,7 +28,7 @@ from nmrpeak_provider.chf_lifecycle import (
     select_chf_completion,
     start_chf_attempt,
 )
-from nmrpeak_provider.chf_runner_protocol import ReadyFrame
+from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_CONTRACT_ID, ReadyFrame
 from nmrpeak_provider.chf_runner_session import ChfRunnerDeadlines, ChfRunnerSession
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
@@ -53,7 +53,7 @@ _CREDENTIAL_REF = "credential:provider:nmrpeak-test"
 _FROZEN_GENERATION_ID = "sha256:" + "4" * 64
 _RUNNER_FACTS = ProviderResultFacts(
     identity=CHF_RESULT_IDENTITY,
-    runner_contract_id="nmrpeak.runner_session.chf.v1",
+    runner_contract_id=CHF_RUNNER_CONTRACT_ID,
     checkpoint_ref="sha256:" + "5" * 64,
     image_input_ref="sha256:" + "6" * 64,
 )

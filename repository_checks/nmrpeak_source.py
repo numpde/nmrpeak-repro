@@ -55,6 +55,13 @@ def verify_materialized_nmrpeak_source(
     _verify_materialized_source(Path(source_root), closure_roots, expected_hashes)
 
 
+def read_nmrpeak_source_revision(declaration_path: Path) -> str:
+    """Read the revision from the authenticated source-closure declaration."""
+
+    revision, _roots = _read_declaration(declaration_path)
+    return revision
+
+
 def _read_declaration(path: Path) -> tuple[str, tuple[str, ...]]:
     lines = _read_regular_file(path).decode("ascii", errors="strict").splitlines()
     if not lines or not lines[0].startswith("source_revision "):

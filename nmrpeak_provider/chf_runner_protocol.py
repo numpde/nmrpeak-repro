@@ -17,6 +17,7 @@ from .chf_binding import ChfRunnerInput, parse_chf_runner_input
 
 
 RUNNER_PROTOCOL_VERSION = 1
+CHF_RUNNER_CONTRACT_ID = "nmrpeak.runner_session.chf.v1"
 MAX_CHF_FRAME_PAYLOAD_BYTES = 131_072
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 _BOOT_GENERATION = re.compile(r"boot:[0-9a-f]{32}")

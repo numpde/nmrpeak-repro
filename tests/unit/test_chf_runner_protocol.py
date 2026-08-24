@@ -12,6 +12,7 @@ from nmrpeak_provider.chf_binding import (
     ChfRunnerProtonPeak,
 )
 from nmrpeak_provider.chf_runner_protocol import (
+    CHF_RUNNER_CONTRACT_ID,
     MAX_CHF_FRAME_PAYLOAD_BYTES,
     AttemptCorrelation,
     ChfRunnerProtocolError,
@@ -67,7 +68,7 @@ class ChfRunnerProtocolTests(unittest.TestCase):
             ReadyFrame(
                 boot_generation=BOOT,
                 runner_ref="nmrpeak_chf_v1",
-                runner_contract_id="nmrpeak.runner_session.chf.v1",
+                runner_contract_id=CHF_RUNNER_CONTRACT_ID,
                 release_sha256=SHA_A,
                 source_closure_sha256=SHA_B,
                 image_input_id=SHA_C,
