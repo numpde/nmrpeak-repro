@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-import json
 import re
 
 from .provider_https import (
@@ -12,6 +11,7 @@ from .provider_https import (
     ProviderOperation,
     provider_operation_admits_status,
 )
+from .provider_response_json import decode_provider_response_object
 
 
 _VISIBLE_ASCII = re.compile(r"[\x21-\x7e]{1,128}")
@@ -122,7 +122,7 @@ def parse_provider_problem(
             ProblemRejection.NOT_A_PROBLEM_RESPONSE,
             response.status,
         )
-    document = _decode_json_object(response.body)
+    document = decode_provider_response_object(response.body)
     if document is None:
         return ProviderProblemRejected(ProblemRejection.INVALID_JSON, response.status)
     diagnostic_codes = _diagnostic_codes(operation, response.status)
@@ -180,36 +180,6 @@ def _diagnostic_codes(
             else _READ_BAD_REQUEST_CODES
         )
     return _DIAGNOSTIC_CODES.get(status)
-
-
-def _decode_json_object(raw: bytes) -> dict[str, object] | None:
-    try:
-        value = json.loads(
-            raw.decode("utf-8", errors="strict"),
-            object_pairs_hook=_object_without_duplicates,
-            parse_float=_reject_json_number,
-            parse_constant=_reject_json_number,
-        )
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return None
-    return value if type(value) is dict else None
-
-
-class _RejectedJson(ValueError):
-    pass
-
-
-def _object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for name, item in pairs:
-        if name in value:
-            raise _RejectedJson
-        value[name] = item
-    return value
-
-
-def _reject_json_number(_value: str) -> None:
-    raise _RejectedJson
 
 
 def _is_safe_diagnostic(value: str) -> bool:
