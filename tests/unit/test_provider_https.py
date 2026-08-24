@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -14,10 +13,7 @@ from threading import Thread
 from time import sleep
 import unittest
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
-from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from nmrpeak_provider.provider_https import (
     ProviderHttpResponse,
@@ -40,6 +36,7 @@ from nmrpeak_provider.provider_requests import (
     sign_prepared_provider_request,
 )
 from nmrpeak_provider.provider_signing import sign_provider_request
+from tests.fakes.tls_certificates import write_test_certificates
 
 
 _PRIVATE_KEY = ed25519.Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
@@ -50,7 +47,7 @@ class ProviderHttpsTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._temporary_directory = TemporaryDirectory()
         cls._certificate_directory = Path(cls._temporary_directory.name)
-        _write_test_certificates(cls._certificate_directory)
+        write_test_certificates(cls._certificate_directory)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -482,53 +479,6 @@ def _tls_server(
         server.shutdown()
         server.server_close()
         thread.join()
-
-
-def _write_test_certificates(directory: Path) -> None:
-    valid_from = datetime(2020, 1, 1, tzinfo=UTC)
-    valid_until = datetime(2035, 1, 1, tzinfo=UTC)
-    ca_key = rsa.generate_private_key(public_exponent=65_537, key_size=2_048)
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "NMR test CA")])
-    ca_certificate = (
-        x509.CertificateBuilder()
-        .subject_name(ca_name)
-        .issuer_name(ca_name)
-        .public_key(ca_key.public_key())
-        .serial_number(1)
-        .not_valid_before(valid_from)
-        .not_valid_after(valid_until)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-        .sign(ca_key, hashes.SHA256())
-    )
-    server_key = rsa.generate_private_key(public_exponent=65_537, key_size=2_048)
-    server_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
-    server_certificate = (
-        x509.CertificateBuilder()
-        .subject_name(server_name)
-        .issuer_name(ca_name)
-        .public_key(server_key.public_key())
-        .serial_number(2)
-        .not_valid_before(valid_from)
-        .not_valid_after(valid_until)
-        .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName("localhost")]),
-            critical=False,
-        )
-        .sign(ca_key, hashes.SHA256())
-    )
-    (directory / "ca.pem").write_bytes(
-        ca_certificate.public_bytes(serialization.Encoding.PEM)
-    )
-    (directory / "server.pem").write_bytes(
-        server_certificate.public_bytes(serialization.Encoding.PEM)
-    )
-    (directory / "server-key.pem").write_bytes(
-        server_key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-    )
 
 
 if __name__ == "__main__":
