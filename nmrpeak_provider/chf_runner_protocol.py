@@ -21,7 +21,7 @@ MAX_CHF_FRAME_PAYLOAD_BYTES = 131_072
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 _BOOT_GENERATION = re.compile(r"boot:[0-9a-f]{32}")
 _CORRELATION_ID = re.compile(r"request:[0-9a-f]{32}")
-_ATTEMPT_REF = re.compile(r"attempt:[A-Za-z0-9_.-]{1,120}")
+_ATTEMPT_REF = re.compile(r"execution_attempt:sha256:[0-9a-f]{64}")
 _PROVIDER_ATTEMPT_KEY = re.compile(r"nmrpeak-provider\.v1:[0-9a-f]{64}")
 
 

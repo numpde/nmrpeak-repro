@@ -37,7 +37,7 @@ BOOT = "boot:" + "1" * 32
 CORRELATION = AttemptCorrelation(
     boot_generation=BOOT,
     correlation_id="request:" + "2" * 32,
-    attempt_ref="attempt:chf-7",
+    attempt_ref="execution_attempt:sha256:" + "4" * 64,
     provider_attempt_key="nmrpeak-provider.v1:" + "3" * 64,
 )
 MODEL_INPUT = ChfRunnerInput(
