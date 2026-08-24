@@ -69,11 +69,7 @@ class _AttemptRecord:
             _SHA256_REF,
             "input fingerprint",
         )
-        _require_match(
-            self.frozen_generation_id,
-            _SHA256_REF,
-            "frozen generation identity",
-        )
+        validate_frozen_generation_id(self.frozen_generation_id)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -130,6 +126,12 @@ class TerminalPending(_AttemptRecord):
 
 
 AttemptJournalRecord = StartPending | ActiveAttempt | TerminalPending
+
+
+def validate_frozen_generation_id(value: object) -> None:
+    """Validate the journal's content-addressed generation reference."""
+
+    _require_match(value, _SHA256_REF, "frozen generation identity")
 
 
 def journal_record_name(record: AttemptJournalRecord) -> str:
