@@ -1,115 +1,232 @@
-NMRPeak multi-runner deployment
-===============================
+NMRPeak multi-runner NMR API provider
+=====================================
 
-Status: proposed; the current Compose checkout remains an isolated inference proof
+Status: revised proposal; the NMR API provider lifecycle is not implemented
 Date: 2026-08-24
 
 
 Purpose
 -------
 
-Package NMRPeak inference as a local, production-shaped deployment that can
-operate more than one explicitly selected model runner. HF and CHF are the first
-two concrete runner kinds:
+Package NMRPeak as a signed NMR API provider with two explicitly declared
+analysis implementations. The proposal is:
 
-- HF consumes molecular formula plus 1H NMR;
-- CHF consumes molecular formula plus 1H and 13C NMR.
+- `hf` serves `mol_from_1h_peaks` with mandatory molecular formula plus 1H NMR;
+- `chf` serves `mol_from_1h_13c_formula` with molecular formula plus 1H and
+  13C NMR.
 
-The design preserves the current rule that no host process imports untrusted
-NMRPeak code or deserializes an untrusted `.pt` checkpoint. Checkpoint loading
-occurs only in an explicitly selected, network-isolated runner container. CPU is
-the default execution boundary; GPU access remains a separate opt-in target.
+The provider is an outbound client of the NMR API provider surface. It is not a
+localhost inference HTTP service. It publishes its offerings, traverses the Job
+feed for each analysis kind, binds exact Job input bytes, owns ExecutionAttempt
+lifecycle, and sends canonical results or reviewed failures. Only the provider
+receives API network access and a signing credential.
 
-This note defines package ownership, runtime composition, release identity,
-wire contracts, operator operations, and proof lanes. It does not implement a
-remote multi-tenant service, a dynamic plug-in system, scientific reranking, or
-automatic model selection.
+NMRPeak source, dependencies, and `.pt` checkpoints remain outside the
+dependency-light provider image. Checkpoint loading occurs only in the selected
+networkless runner container. CPU is the first target. GPU access remains a
+separate opt-in target with a larger host attack surface.
+
+This design covers provider/API compatibility, product and runner ownership,
+checkpoint admission, runtime composition, wire contracts, deployment
+operations, and proof. It does not add a dynamic plug-in system, automatic
+model selection, scientific reranking, or a public inbound service.
 
 
 Current facts
 -------------
 
-- `compose.yaml` defines a common hardened, networkless runtime posture and
-  separate Docker-managed HF and CHF checkpoint volumes.
-- `docker/safe_extract.py` admits one exact ZIP member and rejects unsafe ZIP
-  members. The checkpoint archive enters that container read-only.
+- This is a Git repository. Its initial deployment-sandbox commit is
+  `b7e8322`, and its NMRPeak gitlink selects
+  `d615e193ec84d124dc916eb10b675744d27a79cf`. The local submodule is currently
+  uninitialized; a gitlink alone is not a materialized build closure.
+- `compose.yaml` is an isolated inference proof, not a provider deployment. It
+  defines hardened networkless services and separate HF and CHF volumes, but it
+  still contains build-time interpolation, root extractors, mutable image tags,
+  and no NMR API lifecycle.
+- `docker/safe_extract.py` rejects traversal and non-regular ZIP members, but it
+  is not yet the release importer described here: duplicate member names can be
+  collapsed, an existing marker bypasses byte verification, and current
+  extraction does not establish content-addressed volume ownership.
 - `docker/infer_hf_example.py` and `docker/infer_chf_example.py` prove the two
-  NMRPeak generation paths, but each embeds one example and starts a fresh model
-  process for every invocation.
-- The CHF proof preserves repeated 13C observations as separate peaks and has
-  produced formula-matching candidates for the supplied C16H27NO8 example.
-- The runtime image bakes the NMRPeak checkout and public BART configuration,
-  while checkpoint services have no network or source-checkout bind mount.
-- The current root is not a Git checkout. It therefore cannot yet provide the
-  clean committed source and immutable build-input identity expected of a
-  deployable artifact.
-- NMRPeak's checked-in license is CC BY-NC-SA 4.0. Deployment and distribution
-  must retain attribution and share-alike obligations and must not assume
-  commercial permission. The checkpoint publication's terms need an explicit
-  release audit rather than inference from the source license.
+  generation call paths. They embed fixtures, start a model for every command,
+  and compute candidate annotations inside the untrusted runner boundary.
+- The CHF fixture preserves repeated 13C observations. No retained result
+  artifact in this checkout proves the outcome of an earlier real-checkpoint
+  run.
+- `weights/` is ignored acquisition state and is excluded from the Docker build
+  context. Its presence, size, or apparent completeness is not release evidence;
+  the admitted archive member and committed release declaration are.
+- NMRPeak's checked-in source declares CC BY-NC-SA 4.0. Distribution of source
+  or images and operation of a hosted provider require an explicit license
+  review covering attribution, ShareAlike, and NonCommercial scope; this note
+  does not decide that the intended service is permitted. Checkpoint terms must
+  be audited independently before a release declaration is approved.
+
+All production identity claims begin from clean committed bytes, exact admitted
+paths, and immutable external identities. The facts above do not yet establish
+a reproducible or deployable provider.
+
+
+Threat boundary
+---------------
+
+The native-container design reduces the ambient host files, credentials,
+network, devices, and writable state available to reviewed-but-not-benign-proven
+NMRPeak code and checkpoints. It does not safely contain deliberately hostile
+pickle payloads, kernel attacks, or a compromised container engine. An actively
+malicious checkpoint requires a disposable VM, microVM, or a separately proved
+stronger runtime.
+
+No host process imports NMRPeak or deserializes a checkpoint. That statement is
+about authority placement, not proof that native containers are a hostile-code
+sandbox. A rootful Docker daemon is host-root authority. The supported engine,
+Compose version/capabilities, context, endpoint, and project identity are
+validated operator inputs rather than ambient defaults.
 
 
 Names and identities
 --------------------
 
-Keep four identities distinct:
+Keep these identities distinct:
 
-`implementation`
-    One deployment-local configured instance, such as `hf` or `chf`. An
-    implementation owns a runner selection, a checkpoint release, a target,
-    resource limits, and one private session volume.
+`provider identity`
+    The API-owned `provider_ref`. A `credential_ref` identifies one
+    authentication credential for that provider and remains a separate
+    deployment fact; rotating or multiplying credentials does not create a new
+    provider identity. Exactly one active deployment may publish or consume
+    work as a `provider_ref` until the API supplies a stronger fencing contract.
 
-`runner`
-    One checked-in executable protocol and model adapter, such as
-    `nmrpeak_hf_v1` or `nmrpeak_chf_v1`. A runner name is not a checkpoint
-    fingerprint and does not select a runtime device.
+`provider HTTP contract release`
+    The immutable NMR API provider contract consumed by this repository. The
+    first compatible target is contract ID `nmr.provider.http.v1`, release
+    `sha256:ad01fc7c8a070ae752ab1bffb8abe954f3629e21b262cd0e9f0a554a3b07684c`.
+
+`product`
+    One checked-in static composition of analysis implementations. The first
+    product contains exactly `hf` and `chf`; deployment configuration does not
+    add, remove, duplicate, or discover implementations.
+
+`implementation_ref`
+    One product-local lifecycle lane, initially `hf` or `chf`. It owns one
+    `analysis_kind_ref`, provider binding, runner contract, failure policy,
+    result schema, and runtime preparation boundary.
+
+`analysis_kind_ref`
+    The NMR API catalog identity selected by the Job feed. HF uses
+    `mol_from_1h_peaks`; CHF uses `mol_from_1h_13c_formula`. The Job body never
+    chooses an implementation. HF's mandatory formula is a narrowing that still
+    requires the API/product approval named under publication prerequisites.
+
+`runner_ref` and `runner_contract_id`
+    One checked-in executable model adapter and one versioned private UDS
+    protocol, such as `nmrpeak_hf_v1`. Neither selects a checkpoint or device.
 
 `release`
-    One exact checkpoint member and its reviewed byte identity. Its primary
-    identity is `sha256:<64 lowercase hex digits>`.
+    One exact checkpoint archive member and its reviewed byte identity. Its
+    primary identity is `sha256:<64 lowercase hex digits>`.
 
 `target`
-    One closed build and execution profile, initially `cpu-x86_64`. A later GPU
-    profile is an explicit target such as `cuda12-x86_64`, not a host-detected
-    mutation of the CPU target.
+    One closed build and execution profile, initially `cpu-x86_64`. A future
+    GPU profile is explicit, such as `cuda12-x86_64`; it is never inferred from
+    host hardware.
 
-The filesystem is the runner and target declaration inventory. `runner/list`
-enumerates valid checked-in pairs; it does not choose a default, interpret a
-target name, import arbitrary modules, or discover third-party plug-ins.
+`run generation`
+    One operator-selected admission identity for a provider, analysis kind, and
+    Job-created-at window. Its fingerprint contains only those facts plus an
+    explicit `generation_id`; it is not a software digest. Changing runner,
+    release, target, input/result contract, or a scientifically material decode
+    policy requires the operator to choose a new generation, but code must not
+    synthesize that policy decision from deployment bytes.
+
+`deployment`
+    One named operator instance. It owns provider configuration, one signing
+    credential, a Compose project, lifecycle lock, frozen input generation,
+    durable Attempt journal, containers, and private runner-session volumes.
+    Images and admitted checkpoint volumes may be shared by immutable identity.
+    A second provider-identity lock, keyed only by `provider_ref`, excludes any
+    other cooperating local deployment for the full runtime, not only during
+    `up` and `down`. Its engine-global authority is one external engine volume
+    with a name derived from the SHA-256 of the canonical `provider_ref`, typed
+    repository/provider labels, and the same read-only mount path in every
+    provider Compose project. Host setup creates one root-owned, mode-0444,
+    non-symlink regular lock file in the volume. The provider opens that file
+    read-only, takes an exclusive advisory lock before hello/feed activity,
+    holds its descriptor until process exit, and fails closed if acquisition or
+    ownership proof fails. The read-only mount prevents a provider process from
+    unlinking or replacing the lock inode. Host operations create and inspect
+    this volume only under the repository engine lock; ordinary `down`
+    preserves it. Explicit cleanup proves that it has no attachments and that
+    no provider with that identity is running, then requires exact labels, name,
+    and exact-name confirmation. This cannot fence a non-cooperating engine
+    client, another daemon/context, or another host;
+    publication therefore requires either API-side fencing or an explicit rule
+    that every deployment for the `provider_ref` uses one admitted
+    engine/context on one host.
+
+The filesystem is a closed declaration inventory. Listing operations enumerate
+valid checked-in values; they do not select defaults, import arbitrary modules,
+or discover third-party plug-ins.
 
 
 Ownership and proposed tree
 ---------------------------
 
-The deployment owns dependency-light provider and session mechanics. The
-NMRPeak family owns the common heavy source and dependency closure. Each runner
-owns only its model-specific contract, adapter, release declaration, and
-composition facts:
+The generic provider package owns only the released NMR API transport and
+lifecycle. Product code selects a closed set of implementations. Each model
+binding owns scientific admission, private runner projection, result mapping,
+and failure policy. Compose owns the final service, mount, resource, and network
+topology.
 
     Makefile
     compose/
       provider.yml
-      deployment.yml
-      runtime-check.yml
-    nmrpeak_deploy/
+      provider-deployment.yml
+      provider-localhost.yml
+      provider-check.yml
+      runner-check.yml
+    contracts/upstream/nmr_api_v1/
+      manifest.json
+      route_facts/
+      schemas/
+      signing_vectors.json
+    nmrpeak_provider/
       canonical_json.py
-      framing.py
-      provider.py
+      provider_http.py
+      provider_process.py
+      job_feed.py
+      run_generation.py
+      attempt_identity.py
+      attempt_lifecycle.py
+      attempt_journal.py
       runner_session.py
+    contracts/vectors/
+      run_generations.v1.json
+      attempt_keys.v1.json
+    products/default/
+      provider-deployment.toml
+      provider/
+        __init__.py
     families/nmrpeak/
-      source/
-      source.sha256
+      nmrpeak-closure.paths
+      nmrpeak-closure.sha256
       Dockerfile.base
       runtime/
         checkpoint_identity.py
-        supervisor.py
+        owner_session_supervisor.py
       targets/cpu-x86_64/
         Dockerfile.lock
         requirements.lock
     models/nmrpeak_hf_v1/
-      contract.py
-      runner.toml
-      provider.compose.yml
+      provider/
+        deployment.toml
+        provider.compose.yml
+        binding/
+          identity.py
+          input.py
+          processor.py
+          failure_policy.toml
+          hello.txt
+      runner_contracts/
       runner/
         Dockerfile
         worker.py
@@ -117,9 +234,16 @@ composition facts:
       releases/
         <release-name>.json
     models/nmrpeak_chf_v1/
-      contract.py
-      runner.toml
-      provider.compose.yml
+      provider/
+        deployment.toml
+        provider.compose.yml
+        binding/
+          identity.py
+          input.py
+          processor.py
+          failure_policy.toml
+          hello.txt
+      runner_contracts/
       runner/
         Dockerfile
         worker.py
@@ -127,96 +251,271 @@ composition facts:
       releases/
         <release-name>.json
     config/deployments/<deployment>/
+      provider.toml
       deployment.toml
-    notes/
+      implementations/
+        hf.toml
+        chf.toml
     repository_checks/
+    notes/
 
-HF and CHF justify a shared NMRPeak family image because they exercise the same
-upstream source, Torch/Uni-Core stack, dictionaries, and BART configuration.
-Their final runner images remain separate thin stages with fixed entrypoints
-and runner identities. Do not create one runtime command that accepts an
-arbitrary model name, import path, checkpoint path, or Python callable.
+The provider contract projection is copied from the immutable released
+contract, not imported from a mutable sibling checkout at runtime. A deliberate
+write lane updates the projection from an explicitly selected candidate release;
+the default check lane reports drift without writing.
 
-A future runner with a materially different dependency closure owns its own
-family and Dockerfile. Do not generalize the NMRPeak base into a universal model
-image.
+HF and CHF justify one explicitly named NMRPeak family closure because they use
+the same pinned upstream source, Torch/Uni-Core stack, dictionaries, and BART
+configuration. Their runner images remain distinct thin images with fixed
+entrypoints and protocol identities. `families/` is not a general framework.
 
 
 Runtime composition
 -------------------
 
-One deployment consists of a dependency-light provider and zero or more
-explicitly configured runner services:
+One deployment is an outbound provider and two statically selected runner
+services:
 
-    host client
-        |
-        | localhost HTTP or reviewed local CLI
-        v
-    provider container
-        |-- private UDS volume --> nmrpeak-hf runner  --> HF release volume
-        `-- private UDS volume --> nmrpeak-chf runner --> CHF release volume
+    NMR API / Server A
+            ^
+            | signed HTTPS
+            |
+      provider process
+        |-- HF lane  -- private UDS volume --> HF runner  --> HF release volume
+        `-- CHF lane -- private UDS volume --> CHF runner --> CHF release volume
 
-Each implementation receives a distinct Unix-domain socket directory backed by
-a small Docker-managed tmpfs volume. The provider mounts that volume at its
-implementation-specific path. The corresponding runner mounts the same volume
-at its fixed session path. No runner mounts another implementation's session or
-checkpoint volume.
+The provider has no inbound listener and publishes no host port. It alone
+receives the signing credential, API origin/CA configuration, frozen
+configuration, durable journal volume, and ambient outbound egress. Ordinary
+Compose networking does not restrict that egress to the configured API
+destination. The public-HTTPS deployment accepts that provider-process grant; a
+separate localhost overlay adds only the reviewed host-gateway mapping and CA
+mount needed to reach the same-host edge. Runners remain networkless.
 
-The runner service has `network_mode: none`, a read-only root, numeric non-root
+The provider handles API unavailability in-process with bounded timeouts and
+backoff; it does not turn transport retries into a local work queue. Compose
+uses a finite on-failure restart budget for unexpected process exits and
+bounded rotating provider logs. Exhaustion leaves an inspectable stopped
+service for operator action instead of an infinite crash/log loop.
+
+Each implementation receives one private, per-deployment session volume
+containing only its socket directory. A service-level Compose `tmpfs:` mount is
+container-local and cannot be shared. The supported Linux Docker target instead
+uses a named local-driver volume backed by `tmpfs` with a fixed byte limit,
+UID/GID, and mode, mounted read-write only by that implementation's provider and
+runner services. Startup rejects an engine/provider that cannot render and
+enforce those exact options; it does not fall back to an unbounded ordinary
+volume. Live proof inspects the effective tmpfs limit, fills a disposable
+session volume to that limit, and observes `ENOSPC`. The session state is
+distinct from the durable provider journal. Status and teardown inventory
+stopped residue and attachments; ordinary down removes session volumes and
+preserves the journal and checkpoint volumes.
+
+Each runner has `network_mode: none`, a read-only root, fixed numeric non-root
 UID/GID, all capabilities dropped, `no-new-privileges`, bounded PIDs, CPU,
-memory, swap and tmpfs, bounded logs, no Docker socket, no credentials, and no
-host checkout mounts. The release volume is read-only. The only writable
-locations are bounded tmpfs mounts needed for libraries and the private socket
-session.
+memory and swap, bounded `/dev/shm`, bounded tmpfs for required library writes,
+bounded stop time, and no Docker socket, credential, host checkout, or output
+volume. The checkpoint volume is read-only. The socket volume is the only
+cross-container writable state.
 
-The provider does not load Torch, NMRPeak, Uni-Core, RDKit, or checkpoints. It
-owns request admission, implementation selection, deadlines, runner sessions,
-and strict response validation. A local HTTP deployment binds only to
-127.0.0.1 and uses an internal Compose network without external egress. A
-CLI-only deployment may omit the published listener.
+The runner container starts a lightweight supervisor and one heavy worker. The
+supervisor owns stale-socket removal, one provider owner session, worker
+termination, and process exit. The worker loads the checkpoint once and serves
+one request at a time. This same-container split is lifecycle structure, not a
+security boundary: a checkpoint-controlled worker shares namespaces and may
+interfere with the supervisor or its output. The provider remains the first
+trusted validation boundary.
 
-The checkpoint-bearing worker loads one verified release once and serves one
-request at a time. It reports READY only after artifact verification, model
-construction, checkpoint deserialization, device verification, and a bounded
-startup probe. A request rejection leaves that boot reusable. A malformed
-protocol exchange, uncertain I/O outcome, model execution failure, or worker
-exit retires the boot. Docker replaces the runner service for later work; the
-provider does not silently replay an uncertain request.
+Runner container logging is disabled in the production checkpoint-bearing lane;
+the design cannot guarantee that a malicious same-container worker keeps
+stdout free of spectra, structures, paths, or checkpoint contents. Trusted
+status reaches provider logs only as validated closed codes over the session
+protocol. Real-checkpoint proof lanes use reviewed fixtures and separately
+bounded disposable logs.
 
-The supervisor and heavy worker remain separate processes. The dependency-light
-supervisor owns the listener, one attached provider owner, child termination,
-and stale-socket fencing. The worker owns checkpoint loading and inference. A
-malicious checkpoint may control the worker process after deserialization, so
-the provider must treat every response as hostile and enforce exact shapes,
-correlation IDs, lengths, candidate counts, and UTF-8/frame limits.
+A boot reports READY only after measuring the exact checkpoint, constructing
+the model, confirming the selected device, and passing a bounded startup probe.
+READY includes protocol, runner, release, source-closure, target, and boot
+generation identities. The model-local provider binding compares them with
+provider-admitted deployment facts; it never trusts a runner echo as authority.
 
-Containers reduce exposure but are not a virtual-machine security boundary.
-CPU execution avoids the additional host-driver surface of a GPU container. A
-release considered actively malicious requires a stronger sandbox such as a
-disposable VM or an appropriately configured sandboxed container runtime.
+A fully parsed deterministic input rejection leaves a boot reusable. Partial
+frames, timeouts, EOF, wrong correlation, malformed responses, cancellation,
+worker exceptions, or uncertain exchange retire the boot. Retirement makes the
+runner PID 1 exit; Compose restart creates a fresh boot generation. Restart does
+not mean Docker replaces the container, and readiness must be re-established
+against the new boot before another Attempt uses it. Runner restart attempts are
+also bounded; exhaustion withholds that lane from admission until explicit
+operator recovery.
 
 
-Input and output contracts
---------------------------
+NMR API lifecycle
+-----------------
 
-Use one dependency-light NMR envelope and runner-specific capability checks.
-The public document represents measurements without NMRPeak's internal column
-names or underscore-delimited coupling encoding:
+The provider implements the pinned provider HTTP release rather than inventing
+a second lifecycle:
+
+1. Validate frozen configuration, signing credential, journal, product, runner
+   attachments, and exact READY identities before advertising readiness.
+2. Publish a periodic complete `hello` snapshot for both analysis offerings.
+   `hello` presents provider presence and capabilities; it is not a readiness,
+   capacity, or lease grant.
+3. Traverse one bounded Job feed per analysis kind, with provider-wide capacity
+   reflected in admission rather than an unbounded local queue.
+4. Read exact `nmr.job.specification.text.v1` bytes and bind them to the feed's
+   Job ref, schema ID, byte length, and SHA-256 fingerprint.
+5. Prepare and durably retain one stable `provider_attempt_key`, then start or
+   exact-replay that logical Attempt with a fresh HTTP signature and nonce for
+   every send.
+6. Validate the response's returned ExecutionAttempt, Job, analysis-kind, and
+   provider refs, then atomically persist the Attempt ref beside the previously
+   bound input fingerprint. The start response does not echo that fingerprint.
+   A fresh in-progress receipt continues. A replayed terminal receipt resolves
+   without runner work. A replayed in-progress receipt continues only when this
+   retained start campaign proves ownership; otherwise it enters
+   journal/inventory reconciliation.
+7. Parse the implementation document, report `preparing`, invoke the runner,
+   report `running` immediately before model execution, and concurrently point
+   observe authoritative Job/Attempt state under a bounded visibility gap.
+8. Canonicalize and durably retain the exact complete or fail request bytes and
+   digest before first delivery. Retry only those bytes. A matching command-bound
+   receipt retires them. A conflict retains them and enters reconciliation;
+   authoritative expiry may retire them only as the pinned contract permits.
+9. Job closure or cancellation stops local model work under this provider's
+   fixed policy but does not rewrite or revoke the in-progress Attempt. Its
+   journal obligation remains until terminal receipt or server-owned expiry. On
+   restart, reconcile the journal with the server's in-progress inventory and
+   point reads before admitting new work.
+
+The minimum durable journal records Job ref, provider attempt key, returned
+Attempt ref when known, input fingerprint, content-addressed
+`frozen_generation_id`, local phase, operation kind, and exact canonical
+terminal request bytes plus their digest when selected. That immutable
+generation record resolves the exact binding, failure policy, runner/release
+identities, and run generation needed by reconciliation. Before model
+invocation, the writer durably records an `execution_entered` phase. After a
+provider restart, an in-progress record without terminal bytes is never
+silently rerun. Reconciliation first obtains an authoritative point snapshot. A
+terminal Attempt retires local execution work without a new command. If the
+Attempt remains in progress and the Job remains open, pre-execution work may
+resume, while `execution_entered` becomes one fixed reviewed
+`provider_execution_interrupted` failure unless a future runner contract proves
+a stronger resumable operation. If the Job is closed or cancelled, the provider
+neither resumes execution nor invents a terminal command; it retains and
+observes the Attempt until server-owned expiry. A retained terminal command is
+always replayed byte-for-byte under its command-bound receipt rules. A retained
+start key without a returned Attempt ref is resolved by exact start replay.
+
+One provider-process journal writer serializes both implementation lanes and
+owns independent per-Attempt records;
+there is no shared read-modify-write record set that can lose an HF or CHF
+update. Every transition writes a same-directory temporary record, fsyncs it,
+renames it over that Attempt's record, and fsyncs the directory before the
+effect is treated as durable. Retirement unlinks the exact admitted record and
+fsyncs the directory before releasing its frozen-generation reference. This is
+not a generic workflow database or queue.
+Server A remains the lifecycle authority and owns Attempt expiry; the journal
+preserves the provider's exact replay obligations.
+
+The journal is sensitive durable state because a retained completion contains
+the canonical scientific result. Only the provider receives its read-write
+mount; status, runner, build, and teardown helpers do not. Records and
+directories have restrictive fixed ownership and modes, capacity is bounded
+by fixed record slots and the terminal-body limit with reserved recovery space.
+Admission counts every unresolved record, including a terminal delivery whose
+server receipt is unknown; server-side capacity becoming free cannot create an
+unbounded local backlog. Low space or exhausted slots stop new admission before
+persistence can fail. Corrupt, missing, or unsupported journal state is
+fatal/unready and is never recreated over possible obligations. Terminal
+receipt or authoritative expiry removes the logical record, but ordinary
+filesystem deletion is not an erasure claim; operator storage, backup, and
+retirement policy must account for retained spectra-derived results.
+
+Unavailable HTTP transport proves no mutation outcome. Start, progress, and
+terminal owners apply their operation-specific replay rules. Authentication,
+authorization, contract drift, invalid signed responses, and impossible local
+states are fatal/unready faults, not temporary outages or scientific failures.
+
+
+Run and Attempt identity
+------------------------
+
+A run generation is explicit admission policy, not a digest of the deployment.
+For v1 its canonical material is:
 
     {
-      "schema_id": "nmrpeak.generate.request.v1",
-      "request_id": 17,
-      "implementation": "chf",
-      "seed": 0,
-      "decode": {
-        "beam_size": 100
-      },
+      "v": 1,
+      "provider_ref": "provider:...",
+      "analysis_kind_ref": "mol_from_1h_13c_formula",
+      "generation_id": "nmrpeak-chf-2026-08-24",
+      "scope": {
+        "kind": "created_at_window",
+        "not_before": "2026-08-24T00:00:00Z",
+        "not_after": null
+      }
+    }
+
+The lower Job-created-at boundary is inclusive and the optional upper boundary
+is exclusive. UTC rendering, field bounds, and canonical JSON are exact and
+covered by `run_generations.v1.json`. Hash
+`"nmrpeak.run_generation.v1\0" || canonical_material` with SHA-256. Job, input,
+credential, endpoint, process, host, runner, release, retry, clock, and random
+facts do not enter this fingerprint. The operator changes `generation_id` when
+deployment behavior should no longer share admission identity with an earlier
+run.
+
+After binding the exact Job input, derive `provider_attempt_key` from:
+
+    {
+      "v": 1,
+      "provider_ref": "provider:...",
+      "run_generation_fingerprint": "sha256:...",
+      "job_ref": "job:...",
+      "input_fingerprint": "sha256:..."
+    }
+
+Hash `"nmrpeak.provider_attempt.v1\0" || canonical_material` with SHA-256 and
+render `nmrpeak-provider.v1:<lowercase hex>`. The key is persisted before first
+send and reused only for that exact tuple. Process IDs, timestamps, retries,
+credential refs, and runner boot identities cannot manufacture another
+Attempt. Exact positive and malformed vectors live in `attempt_keys.v1.json`.
+
+
+Job, implementation, and runner contracts
+-----------------------------------------
+
+Keep three contracts separate:
+
+`NMR API Job transport`
+    Server A supplies exact UTF-8 `nmr.job.specification.text.v1` bytes plus
+    fingerprint and length facts. Those bytes are immutable provider input.
+
+`implementation input`
+    The complete specification text must be one strict JSON document with
+    schema ID `nmrpeak.structure_generation.request.v1`. No prose extraction,
+    LLM interpretation, Markdown fencing, comments, duplicate keys, unknown
+    fields, NaN/Infinity, or trailing data is accepted in v1.
+
+`runner session`
+    The provider binding constructs an Attempt-correlated canonical request.
+    The caller cannot choose `implementation_ref`, runner, release, target,
+    request correlation, checkpoint path, import path, or Python callable.
+
+Using strict structured text under the existing analysis kinds is an explicit
+provider capability restriction. The `hello` descriptions must state it. Before
+public registration, API/product review must confirm that this restriction is
+acceptable for `mol_from_1h_peaks` and `mol_from_1h_13c_formula`; otherwise the
+API authority must register distinct structured-input analysis kinds. The
+provider must not silently publish unreviewed kind semantics.
+
+The implementation document carries:
+
+    {
+      "schema_id": "nmrpeak.structure_generation.request.v1",
       "model_input": {
         "formula": "C16H27NO8",
         "spectra": {
           "1H": {
-            "frequency_mhz": "500",
-            "solvent": "CDCl3",
             "peaks": [
               {
                 "shift_lo": "4.91",
@@ -228,262 +527,633 @@ names or underscore-delimited coupling encoding:
             ]
           },
           "13C": {
-            "frequency_mhz": "126",
-            "solvent": "CDCl3",
             "peaks": [
-              {"shift_lo": "109.4", "shift_hi": "109.4"},
-              {"shift_lo": "109.4", "shift_hi": "109.4"}
+              {"shift": "109.4"},
+              {"shift": "109.4"}
             ]
           }
         }
       }
     }
 
-Measurements use finite, non-exponent decimal strings on the wire. Arrays
-preserve observation order and duplicates. Formula parsing is strict and
-bounded. The provider rejects unknown fields, unknown nuclei, unsupported
-multiplicities, reversed ranges, non-positive integrals, excessive coupling
-counts, excessive peak counts, and documents that exceed the runner frame cap.
+Measurements use bounded finite non-exponent decimal strings. Request arrays
+preserve duplicate observations, but their order has no scientific meaning.
+The binding parses those strings into checked decimal values, then constructs
+the exact NMRPeak document. It supplies each proton peak's
+`centroid` as `(shift_lo + shift_hi) / 2`, never supplies a caller-selected
+centroid, and rejects a midpoint outside its declared decimal precision or
+range. This is deliberate information loss: the pinned HF and CHF
+configurations set `use_range_shift=False`, so range width is not model input.
+The pinned tokenizer sorts carbon shifts and proton centroids in descending
+order and sorts each peak's couplings in descending order; its stable peak sorts
+keep duplicate observations distinct. The binding encodes admitted couplings as
+decimal components separated by `_` with a trailing `_`, and encodes no
+couplings as `_`; it leaves coupling order to the pinned tokenizer. Proton
+integrals become bounded positive integers because
+NMRPeak consumes integer `nH`. Carbon input is point-valued because NMRPeak
+consumes `delta (ppm)`. Frequency and solvent are absent from v1 because the
+pinned generation path does not consume them.
 
-HF requires exactly formula plus 1H input. CHF requires exactly formula plus 1H
-and 13C input. Do not silently discard extra spectra or synthesize missing
-spectra. The model-specific adapter alone converts this validated document to
-NMRPeak's `molecular_formula`, `h_nmr_peaks`, `c_nmr_peaks`, `rangeMin`,
-`rangeMax`, `nH`, `category`, and `j_values` representation.
+The provider admits one full-string neutral element/count grammar with explicit
+element and total-atom bounds, then canonicalizes the parsed composition to
+Hill order. V1 rejects charges, isotopes, adduct dots,
+parentheses, zero counts, duplicate element tokens, and unsupported elements.
+Exact limits, accepted multiplicities, peak counts, coupling counts, decimal
+ranges, and per-runner beam choices come from checked-in contract evidence.
 
-The first decode contract supports deterministic beam generation only. Bound
-`beam_size` to a reviewed per-runner maximum; 100 is the initial deployment
-ceiling because the CHF behavior proof exercised that value. Keep NMRPeak
-reranking disabled until its checkpoints, dependencies, result semantics, and
-resource costs receive a separate release design. Do not expose arbitrary
-generation arguments.
+HF requires exactly formula plus 1H. CHF requires exactly formula plus 1H and
+13C. Extra or missing spectra fail; no spectrum or duplicate observation is
+discarded or synthesized. The documented sorting and proton-midpoint projection
+are normalization, not preservation of caller ordering or range width. The
+binding alone converts admitted input to NMRPeak's `molecular_formula`,
+`h_nmr_peaks`, `c_nmr_peaks`, `centroid`, `delta (ppm)`, `nH`, `category`, and
+`j_values` representation. Contract fixtures assert the complete transformed
+token sequence produced by the pinned tokenizer, including numeric bucket
+boundaries, formula tokens, end tokens, duplicate shifts, empty couplings, and
+coupling order. During VALIDATE, the runner invokes that tokenizer without model
+execution and rejects an empty sequence or one with 512 or more tokens before
+Uni-Core's pinned `TokenizeDataset` assertion can terminate the boot. The
+provider's structural limits are conservative pre-admission bounds; they do not
+duplicate tokenization. The provider does not maintain a second tokenizer.
+These rules are sourced from the pinned `nmrpeak/data/nmr_tokenizer.py`,
+`nmrpeak/utils/transform_token.py`, and Uni-Core
+`unicore/data/tokenize_dataset.py` closure.
 
-A successful response contains the correlated request ID, ordered candidates,
-canonical SMILES when RDKit accepts the candidate, calculated formula, and a
-formula-match boolean. Preserve generator order. Do not claim a scientific rank
-beyond that order and do not publish internal tensors or unreviewed score
-objects. Include stable execution provenance:
+V1 exposes no caller generation knobs. Each runner owns one fixed
+`decode_policy_id`. At the pinned source revision, both supported modes use a
+maximum generated length of 160, temperature 3.0, beam search, generation
+namespace seed 1, and no scientific reranking. The runner passes all three
+optional pickle-cache paths as `None`; it neither reads nor writes NMRPeak result
+caches. Each model manifest additionally fixes batch size 1 and its beam size.
+The CHF research example's caller-selected range of 1 through 200 and an earlier
+beam-100 exercise are not release evidence for a production choice. HF and CHF
+receive independently reviewed policies whose exact call arguments and
+effective generation namespace are asserted in real-checkpoint proofs. The
+provider reports the policy identity but does not claim deterministic output
+until repeated same-image, checkpoint, and input CPU proofs establish that
+property.
 
-- runner identity and contract revision;
-- checkpoint SHA-256;
-- final runner image ID/input ID;
-- source-closure identity;
-- target, device, seed, and effective bounded decode policy.
 
-Logs contain implementation/request identities, state transitions, durations,
-counts, and stable failure categories. They do not contain spectra, formulas,
-generated structures, raw exceptions from untrusted code, or checkpoint
-contents.
+Private framing and boot protocol
+---------------------------------
+
+Every UDS message is a four-byte unsigned big-endian payload length followed by
+canonical UTF-8 JSON. The receiver rejects an oversized length before
+allocation. Compression, ancillary file descriptors, duplicate keys,
+NaN/Infinity, trailing bytes, unknown fields, and more than one in-flight
+request per boot are forbidden.
+
+The protocol has exact versioned READY, VALIDATE, GENERATE, REJECTED, RESULT,
+and RETIRE frame schemas. Every request and response is bound to the current
+Attempt ref, provider attempt key, and boot generation. A response cap applies
+before allocation and again after canonicalization. REJECTED is reusable only
+after the entire request was parsed and the rejection belongs to deterministic
+model input admission. Any other protocol failure retires the boot.
+
+The provider's runner-session owner enforces connect, READY, validation,
+generation, and shutdown deadlines. Owner loss makes the supervisor kill and
+join the worker, unlink the socket, and exit. The session volume is never an
+authentication boundary against a hostile engine peer; deployment topology and
+volume isolation keep ordinary peers separate.
+
+
+Result and failure contracts
+----------------------------
+
+A success uses result schema ID `nmrpeak.structure_candidates.result.v1` and
+contains exact bounded fields:
+
+    {
+      "schema_id": "nmrpeak.structure_candidates.result.v1",
+      "candidates": [
+        {
+          "generated_smiles": "..."
+        }
+      ],
+      "provenance": {
+        "runner_ref": "nmrpeak_chf_v1",
+        "runner_contract_id": "...",
+        "checkpoint_sha256": "sha256:...",
+        "source_closure_sha256": "sha256:...",
+        "image_input_id": "sha256:...",
+        "target": "cpu-x86_64",
+        "device": "cpu",
+        "decode_policy_id": "nmrpeak_chf_decode_v1"
+      }
+    }
+
+The public result deliberately omits the example scripts' RDKit parseability,
+canonical-SMILES, calculated-formula, and formula-match annotations. Those
+values are currently computed inside the same checkpoint-bearing runner and
+cannot serve as independent validation; caveating them would not repair that
+ownership. `generated_smiles` is bounded model output, not a claim that RDKit
+can parse it or that it is chemically valid or formula-consistent. Candidate
+order is generator order, not calibrated scientific rank. Candidate count and
+final canonical result bytes are capped below the provider API's 786,432-byte
+decoded result limit.
+
+The provider validates every hostile runner field, correlation, length, count,
+UTF-8 string, and closed identity before journaling or API delivery. It does not
+reinterpret or chemically validate the generated string. Checkpoint, source,
+target, decode-policy, and image-input identities come from provider-admitted
+deployment facts, not from runner output. The provider compares the runner's
+READY facts with those admitted identities but does not copy the echo into the
+result. A local Docker image ID is operator evidence, not portable result
+identity.
+
+Failure publication is closed and model-local:
+
+- invalid structured Job input or unsupported scientific value becomes
+  `input_rejected` with fixed reviewed text after Attempt start;
+- a deterministic model admission rejection becomes `input_rejected` only
+  through its reviewed safe mapping;
+- runner absence before start withholds lane readiness;
+- runner crash during a pure local request may retry only the same immutable
+  input in the same Attempt, under a bounded declared policy and a fresh boot;
+- exhausted local retries become a fixed `runner_unavailable` or
+  `runner_execution_failed` Attempt failure according to the model failure policy;
+- malformed runner output, impossible state, API auth failure, and contract
+  drift are provider fatal/unready faults and never caller blame;
+- API outage is operation-specific unavailability; and
+- Job closure, cancellation, or Attempt expiry retires local work without
+  inventing a new terminal claim.
+
+Logs and API failure messages never contain raw Job text, spectra, formulas,
+structures, runner output, endpoint URLs, credentials, checkpoint paths, raw
+exceptions, or stack traces. Provider logs use stable provider, Job, Attempt,
+implementation, boot, phase, duration, count, validated upstream request ID, and
+closed failure codes.
 
 
 Checkpoint release boundary
 ---------------------------
 
-The 31 GB ZIP archive is an acquisition artifact, not a runtime model mount and
-not an image build context. Each reviewed release declaration names one exact
-regular-file member, uncompressed size, SHA-256, runner identity, upstream
-source revision, and relevant public resource identities.
+The ZIP archive is an acquisition artifact. Every host archive path is resolved
+and admitted as an existing non-symlink regular file before a long-form
+read-only bind with host-path creation disabled. Archive paths and selector
+values are rejected when their representation is ambiguous.
 
-Release preparation has two explicit operations:
+A release declaration names exactly one regular ZIP member, its uncompressed
+size and SHA-256, runner identity, source revision, and reviewed public resource
+identities. The reader inventories every central-directory name to reject
+duplicates and invalid representations, but opens only the selected regular
+member. Unrelated members remain untrusted and ignored; their mere presence does
+not invalidate a multi-member acquisition archive. For the selected member it
+rejects encryption, unsupported compression or type, CRC/length disagreement,
+and trailing output. It streams bytes without importing Torch or invoking
+pickle.
 
-    make release/write RUNNER=nmrpeak_chf_v1 ARCHIVE=/absolute/weights.zip
+Release preparation has two operations:
+
+    make release/write RUNNER=nmrpeak_chf_v1 RELEASE=<name> \
+        ARCHIVE=/absolute/weights.zip
     make checkpoint/import RUNNER=nmrpeak_chf_v1 RELEASE=<name> \
         ARCHIVE=/absolute/weights.zip
 
-`release/write` runs the safe exact-member reader in a networkless container,
-streams the member through SHA-256 without deserializing it, and atomically
-writes only the small candidate release declaration to the checkout. Review and
-commit that declaration before deployment.
+`release/write` runs the exact-member reader without network or checkpoint
+loading and emits one canonical candidate declaration. The host validates the
+pre-existing releases directory and absent destination file, then applies it
+offline with a collision-safe no-replace operation, file and directory fsync,
+and no symlink following. Review and commit the declaration before import.
 
-`checkpoint/import` reads one committed declaration, creates a new
-content-addressed Docker volume, extracts only its declared member, verifies
-size and digest while streaming, and records non-authoritative Docker labels for
-operator inspection. The authoritative digest remains the committed release
-declaration and the actual byte verification. Runtime volume names derive from
-the full digest, for example:
+`checkpoint/import` admits the declaration bytes from HEAD, or proves the
+working-tree bytes equal HEAD, before engine mutation. It validates canonical
+shape, selector compatibility, member path, size, digest, source/public
+identities, and the archive path.
 
-    nmrpeak-checkpoint-sha256-<64 lowercase hex digits>
+The operation holds the repository-owned engine lifecycle lock, inspects the
+full digest-derived volume name, and either verifies an exact existing volume
+or creates a new one. Creation uses a random operation nonce plus typed ownership
+labels, immediately re-inspects structured engine output, and admits only the
+object bearing those exact facts. It streams the selected member to the single
+canonical volume path `/checkpoint.pt`, verifies that path's type, mode, size,
+digest, and absence of extras, then creates the admission marker. Runner
+manifests never consume archive member paths. Admission is atomic; extraction
+into the new volume is not. A marker is never a substitute for hashing actual
+bytes.
 
-An existing volume is never overwritten. Import verifies an exact existing
-volume or refuses it. A failed newly created volume is removed only when the
-operation can prove it created that exact volume; unrelated and previously
-admitted volumes remain untouched.
+An existing volume is never overwritten. Failure removes a newly created
+volume only after revalidating this invocation's nonce/labels and proving no
+foreign attachment; cleanup failure is reported without hiding the primary
+failure. A crash can instead leave an unattached, repository-owned,
+digest-named volume without an admission marker. Ordinary import refuses it and
+prints the exact recovery operation. Under the lifecycle lock,
+`checkpoint/recover` revalidates the full name, typed owner labels and nonce,
+proves the marker absent and attachment set empty, requires the exact volume
+name as confirmation, and removes only that incomplete volume. Docker volumes
+lack immutable object IDs, so a non-cooperating daemon client remains a race
+outside the repository lock.
 
-The runner verifies the checkpoint byte digest again before every
-deserialization. This costs one sequential read at boot but closes accidental
-or privileged out-of-band volume mutation before model loading. The volume is
-mounted read-only during verification and serving. Neither preparation
-operation imports Torch or invokes pickle loading.
-
-
-Build identity and dependency closure
--------------------------------------
-
-Convert this directory into a tracked deployment repository, or place this
-package in a new tracked repository, before claiming reproducible images. Copy
-or materialize a reviewed NMRPeak runtime closure from the pinned upstream
-commit and record every admitted path and digest. Do not build production images
-from a mutable sibling checkout or send the full research tree by accident.
-
-Pin base images by digest. Resolve exact target-specific Python dependencies
-and hashes in an explicit networked lock operation. Production installation
-uses only the selected target lock and fails on dependency or hash drift. Pin
-the Uni-Core commit and include its source identity in the image input identity.
-Public BART configuration required for offline construction is acquired during
-the explicit image build and becomes part of the final image.
-
-The family base image contains no checkpoint. Each final HF or CHF image fixes
-one entrypoint, runner identity, protocol identity, and model mode. Image labels
-record the clean committed source revision and a digest of the exact admitted
-build inputs. Production Compose has no `build:` section, uses `pull_policy:
-never`, and receives an exact locally resolved image ID from the host operation.
+The runner hashes the mounted checkpoint immediately before every
+deserialization. This detects completed accidental or privileged mutation before
+loading. It does not prevent a daemon/root peer from racing hash-to-load or from
+mounting the volume writable elsewhere. The runner's read-only mount is not
+global immutability.
 
 
-Deployment declaration
-----------------------
+Build and dependency identity
+-----------------------------
 
-A named deployment explicitly selects its implementations:
+The NMRPeak closure is rendered only from the initialized pinned gitlink. An
+exact admitted-path manifest and digest include every copied source/resource;
+production images consume a clean committed VCS-exported context, not a mutable
+sibling checkout or the research tree by accident.
+
+Base images are fully qualified by digest. Uni-Core source, BART configuration,
+NMRPeak dictionaries, target dependencies, and build tools have exact versions
+and integrity records. A deny-by-default context excludes VCS/agent state,
+weights, credentials, local configuration, caches, and unrelated source, and an
+actual-context proof guards the exclusion.
+
+Dependency resolution and checkout mutation are separate. A networked
+`runner/lock/stage` writes candidate lock state outside the checkout. Offline
+`runner/lock/check` proves the committed lock without writes. Offline
+`runner/lock/apply` validates canonical hashes and atomically replaces only the
+pre-existing selected lock. No networked resolver mounts the repository writable.
+
+Each runner image fixes one entrypoint, runner and protocol identity, source
+closure, target, and model mode. Checkpoints remain external content-addressed
+volumes because baking a 31 GB acquisition archive or selected member into
+every image is not justified. Image labels record committed revision and exact
+input ID, but labels are observations; the operator verifies the created
+container's actual image identity before replacement.
+
+Production Compose has no `build:`, uses `pull_policy: never`, and receives
+immutable locally resolved image references from host orchestration. Build and
+lock staging are explicit networked lanes. Runtime, tests, release inspection,
+checkpoint import, and lock apply remain networkless as specified.
+
+The optional Wi-Fi proxy is only a routing mechanism for explicitly selected
+networked build/stage traffic. It is not a destination-security proxy. Its live
+proof covers interface binding, readiness, intended routing, failure, bounded
+lifetime, and local-process hijack residual risk; a mocked argv check proves
+only orchestration wiring.
+
+
+Deployment declaration and lifecycle
+------------------------------------
+
+The product declaration names the two implementation manifests. Each model
+manifest owns its implementation/analysis/runner contract identities. A named
+deployment selects one exact target, release, run generation, resource budget,
+and private session for each fixed implementation:
 
     [implementations.hf]
-    runner = "nmrpeak_hf_v1"
-    release = "nmrpeak-zenodo-19122815-hf"
     target = "cpu-x86_64"
+    release = "nmrpeak-zenodo-19122815-hf"
+
+    [implementations.hf.run_generation]
+    generation_id = "nmrpeak-hf-2026-08-24"
+    not_before = "2026-08-24T00:00:00Z"
 
     [implementations.chf]
-    runner = "nmrpeak_chf_v1"
-    release = "nmrpeak-zenodo-19122815-chf"
     target = "cpu-x86_64"
+    release = "nmrpeak-zenodo-19122815-chf"
 
-Either implementation may be absent. Startup does not load disabled runners.
-Implementation names are deployment-local closed identifiers; clients select
-only an enabled implementation. A declaration may later configure two
-instances of the same runner with different reviewed releases, but it must give
-each a separate implementation name, service, session volume, and resource
-budget.
+    [implementations.chf.run_generation]
+    generation_id = "nmrpeak-chf-2026-08-24"
+    not_before = "2026-08-24T00:00:00Z"
 
-The deployment renderer validates selectors and derives paths below checked-in
-declaration roots. It rejects symlinks, escaping paths, unknown keys, duplicate
-service names, duplicate session volumes, missing releases, incompatible
-runner/release pairs, and resource values outside reviewed bounds. It does not
-infer hardware or choose the nearest available target.
+An absent TOML `not_after` means an open-ended window; canonical identity
+material renders that absence as JSON null. TOML never uses a fake null value.
+
+TOML does not repeat service names, volume names, or model-owned contract facts.
+The renderer joins the closed product, model manifests, deployment target map,
+release declarations, target fragments, and immutable image identities. It then
+validates the merged Compose JSON as the effective topology authority.
+
+The renderer rejects missing/extra implementations, symlinks, escaping paths,
+unknown/duplicate keys, mismatched runner/release pairs, duplicate services or
+volumes, unsupported resources, ambient Compose files/profiles/env files, and
+image/config drift. It does not infer hardware, repair artifacts, or choose a
+nearby target.
+
+The renderer then writes one secret-free canonical frozen-generation manifest.
+It contains the provider HTTP contract release, provider and product identities,
+committed provider image input identity, locally resolved immutable provider
+image identity, and, for each fixed implementation, the analysis kind,
+run-generation fingerprint, input/result schema IDs, failure and decode-policy
+identities, runner contract, target, source closure, checkpoint release digest,
+immutable runner image identity, and resource/session limits.
+Hash `"nmrpeak.frozen_generation.v1\0" || canonical_manifest` with SHA-256 to
+obtain `frozen_generation_id`. Deployment name, API origin, CA path, credential
+ref or key bytes, engine object names, timestamps, and mutable runtime state are
+excluded. The retained directory contains that manifest plus the exact
+secret-free files it names; startup rehashes both instead of trusting the
+directory name. This identity records executable deployment facts, whereas run
+generation records the operator's Job-admission policy.
+
+The first production target is deliberately single-checkout as well as
+single-engine and single-host: one admitted canonical checkout owns this
+repository's engine namespace and lifecycle lock. A second clone must use a
+different engine and a disjoint provider identity/object namespace, or remain
+read-only. In particular, it cannot deploy the same `provider_ref` on that
+second engine. The checkout-local lifecycle lock does not pretend to coordinate
+another clone; engine labels and status reject its objects as foreign rather
+than sharing mutation authority.
+
+Each deployment owns config, credential, project, lock, containers, frozen input
+generation, journal, and session volumes. `up` validates and freezes exact
+inputs before changing the durable deployment, checks stopped residue and
+foreign attachments, and refuses ambiguous ownership. The started provider
+process acquires and continuously holds the `provider_ref` lock before any
+hello/feed activity; failure to acquire it makes the deployment unready and
+exits without consuming work. If replacement fails after stopping an incumbent,
+`up` reports the inspected final state and does not imply rollback.
+
+Frozen generations are immutable retained directories, not one replaceable
+slot. Replacement refuses to delete or overwrite any generation referenced by
+an unresolved journal record. Restart reconciliation loads that record's exact
+binding, failure policy, runner/release identities, and run generation; retained
+generations become eligible for explicit cleanup only after terminal receipt or
+server-owned expiry has retired every reference. Generation removal requires a
+proved-stopped deployment, holds the lifecycle lock, parses every admitted
+journal record, rechecks that no record names the generation, requires the exact
+content ID as confirmation, and removes only that immutable directory. A corrupt
+or unreadable journal blocks cleanup.
+
+`status` and `down` use typed structured engine inspection; inspection failure
+is indeterminate, never absence. `status` reports proved-owned running and
+stopped state. `down` first proves ownership of every running resource, requests
+bounded provider and runner shutdown, and inspects the post-stop state. Only
+then does it reconcile proved-owned stopped residue and remove proved-owned
+ephemeral session volumes. A stop timeout or indeterminate post-stop inspection
+preserves state and reports the unresolved resources; it never claims teardown.
+Configuration, credentials, journal, retained frozen generations, the
+engine-global provider lock volume, images, and checkpoint volumes are
+preserved. Foreign, ambiguous, or indeterminate state is refused. There is no
+blanket `clean`; no generic reset can discard lifecycle evidence.
+
+Journal retirement is a separate exceptional operation. It requires a
+proved-stopped deployment, the lifecycle lock, exact journal-volume ownership,
+exclusive acquisition of the engine-global `provider_ref` lock for the entire
+operation, the provider credential and API egress, a complete signed traversal
+proving the provider has no in-progress Attempts, and exact volume-name
+confirmation. API unavailability, pagination ambiguity, any live Attempt, or
+local inspection failure refuses the mutation. Only then may it remove the
+journal volume; the operation reports that volume deletion is not secure
+erasure. This is the sole path for retiring an empty, obsolete, or irrecoverably
+corrupt journal.
 
 
 Public operations
 -----------------
 
-The host Makefile is the public operation index:
+The host Makefile is the operator index:
 
     make test
+    make upstream-contracts/check
+    make upstream-contracts/write NMR_API_V1_DIR=/absolute/checkout \
+        RELEASE=sha256:...
+    make provider/deployment/init DEPLOYMENT=<name>
+    make provider/image/build
+    make provider/credential/install DEPLOYMENT=<name> \
+        NMR_API_V1_DIR=/absolute/checkout
     make runner/list
     make runner/lock/check RUNNER=<runner> TARGET=<target>
-    make runner/lock/write RUNNER=<runner> TARGET=<target>
+    make runner/lock/stage RUNNER=<runner> TARGET=<target>
+    make runner/lock/apply RUNNER=<runner> TARGET=<target>
     make runner/image/build RUNNER=<runner> TARGET=<target>
     make release/check RUNNER=<runner> RELEASE=<name>
-    make release/write RUNNER=<runner> ARCHIVE=/absolute/weights.zip
+    make release/write RUNNER=<runner> RELEASE=<name> \
+        ARCHIVE=/absolute/weights.zip
     make checkpoint/import RUNNER=<runner> RELEASE=<name> \
         ARCHIVE=/absolute/weights.zip
-    make deployment/config DEPLOYMENT=<name>
-    make deployment/up DEPLOYMENT=<name>
-    make deployment/status DEPLOYMENT=<name>
-    make runner/logs DEPLOYMENT=<name> IMPLEMENTATION=<name>
-    make infer DEPLOYMENT=<name> IMPLEMENTATION=<name> INPUT=/absolute/input.json
-    make deployment/down DEPLOYMENT=<name>
+    make checkpoint/recover VOLUME=<full-volume-name> \
+        CONFIRM=<full-volume-name>
+    make provider/deployment/config DEPLOYMENT=<name>
+    make provider/deployment/config/localhost DEPLOYMENT=<name> \
+        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
+    make provider/deployment/up DEPLOYMENT=<name>
+    make provider/deployment/up/localhost DEPLOYMENT=<name> \
+        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
+    make provider/deployment/status DEPLOYMENT=<name>
+    make provider/logs DEPLOYMENT=<name>
+    make provider/deployment/down DEPLOYMENT=<name>
+    make provider/deployment/generation/remove DEPLOYMENT=<name> \
+        FROZEN_GENERATION=<sha256-id> CONFIRM=<sha256-id>
+    make provider/journal/retire DEPLOYMENT=<name> \
+        CONFIRM=<full-journal-volume-name>
+    make provider/identity-lock/remove PROVIDER_REF=<provider-ref> \
+        CONFIRM=<full-volume-name>
+    make provider/test/runtime DEPLOYMENT=<name>
+    make runner/test/runtime RUNNER=<runner> TARGET=<target> RELEASE=<name>
 
-All selectors are literal command-line inputs validated before path derivation.
-There are no environment defaults, aliases, fuzzy matches, or automatic model
-and target selection. Runtime startup is offline and never builds, pulls,
-downloads, resolves, imports, or repairs a checkpoint.
+NMR API credential issuance, server-side registration state, and server secrets
+remain owned by `nmr-api-v1`; this repository installs only the matching private
+provider signing credential. Install admits one non-symlink regular API-issued
+credential file, validates its exact schema and provider/credential refs,
+requires restrictive owner/mode and a pre-existing deployment destination, and
+refuses a collision by default. Explicit `REPLACE=1` is accepted only while the
+deployment is proved stopped, under the lifecycle lock, and the new credential
+has the same `provider_ref`; it uses a same-directory temporary file,
+restrictive mode, file/directory fsync, and atomic replacement. Only the
+secret-bearing `up` composition mounts that file read-only into the provider.
+Status, logs, down, image, runner, and recovery operations neither mount nor
+parse it, except that journal retirement receives it only in its narrow
+signed-inventory lane.
+Replacement does not claim secure erasure of the old file's storage blocks or
+backups.
 
-Large networked build and lock operations may opt into the existing temporary
-Wi-Fi-bound proxy with an outside selector:
+All selectors are literal command-line inputs captured before Make expansion
+and validated before path derivation. There are no environment defaults,
+aliases, fuzzy matches, automatic runners, implicit pulls/builds/downloads,
+checkpoint repair, or model-path parameters. Ambient engine and Compose
+variables are scrubbed and the same supported provider renders and executes the
+deployment.
 
-    make runner/image/build RUNNER=nmrpeak_chf_v1 TARGET=cpu-x86_64 ROUTE=wifi
+Direct local inference is a model-behavior proof, not a production provider
+operation. It cannot bypass the NMR API Attempt lifecycle and still be called a
+provider request.
 
-`ROUTE=wifi` affects only that operation's Docker build steps by starting a
-temporary loopback proxy whose outbound sockets bind the explicitly configured
-wireless interface. It does not modify host routes, interface metrics, policy
-routing, Docker daemon configuration, or later container networking. An absent
-route selector preserves ordinary behavior. Runtime and checkpoint import stay
-networkless; an archive download, if later added, is a separate explicit
-operation with its own route selector.
+
+Authority summary
+-----------------
+
+Distinct lanes have distinct grants:
+
+- Default tests: deny-by-default copied current checkout source,
+  container-local scratch, no network, secrets, devices, engine socket,
+  checkpoint, or checkout writes. They test dirty edits without claiming release
+  identity.
+- Contract/lock apply: validated candidate input plus one exact pre-existing
+  checkout output, no network; atomic narrow write.
+- Lock stage and image build: explicit network, minimal committed inputs,
+  engine-owned output, no credential or checkpoint and no checkout write.
+- Release write: read-only archive, no network/checkpoint loading, one narrow
+  declaration output.
+- Checkpoint import: read-only archive, engine control, one content-addressed
+  volume mutation, no network or checkpoint loading.
+- Provider runtime: API network, one read-only signing credential, frozen config,
+  sensitive durable journal, read-only engine-global identity-lock volume, and
+  bounded private session volumes; no checkpoint, GPU, source mount, or engine
+  socket.
+- Runner runtime: checkpoint and private socket volumes, bounded scratch, no
+  network, credential, source mount, host output, or engine socket.
+- GPU runtime: the runner grants one exact GPU selector and driver surface; it
+  is separate from CPU and never selected implicitly.
+- Status/down, frozen-generation cleanup, and provider-lock cleanup: explicit
+  engine/project authority; no API credential is needed. The two confirmed
+  cleanup operations may delete only their exactly proved owned state.
+- Journal retirement: provider API egress, one signing credential, read-only
+  journal inspection, and exact engine-volume deletion authority; no runner,
+  checkpoint, source, or broad cleanup. It deletes only after a complete signed
+  empty live-Attempt inventory and exact confirmation.
+
+Each operation records its supported engine, inputs, writes, state, cleanup,
+proof level, and residual risk near its implementation. This summary is not a
+substitute for rendered and live evidence.
 
 
 Proof lanes
 -----------
 
-`make test` is unattended, networkless, checkpoint-free, GPU-free, and does not
-write the checkout. It proves:
+`make test` must be unattended, networkless, checkpoint-free, GPU-free, and
+checkout-read-only. It must prove:
 
-- exact request and response contracts for HF and CHF;
-- duplicate 13C observations survive public decoding and NMRPeak projection;
-- formula, decimal, spectrum, peak, coupling, beam and frame bounds;
-- hostile fake-runner responses cannot escape local validation;
-- timeout, owner loss, malformed readiness, uncertain exchange and shutdown
-  classifications;
-- declaration and selector traversal cannot escape reviewed roots;
-- release manifests have canonical exact shapes;
-- Compose enforces non-root, read-only, capability-free, no-new-privileges,
-  resource-bounded and networkless runner posture;
-- production Compose cannot build or pull implicitly; and
-- Wi-Fi selection reaches only the selected build invocation in mocked
-  orchestration checks.
+- the pinned provider HTTP release projection and RFC 9421 signing vectors;
+- run-generation admission windows and Attempt-key vectors, including that
+  operational retries and credential rotation cannot change either identity;
+- hello, feed, input read, start, progress, point read, complete, fail, expiry,
+  capacity rejection, and exact replay against a fake TLS Server A;
+- Job input fingerprint/length binding and journal recovery after lost start
+  and terminal responses;
+- concurrent HF/CHF journal transitions cannot lose either per-Attempt record,
+  and provider restart preserves in-progress and terminal obligations;
+- restart resumes only pre-execution work, converts an interrupted entered
+  execution to the fixed reviewed failure, and replays retained terminal bytes;
+- corrupt/unsupported journal records and low reserved space stop admission,
+  while status and ordinary down never receive the sensitive journal mount;
+- journal retirement refuses API outage, incomplete pagination, live Attempts,
+  foreign attachments, and wrong confirmation before deleting exact owned
+  empty state;
+- credential rotation cannot bypass the `provider_ref` singleton, provider
+  lock loss fails closed, and unresolved Attempts retain their exact frozen run
+  generation across replacement;
+- two differently named Compose projects derive and contend for the same
+  provider lock object, while bounded down preserves that object and reports
+  stop timeout or indeterminate post-stop state truthfully;
+- cancellation/expiry during blocked runner work and bounded shutdown;
+- independent concurrent HF/CHF lanes with one request per runner and no
+  unbounded provider queue;
+- strict structured input, formula, decimal, spectrum, peak, coupling, beam,
+  transformed-token, framing, and result bounds, including rejection at the
+  pinned 512-token assertion boundary;
+- public candidates contain bounded generated strings and provider-owned
+  provenance, but no runner-local RDKit validation claims;
+- duplicate 13C observations survive input decoding and NMRPeak projection;
+- hostile runner frames cannot escape provider validation;
+- exact READY identity binding, owner loss, stale socket, malformed readiness,
+  wrong correlation, partial frame, timeout, and boot retirement;
+- release manifests and import plans have canonical exact shapes;
+- rendered production Compose has prebuilt immutable images, no implicit pull
+  or build, exact mounts/networks/credentials, the provider as the sole
+  egress-capable service, bounded shared-tmpfs session volumes, the read-only
+  provider lock, finite restart budgets, bounded provider logging, and hardened
+  networkless runners;
+- deployment selectors and paths cannot escape reviewed roots;
+- status reports proved-owned stopped state, down reconciles proved-owned
+  stopped residue, and both refuse malformed, foreign, duplicate, ambiguous, or
+  indeterminate engine state;
+- structured logs and failure messages exclude sensitive input/result facts;
+  and
+- route-selection mocks prove only selected build/stage argv wiring.
 
-Real checkpoint proofs are explicit and excluded from the default lane:
+Source and rendered proofs are not live containment proofs. Separate live
+posture lanes inspect actual users, capabilities, mounts and writable paths,
+cgroups/swap, routes/no runner egress, session-volume ENOSPC behavior, sockets,
+log driver, image identity, restart behavior, stop bounds, volume attachments,
+and teardown ownership.
 
-    make runner/test/runtime RUNNER=nmrpeak_hf_v1 TARGET=cpu-x86_64
-    make runner/test/runtime RUNNER=nmrpeak_chf_v1 TARGET=cpu-x86_64
+Real checkpoint proofs remain explicit:
 
-Each proof uses the prebuilt production runner image and reviewed release volume
-through the production session boundary. It establishes artifact verification,
-model readiness, one valid request, rejection followed by reuse, owner-loss
-shutdown, and bounded teardown. The CHF behavior vector retains both duplicate
-109.4 and duplicate 70.4 observations. A formula-matching candidate for the
-pinned C16H27NO8 vector is useful narrow release evidence, not proof that the
-model identifies an unknown structure or that generator order is a calibrated
-scientific ranking.
+    make runner/test/runtime RUNNER=nmrpeak_hf_v1 \
+        TARGET=cpu-x86_64 RELEASE=<name>
+    make runner/test/runtime RUNNER=nmrpeak_chf_v1 \
+        TARGET=cpu-x86_64 RELEASE=<name>
+    make provider/test/runtime DEPLOYMENT=<name>
 
-GPU runtime proof is separate, requires one explicit device selection, and
-establishes compatibility only for that image, release, host driver and device.
+The runner proof establishes artifact measurement, model readiness, validation,
+one valid request, deterministic rejection followed by reuse, owner loss, and
+bounded teardown. The provider proof uses the production composition, a fake
+TLS Server A, and the real runner/release to establish one complete signed
+Attempt lifecycle per implementation. Real API credentials and public API
+calls are excluded.
+
+The CHF vector retains duplicate 109.4 and 70.4 observations. The real-checkpoint
+proof requires bounded candidate generation, not a formula match or a particular
+structure. Any runner-local RDKit annotations remain diagnostic test output and
+are not public provider result fields. GPU proof is separate and establishes
+compatibility only for one image, release, host driver, and explicitly selected
+device.
 
 
 Implementation order
 --------------------
 
-1. Establish a tracked source root, copy the current safety proof unchanged,
-   and add default networkless repository checks.
-2. Define canonical JSON framing and the model-neutral NMR envelope with exact
-   HF and CHF validators. Convert both embedded examples into fixtures.
-3. Implement the content-addressed release declaration and checkpoint import
-   transaction without loading a checkpoint.
-4. Implement the CHF supervisor/worker/session vertical slice first, because
-   the current CHF beam-100 proof exercises formula, both nuclei, duplicate
-   peaks, candidate validation, and the larger input contract.
-5. Add HF as the second real runner over the same NMRPeak family base. Treat
-   any duplication or mismatch exposed by that consumer as evidence for the
-   smallest shared boundary; do not invent a general plug-in framework.
-6. Add named deployment rendering, the dependency-light provider, status,
-   logs, inference, and teardown.
-7. Lock CPU dependencies and build inputs, then pass production-shaped HF and
-   CHF runtime proofs.
-8. Consider a GPU target only after the CPU deployment and artifact identities
-   are stable.
+1. Preserve the current inference proof, establish clean committed build-input
+   guards, and materialize/hash the exact pinned NMRPeak closure.
+2. Admit and mechanically verify the released NMR provider HTTP contract
+   projection and signing vectors.
+3. Define the fixed product, both analysis identities, strict input and result
+   schemas, model-local failure policies, run-generation identity, and Attempt
+   key vectors before lifecycle code consumes them.
+4. Implement signed HTTP operations and operation-specific response/retry
+   parsing against a fake TLS Server A, without Job selection or runner work.
+5. Implement the bounded sensitive journal independently, including atomic
+   transitions, corruption/space failure, concurrent writers, and restart
+   decision tables.
+6. Implement CHF's binding and fake runner first because it exercises formula,
+   both nuclei, duplicate peaks, and the larger private contract. Prove framing,
+   READY identity, owner sessions, and boot retirement here.
+7. Add one complete CHF selected-Job lifecycle against fake TLS Server A: feed,
+   immutable input, start, progress, point observation, exact terminal receipts,
+   lost responses, restart, cancellation, expiry, and retained conflicts.
+8. Implement CHF release declaration, interrupted-import recovery, CPU lock and
+   image, then pass its real-checkpoint proof before adding another model lane.
+9. Add HF as the second consumer of the proved provider lifecycle and NMRPeak
+   family closure; share only boundaries its use proves common.
+10. Add provider-wide capacity, concurrent HF/CHF lanes, journal concurrency,
+    shutdown, and recovery without adding a generic workflow framework.
+11. Build the immutable provider and HF runner images and prove their exact
+    committed inputs, users, entrypoints, and dependency identities.
+12. Add named deployment rendering, credential installation, frozen-generation
+    retention/cleanup, provider-identity exclusion, status, logs, and bounded
+    teardown, then pass the complete fake API, live posture, and
+    production-shaped real-checkpoint CPU proofs.
+13. Consider GPU only after CPU deployment and artifact identities are stable.
 
 
-Limits and later decisions
---------------------------
+Limits and publication prerequisites
+------------------------------------
 
-This design deliberately omits batching across clients, automatic routing by
-available spectra, ensemble generation, cross-runner candidate merging,
-scientific reranking, result persistence, authentication, public network
-exposure, distributed scheduling, registry discovery, and checkpoint download.
-Each needs a concrete consumer and a separate authority and failure analysis.
+Before public deployment:
 
-The initial provider serializes work per runner and bounds its queue. HF and CHF
-may execute concurrently because they own distinct services and budgets. Do not
-run multiple heavy workers inside one container or dynamically unload and load
-checkpoints in response to client input.
+- the structured-input semantics must be approved for the two advertised
+  analysis kinds, or distinct API-owned kind refs must be registered;
+- provider credential issuance/registration and the pinned contract release
+  must be published by the NMR API authority;
+- single-engine and single-host operator exclusion, or API-side fencing, must
+  prevent simultaneous use of the provider identity outside this repository's
+  cooperating local locks;
+- one canonical checkout must own the admitted engine namespace; parallel
+  checkout mutation is unsupported;
+- sensitive journal storage, backup, capacity, and retirement policy must be
+  approved for retained scientific results;
+- source and checkpoint license/attribution records must be approved;
+- exact HF and CHF release declarations, source closure, CPU locks, images,
+  result/failure schemas, and resource ceilings must be committed; and
+- fake-API, live container posture, and real-checkpoint CPU proofs must pass.
 
-The first deployment may remain local and CPU-only. Its critical path is one
-closed CHF request through a strict provider boundary to one verified,
-networkless, resident runner, followed by HF as the proof that the declaration
-shape genuinely supports another runner.
+This design deliberately omits free-form LLM interpretation, batching,
+automatic routing by spectra, ensemble generation, cross-runner candidate
+merging, scientific reranking, long-term result persistence outside Server A
+beyond unresolved terminal journal obligations,
+authentication other than the NMR API signing profile, inbound public HTTP,
+distributed scheduling, registry discovery, checkpoint download, arbitrary
+model/release instantiation, and GPU-by-default.
+
+HF and CHF may execute concurrently because they own distinct API lanes,
+services, resource budgets, and sessions. Each runner remains serial. The
+provider does not dynamically unload or replace checkpoints in response to Job
+input.
