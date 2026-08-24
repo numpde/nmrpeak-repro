@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .attempt_identity import derive_provider_attempt_key
-from .attempt_journal import StartPending, validate_frozen_generation_id
+from .attempt_journal import (
+    ActiveAttempt,
+    StartPending,
+    bind_started_attempt,
+    validate_frozen_generation_id,
+)
 from .attempt_journal_store import AttemptJournalStore
 from .product import CHF_OFFERING
 from .provider_api import ProviderApiClient
@@ -22,8 +27,20 @@ from .provider_problems import (
     ProviderProblemRejected,
     parse_provider_problem,
 )
-from .provider_requests import prepare_job_input_read, prepare_jobs_list
+from .provider_outcomes import (
+    AttemptMutationCommitPossible,
+    AttemptMutationCommitted,
+    AttemptMutationNotCommitted,
+    interpret_execution_attempt_start,
+)
+from .provider_requests import (
+    prepare_execution_attempt_start,
+    prepare_job_input_read,
+    prepare_jobs_list,
+)
 from .provider_success import (
+    AttemptState,
+    ExecutionAttemptStarted,
     JobFeedItem,
     ProviderSuccessRejected,
     parse_job_input_read_success,
@@ -82,6 +99,28 @@ ChfAdmissionOutcome = (
     | ChfPageExhausted
     | ChfFeedReadFailed
     | ChfInputReadFailed
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ChfStartContinues:
+    """The API Attempt and its local pre-execution record are both durable."""
+
+    record: ActiveAttempt
+
+
+@dataclass(frozen=True, slots=True)
+class ChfStartResolved:
+    """An idempotent start replay found the Attempt already terminal."""
+
+    receipt: ExecutionAttemptStarted
+
+
+ChfStartOutcome = (
+    ChfStartContinues
+    | ChfStartResolved
+    | AttemptMutationNotCommitted
+    | AttemptMutationCommitPossible
 )
 
 
@@ -147,6 +186,55 @@ def admit_next_chf_job(
     )
     journal.admit(record)
     return ChfJobAdmitted(record=record, canonical_input=job_input.canonical_input)
+
+
+def start_chf_attempt(
+    *,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    generation: RunGenerationIdentity,
+    frozen_generation_id: str,
+    record: StartPending,
+) -> ChfStartOutcome:
+    """Send one exact start and persist the command-bound server outcome."""
+
+    if type(generation) is not RunGenerationIdentity:
+        raise TypeError("CHF start requires an exact run generation")
+    if generation.analysis_kind_ref != CHF_OFFERING.analysis_kind_ref:
+        raise ValueError("CHF start requires the product-owned analysis kind")
+    if type(record) is not StartPending:
+        raise TypeError("CHF start requires a durable pending-start record")
+    validate_frozen_generation_id(frozen_generation_id)
+    if record.frozen_generation_id != frozen_generation_id:
+        raise ValueError("CHF start resolved the wrong frozen generation")
+    expected_attempt_key = derive_provider_attempt_key(
+        provider_ref=generation.provider_ref,
+        run_generation_fingerprint=run_generation_fingerprint(generation),
+        job_ref=record.job_ref,
+        input_fingerprint=record.input_fingerprint,
+    )
+    if record.provider_attempt_key != expected_attempt_key:
+        raise ValueError("CHF start record does not belong to this run generation")
+
+    prepared = prepare_execution_attempt_start(
+        job_ref=record.job_ref,
+        provider_attempt_key=record.provider_attempt_key,
+    )
+    outcome = interpret_execution_attempt_start(
+        prepared,
+        api.send(prepared),
+        expected_provider_ref=generation.provider_ref,
+        expected_analysis_kind_ref=CHF_OFFERING.analysis_kind_ref,
+    )
+    if type(outcome) is not AttemptMutationCommitted:
+        return outcome
+    receipt = outcome.receipt
+    if receipt.state is AttemptState.IN_PROGRESS:
+        active = bind_started_attempt(record, receipt)
+        journal.replace(record, active)
+        return ChfStartContinues(active)
+    journal.retire(record)
+    return ChfStartResolved(receipt)
 
 
 def _first_in_generation(
