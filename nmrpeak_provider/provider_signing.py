@@ -152,7 +152,7 @@ def _validate_request_inputs(
         )
     if type(method) is not str or method not in {"GET", "POST", "PUT"}:
         raise ValueError("Provider request signing requires an admitted HTTP method")
-    if type(authority) is not str or not _is_canonical_authority(authority):
+    if type(authority) is not str or not is_canonical_https_authority(authority):
         raise ValueError(
             "Provider request signing requires a canonical HTTPS authority"
         )
@@ -188,7 +188,9 @@ def _validate_request_inputs(
         raise TypeError("Provider signing nonce must contain at least 16 bytes")
 
 
-def _is_canonical_authority(value: str) -> bool:
+def is_canonical_https_authority(value: str) -> bool:
+    """Return whether ``value`` is the provider profile's HTTPS authority."""
+
     host, separator, port = value.rpartition(":")
     if not separator:
         host = value
