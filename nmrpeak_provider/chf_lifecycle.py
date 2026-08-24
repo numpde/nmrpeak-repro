@@ -24,7 +24,7 @@ from .chf_runner_session import (
     ChfInputRejected,
     ChfRunnerSession,
     ChfRunnerSessionRetired,
-    UntrustedChfCandidates,
+    GeneratedChfCandidates,
     ValidatedChfRequest,
 )
 from .product import CHF_OFFERING
@@ -50,6 +50,7 @@ from .provider_outcomes import (
     interpret_execution_attempt_start,
 )
 from .provider_requests import (
+    prepare_execution_attempt_complete,
     prepare_execution_attempt_fail,
     prepare_execution_attempt_read,
     prepare_execution_attempt_progress,
@@ -58,6 +59,11 @@ from .provider_requests import (
     prepare_jobs_list,
 )
 from .product_input import InputRejected, parse_job_input
+from .product_result import (
+    RESULT_SCHEMA_ID,
+    RunnerResultRejected,
+    canonical_result_bytes,
+)
 from .provider_success import (
     AttemptState,
     ExecutionAttemptSnapshot,
@@ -207,7 +213,15 @@ class ChfCandidatesGenerated:
     """Candidates completed while Server A still admitted local execution."""
 
     record: ActiveAttempt
-    candidates: UntrustedChfCandidates = field(repr=False)
+    candidates: GeneratedChfCandidates = field(repr=False)
+    session: ChfRunnerSession = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ChfCompletionPending:
+    """The exact canonical completion command is durable for delivery."""
+
+    record: TerminalPending
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +266,7 @@ class _GenerationWork:
     """One worker's result slot and completion signal, owned by its coordinator."""
 
     done: Event = field(default_factory=Event)
-    candidates: UntrustedChfCandidates | None = None
+    candidates: GeneratedChfCandidates | None = None
     error: BaseException | None = None
 
     def run(self, session: ChfRunnerSession, request: ValidatedChfRequest) -> None:
@@ -529,7 +543,7 @@ def execute_prepared_chf(
             raise AssertionError(
                 "CHF generation finished without candidates or an error"
             )
-        return ChfCandidatesGenerated(entered, work.candidates)
+        return ChfCandidatesGenerated(entered, work.candidates, session)
     except BaseException as error:
         if worker.is_alive():
             try:
@@ -539,6 +553,45 @@ def execute_prepared_chf(
                     "The CHF generation worker also failed to stop after the error."
                 )
         raise
+
+
+def select_chf_completion(
+    *,
+    journal: AttemptJournalStore,
+    generated: ChfCandidatesGenerated,
+) -> ChfCompletionPending:
+    """Durably select one canonical completion without sending it."""
+
+    if type(generated) is not ChfCandidatesGenerated:
+        raise TypeError("CHF completion requires generated candidates")
+    record = generated.record
+    if record.local_phase is not LocalExecutionPhase.EXECUTION_ENTERED:
+        raise ValueError("CHF completion requires an entered execution")
+    try:
+        result = canonical_result_bytes(
+            generated.session.candidates_for_attempt(
+                generated.candidates,
+                execution_attempt_ref=record.execution_attempt_ref,
+                provider_attempt_key=record.provider_attempt_key,
+            ),
+            generated.session.result_facts,
+        )
+    except RunnerResultRejected as error:
+        try:
+            generated.session.cancel()
+        except ChfRunnerSessionRetired:
+            error.add_note(
+                "The rejected CHF result's runner session also failed to stop."
+            )
+        raise
+    prepared = prepare_execution_attempt_complete(
+        execution_attempt_ref=record.execution_attempt_ref,
+        result_schema_id=RESULT_SCHEMA_ID,
+        canonical_result=result,
+    )
+    terminal = retain_terminal_command(record, prepared)
+    journal.replace(record, terminal)
+    return ChfCompletionPending(terminal)
 
 
 def _first_in_generation(

@@ -17,6 +17,7 @@ from nmrpeak_provider.attempt_journal import (
     ActiveAttempt,
     LocalExecutionPhase,
     StartPending,
+    TerminalOperation,
 )
 from nmrpeak_provider.attempt_journal_store import (
     AttemptJournalAdmissionRejected,
@@ -25,6 +26,7 @@ from nmrpeak_provider.attempt_journal_store import (
 from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.chf_lifecycle import (
     ChfCandidatesGenerated,
+    ChfCompletionPending,
     ChfExecutionCutOff,
     ChfExecutionResolved,
     ChfExecutionShutdownFailed,
@@ -44,12 +46,14 @@ from nmrpeak_provider.chf_lifecycle import (
     execute_prepared_chf,
     observe_chf_attempt,
     prepare_chf_execution,
+    select_chf_completion,
     start_chf_attempt,
 )
 from nmrpeak_provider.chf_runner_protocol import ReadyFrame, ValidateFrame
 from nmrpeak_provider.chf_runner_session import (
     ChfRunnerDeadlines,
     ChfRunnerSession,
+    GeneratedChfCandidates,
     ValidatedChfRequest,
 )
 from nmrpeak_provider.chf_binding import (
@@ -62,6 +66,8 @@ from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
     NMRPEAK_SOURCE_CLOSURE_REF,
     ProviderResultFacts,
+    RESULT_SCHEMA_ID,
+    RunnerResultRejected,
 )
 from nmrpeak_provider.provider_outcomes import (
     AttemptMutationCommitPossible,
@@ -852,6 +858,95 @@ class ChfLifecycleTests(unittest.TestCase):
                     LocalExecutionPhase.EXECUTION_ENTERED,
                 )
 
+    def test_generated_candidates_become_one_durable_completion(self) -> None:
+        entered = entered_attempt(valid_chf_input())
+        channel = FakeChfRunnerChannel(ready_frame())
+        session = ChfRunnerSession.admit(
+            channel,
+            RUNNER_FACTS,
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+        )
+        generated = ChfCandidatesGenerated(
+            entered,
+            generated_candidates(session, entered),
+            session,
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(entered))
+                journal.replace(pending_from_active(entered), entered)
+                outcome = select_chf_completion(
+                    journal=journal,
+                    generated=generated,
+                )
+            self.assertIs(type(outcome), ChfCompletionPending)
+            with AttemptJournalStore(root, maximum_records=1) as reopened:
+                self.assertEqual(reopened.records(), (outcome.record,))
+
+        self.assertIs(
+            outcome.record.terminal_operation,
+            TerminalOperation.COMPLETE,
+        )
+        command = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(command["execution_attempt_ref"], entered.execution_attempt_ref)
+        self.assertEqual(command["result_schema_id"], RESULT_SCHEMA_ID)
+
+    def test_invalid_runner_candidates_retire_boot_without_caller_failure(self) -> None:
+        entered = entered_attempt(valid_chf_input())
+        channel = FakeChfRunnerChannel(ready_frame(), candidates=())
+        session = ChfRunnerSession.admit(
+            channel,
+            RUNNER_FACTS,
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+        )
+        generated = ChfCandidatesGenerated(
+            entered,
+            generated_candidates(session, entered),
+            session,
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(entered))
+                journal.replace(pending_from_active(entered), entered)
+                with self.assertRaises(RunnerResultRejected):
+                    select_chf_completion(
+                        journal=journal,
+                        generated=generated,
+                    )
+                self.assertEqual(journal.records(), (entered,))
+        self.assertTrue(channel.closed)
+
+    def test_completion_rejects_candidates_from_another_attempt(self) -> None:
+        generated_for = entered_attempt(valid_chf_input())
+        selected_record = ActiveAttempt(
+            job_ref=generated_for.job_ref,
+            provider_attempt_key=generated_for.provider_attempt_key,
+            input_fingerprint=generated_for.input_fingerprint,
+            frozen_generation_id=generated_for.frozen_generation_id,
+            execution_attempt_ref="execution_attempt:sha256:" + "b" * 64,
+            local_phase=LocalExecutionPhase.EXECUTION_ENTERED,
+        )
+        session = ChfRunnerSession.admit(
+            FakeChfRunnerChannel(ready_frame()),
+            RUNNER_FACTS,
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+        )
+        generated = ChfCandidatesGenerated(
+            selected_record,
+            generated_candidates(session, generated_for),
+            session,
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(selected_record))
+                journal.replace(pending_from_active(selected_record), selected_record)
+                with self.assertRaisesRegex(ValueError, "retained Attempt"):
+                    select_chf_completion(
+                        journal=journal,
+                        generated=generated,
+                    )
+                self.assertEqual(journal.records(), (selected_record,))
+
 
 def chf_generation() -> RunGenerationIdentity:
     return RunGenerationIdentity(
@@ -908,6 +1003,18 @@ def active_attempt(canonical_input: bytes) -> ActiveAttempt:
         frozen_generation_id=FROZEN_GENERATION_ID,
         execution_attempt_ref="execution_attempt:sha256:" + "a" * 64,
         local_phase=LocalExecutionPhase.PRE_EXECUTION,
+    )
+
+
+def entered_attempt(canonical_input: bytes) -> ActiveAttempt:
+    active = active_attempt(canonical_input)
+    return ActiveAttempt(
+        job_ref=active.job_ref,
+        provider_attempt_key=active.provider_attempt_key,
+        input_fingerprint=active.input_fingerprint,
+        frozen_generation_id=active.frozen_generation_id,
+        execution_attempt_ref=active.execution_attempt_ref,
+        local_phase=LocalExecutionPhase.EXECUTION_ENTERED,
     )
 
 
@@ -1009,6 +1116,24 @@ def validated_execution(
     if type(request) is not ValidatedChfRequest:
         raise AssertionError("test runner unexpectedly rejected validation")
     return session, channel, ChfPreparedForExecution(active, request)
+
+
+def generated_candidates(
+    session: ChfRunnerSession,
+    active: ActiveAttempt,
+) -> GeneratedChfCandidates:
+    request = session.validate(
+        execution_attempt_ref=active.execution_attempt_ref,
+        provider_attempt_key=active.provider_attempt_key,
+        model_input=ChfRunnerInput(
+            "C2H6O",
+            (ChfRunnerProtonPeak("1.25", 3, "t", "7.1_"),),
+            (ChfRunnerCarbonPeak("70.4"),),
+        ),
+    )
+    if type(request) is not ValidatedChfRequest:
+        raise AssertionError("test runner unexpectedly rejected validation")
+    return session.generate(request)
 
 
 def jobs_page(

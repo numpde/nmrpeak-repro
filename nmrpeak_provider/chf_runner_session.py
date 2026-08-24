@@ -82,10 +82,12 @@ class ValidatedChfRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class UntrustedChfCandidates:
-    """Runner output awaiting the product result validator."""
+class GeneratedChfCandidates:
+    """Untrusted output bound to the session request that generated it."""
 
     value: JsonValue
+    _owner: object = field(repr=False, compare=False)
+    _correlation: AttemptCorrelation = field(repr=False, compare=False)
 
 
 class _SessionState(StrEnum):
@@ -210,7 +212,7 @@ class ChfRunnerSession:
             "Cannot validate CHF runner input: response type or correlation is wrong"
         )
 
-    def generate(self, request: ValidatedChfRequest) -> UntrustedChfCandidates:
+    def generate(self, request: ValidatedChfRequest) -> GeneratedChfCandidates:
         """Authorize model execution for the exact validated request."""
 
         with self._lock:
@@ -239,10 +241,30 @@ class ChfRunnerSession:
                     )
                 self._pending = None
                 self._state = _SessionState.IDLE
-            return UntrustedChfCandidates(response.candidates)
+            return GeneratedChfCandidates(response.candidates, self, request._correlation)
         self._retire_with_error(
             "Cannot generate CHF candidates: response type or correlation is wrong"
         )
+
+    def candidates_for_attempt(
+        self,
+        generated: GeneratedChfCandidates,
+        *,
+        execution_attempt_ref: str,
+        provider_attempt_key: str,
+    ) -> JsonValue:
+        """Bind generated output to the retained Attempt facts that may consume it."""
+
+        if (
+            type(generated) is not GeneratedChfCandidates
+            or generated._owner is not self
+            or generated._correlation.attempt_ref != execution_attempt_ref
+            or generated._correlation.provider_attempt_key != provider_attempt_key
+        ):
+            raise ValueError(
+                "CHF generated candidates do not belong to this retained Attempt"
+            )
+        return generated.value
 
     def cancel(self) -> None:
         """Retire the boot immediately so a blocked exchange cannot continue."""

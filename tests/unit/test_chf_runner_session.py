@@ -18,7 +18,7 @@ from nmrpeak_provider.chf_runner_session import (
     ChfRunnerDeadlines,
     ChfRunnerSession,
     ChfRunnerSessionRetired,
-    UntrustedChfCandidates,
+    GeneratedChfCandidates,
     ValidatedChfRequest,
 )
 from nmrpeak_provider.product_result import (
@@ -98,7 +98,8 @@ class ChfRunnerSessionTests(unittest.TestCase):
         assert isinstance(accepted, ValidatedChfRequest)
         candidates = session.generate(accepted)
 
-        self.assertEqual(UntrustedChfCandidates(["CCO", "OCC"]), candidates)
+        self.assertIs(type(candidates), GeneratedChfCandidates)
+        self.assertEqual(["CCO", "OCC"], candidates.value)
         validate_frame, generate_frame = channel.received_frames[:2]
         self.assertEqual(validate_frame.correlation, generate_frame.correlation)
         self.assertEqual(ATTEMPT_REF, validate_frame.correlation.attempt_ref)
