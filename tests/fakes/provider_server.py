@@ -44,11 +44,23 @@ class ChfServerA:
         self.requests: list[tuple[str, str, bytes]] = []
         self.failures: list[str] = []
         self.attempt: _Attempt | None = None
+        self._drop_start_response = False
+        self._drop_completion_response = False
         self._lock = Lock()
 
     @property
     def input_fingerprint(self) -> str:
         return "sha256:" + sha256(self.canonical_input).hexdigest()
+
+    def lose_next_start_response(self) -> None:
+        """Commit the next start but close before returning its receipt."""
+
+        self._drop_start_response = True
+
+    def lose_next_completion_response(self) -> None:
+        """Commit the next completion but close before returning its receipt."""
+
+        self._drop_completion_response = True
 
     def serve(self, method: str, raw_target: str, headers, body: bytes):
         """Verify one signed request before applying its Server A transition."""
@@ -57,7 +69,10 @@ class ChfServerA:
             with self._lock:
                 self._require_signed_request(headers, body)
                 self.requests.append((method, raw_target, body))
-                return 200, self._dispatch(method, raw_target, body)
+                response = self._dispatch(method, raw_target, body)
+                if self._lose_committed_response(method, raw_target):
+                    return None
+                return 200, response
         except Exception:
             # This fake is an assertion boundary. Keep signed bodies and model
             # input out of failure evidence while making any drift fail the test.
@@ -70,6 +85,23 @@ class ChfServerA:
                 "request_id": "fake-server-request",
                 "code": "invalid_request",
             }
+
+    def _lose_committed_response(self, method: str, raw_target: str) -> bool:
+        if (
+            self._drop_start_response
+            and method == "POST"
+            and raw_target == "/provider/v1/execution-attempts/start"
+        ):
+            self._drop_start_response = False
+            return True
+        if (
+            self._drop_completion_response
+            and method == "POST"
+            and raw_target == "/provider/v1/execution-attempts/complete"
+        ):
+            self._drop_completion_response = False
+            return True
+        return False
 
     def _require_signed_request(self, headers, body: bytes) -> None:
         # Released signing vectors own RFC 9421 parity. This lifecycle lane only
@@ -243,12 +275,16 @@ def serve_chf_server_a(*, state: ChfServerA, certificate_directory: Path):
         def _serve(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length)
-            status, document = state.serve(
+            outcome = state.serve(
                 self.command,
                 self.path,
                 self.headers,
                 body,
             )
+            if outcome is None:
+                self.close_connection = True
+                return
+            status, document = outcome
             response = json.dumps(document, separators=(",", ":")).encode("utf-8")
             self.send_response(status)
             self.send_header(

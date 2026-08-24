@@ -24,6 +24,7 @@ from nmrpeak_provider.chf_lifecycle import (
     deliver_chf_terminal,
     execute_prepared_chf,
     prepare_chf_execution,
+    reconcile_chf_record,
     select_chf_completion,
     start_chf_attempt,
 )
@@ -37,6 +38,7 @@ from nmrpeak_provider.product_result import (
 from nmrpeak_provider.provider_api import ProviderApiClient
 from nmrpeak_provider.provider_https import ProviderHttpsEndpoint
 from nmrpeak_provider.provider_outcomes import (
+    AttemptMutationCommitPossible,
     AttemptMutationCommitted,
     interpret_execution_attempt_complete,
 )
@@ -75,17 +77,7 @@ class ChfLifecycleTlsTests(unittest.TestCase):
                 ) as port,
                 AttemptJournalStore(journal_root, maximum_records=1) as journal,
             ):
-                api = ProviderApiClient(
-                    endpoint=ProviderHttpsEndpoint(
-                        origin=f"https://localhost:{port}",
-                        expected_topology="dev-local",
-                        connect_timeout_seconds=1,
-                        io_deadline_seconds=1,
-                        ca_file=root / "ca.pem",
-                    ),
-                    credential_ref=_CREDENTIAL_REF,
-                    private_key=_PRIVATE_KEY,
-                )
+                api = _api(port, root)
                 generation = _generation()
                 admitted = admit_next_chf_job(
                     api=api,
@@ -151,6 +143,106 @@ class ChfLifecycleTlsTests(unittest.TestCase):
         self.assertEqual(len(terminal_requests), 2)
         self.assertEqual(terminal_requests[0], terminal_requests[1])
 
+    def test_lost_mutation_responses_reconcile_after_journal_reopen(self) -> None:
+        canonical_input = _valid_chf_input()
+        state = ChfServerA(canonical_input=canonical_input)
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_test_certificates(root)
+            journal_root = root / "journal"
+            journal_root.mkdir(mode=0o700)
+            with serve_chf_server_a(state=state, certificate_directory=root) as port:
+                api = _api(port, root)
+                generation = _generation()
+                with AttemptJournalStore(journal_root, maximum_records=1) as journal:
+                    admitted = admit_next_chf_job(
+                        api=api,
+                        journal=journal,
+                        generation=generation,
+                        frozen_generation_id=_FROZEN_GENERATION_ID,
+                    )
+                    self.assertIs(type(admitted), ChfJobAdmitted, repr(admitted))
+                    state.lose_next_start_response()
+                    uncertain_start = start_chf_attempt(
+                        api=api,
+                        journal=journal,
+                        generation=generation,
+                        frozen_generation_id=_FROZEN_GENERATION_ID,
+                        record=admitted.record,
+                    )
+                    self.assertIs(type(uncertain_start), AttemptMutationCommitPossible)
+                    self.assertEqual(journal.records(), (admitted.record,))
+
+                with AttemptJournalStore(journal_root, maximum_records=1) as journal:
+                    resumed = reconcile_chf_record(
+                        api=api,
+                        journal=journal,
+                        generation=generation,
+                        frozen_generation_id=_FROZEN_GENERATION_ID,
+                        record=journal.records()[0],
+                    )
+                    self.assertIs(type(resumed), ChfStartContinues, repr(resumed))
+                    session = _runner_session()
+                    prepared = prepare_chf_execution(
+                        api=api,
+                        journal=journal,
+                        session=session,
+                        record=resumed.record,
+                        canonical_input=admitted.canonical_input,
+                    )
+                    self.assertIs(type(prepared), ChfPreparedForExecution, repr(prepared))
+                    generated = execute_prepared_chf(
+                        api=api,
+                        journal=journal,
+                        session=session,
+                        prepared=prepared,
+                        observation=ChfObservationPolicy(0.01, 0.2),
+                    )
+                    self.assertIs(type(generated), ChfCandidatesGenerated, repr(generated))
+                    completion = select_chf_completion(
+                        journal=journal,
+                        generated=generated,
+                    )
+                    state.lose_next_completion_response()
+                    uncertain_completion = deliver_chf_terminal(
+                        api=api,
+                        journal=journal,
+                        record=completion.record,
+                    )
+                    self.assertIs(
+                        type(uncertain_completion),
+                        AttemptMutationCommitPossible,
+                    )
+                    self.assertEqual(journal.records(), (completion.record,))
+
+                with AttemptJournalStore(journal_root, maximum_records=1) as journal:
+                    recovered = reconcile_chf_record(
+                        api=api,
+                        journal=journal,
+                        generation=generation,
+                        frozen_generation_id=_FROZEN_GENERATION_ID,
+                        record=journal.records()[0],
+                    )
+                    self.assertIs(type(recovered), ChfTerminalDelivered, repr(recovered))
+                    self.assertTrue(recovered.receipt.replayed)
+                    self.assertEqual(journal.records(), ())
+
+        self.assertEqual(state.failures, [])
+        start_bodies = [
+            body
+            for method, target, body in state.requests
+            if method == "POST" and target == "/provider/v1/execution-attempts/start"
+        ]
+        completion_bodies = [
+            body
+            for method, target, body in state.requests
+            if method == "POST" and target == "/provider/v1/execution-attempts/complete"
+        ]
+        self.assertEqual(len(start_bodies), 2)
+        self.assertEqual(start_bodies[0], start_bodies[1])
+        self.assertEqual(len(completion_bodies), 2)
+        self.assertEqual(completion_bodies[0], completion_bodies[1])
+
 
 def _generation() -> RunGenerationIdentity:
     return RunGenerationIdentity(
@@ -161,6 +253,20 @@ def _generation() -> RunGenerationIdentity:
             datetime(2026, 8, 24, tzinfo=UTC),
             datetime(2026, 8, 26, tzinfo=UTC),
         ),
+    )
+
+
+def _api(port: int, root: Path) -> ProviderApiClient:
+    return ProviderApiClient(
+        endpoint=ProviderHttpsEndpoint(
+            origin=f"https://localhost:{port}",
+            expected_topology="dev-local",
+            connect_timeout_seconds=1,
+            io_deadline_seconds=1,
+            ca_file=root / "ca.pem",
+        ),
+        credential_ref=_CREDENTIAL_REF,
+        private_key=_PRIVATE_KEY,
     )
 
 
