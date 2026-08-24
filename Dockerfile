@@ -72,8 +72,24 @@ RUN apt-get update \
 
 COPY --from=python-deps /opt/nmrpeak-venv /opt/nmrpeak-venv
 COPY --from=python-deps /opt/huggingface /opt/huggingface
-COPY --chown=65532:65532 nmrpeak-upstream /opt/nmrpeak
-COPY --chown=65532:65532 docker /opt/nmrpeak-tools
+COPY --chown=65532:65532 nmrpeak-upstream/LICENSE /opt/nmrpeak/LICENSE
+COPY --chown=65532:65532 nmrpeak-upstream/requirements.txt /opt/nmrpeak/requirements.txt
+COPY --chown=65532:65532 nmrpeak-upstream/dict /opt/nmrpeak/dict
+COPY --chown=65532:65532 nmrpeak-upstream/nmrpeak /opt/nmrpeak/nmrpeak
+COPY families/nmrpeak/source-closure.paths /tmp/source-closure.paths
+COPY families/nmrpeak/source-closure.sha256 /tmp/source-closure.sha256
+COPY repository_checks/nmrpeak_source.py /tmp/nmrpeak_source.py
+RUN python /tmp/nmrpeak_source.py \
+      --materialized /opt/nmrpeak \
+      --declaration /tmp/source-closure.paths \
+      --manifest /tmp/source-closure.sha256 \
+    && rm /tmp/nmrpeak_source.py \
+          /tmp/source-closure.paths \
+          /tmp/source-closure.sha256
+COPY --chown=65532:65532 docker/safe_extract.py /opt/nmrpeak-tools/safe_extract.py
+COPY --chown=65532:65532 docker/smoke_test.py /opt/nmrpeak-tools/smoke_test.py
+COPY --chown=65532:65532 docker/infer_hf_example.py /opt/nmrpeak-tools/infer_hf_example.py
+COPY --chown=65532:65532 docker/infer_chf_example.py /opt/nmrpeak-tools/infer_chf_example.py
 
 WORKDIR /opt/nmrpeak
 USER 65532:65532
