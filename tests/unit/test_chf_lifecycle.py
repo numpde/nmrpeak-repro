@@ -21,15 +21,30 @@ from nmrpeak_provider.attempt_journal_store import (
     AttemptJournalAdmissionRejected,
     AttemptJournalStore,
 )
+from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.chf_lifecycle import (
     ChfFeedReadFailed,
     ChfInputReadFailed,
     ChfJobAdmitted,
     ChfPageExhausted,
+    ChfInputFailurePending,
+    ChfPreparedForExecution,
     ChfStartContinues,
     ChfStartResolved,
     admit_next_chf_job,
+    prepare_chf_execution,
     start_chf_attempt,
+)
+from nmrpeak_provider.chf_runner_protocol import ReadyFrame, ValidateFrame
+from nmrpeak_provider.chf_runner_session import (
+    ChfRunnerDeadlines,
+    ChfRunnerSession,
+)
+from nmrpeak_provider.product_input import InputRejected
+from nmrpeak_provider.product_result import (
+    CHF_RESULT_IDENTITY,
+    NMRPEAK_SOURCE_CLOSURE_REF,
+    ProviderResultFacts,
 )
 from nmrpeak_provider.provider_outcomes import (
     AttemptMutationCommitPossible,
@@ -50,9 +65,16 @@ from nmrpeak_provider.run_generation import (
     RunGenerationIdentity,
     run_generation_fingerprint,
 )
+from tests.fakes.chf_runner import FakeChfRunnerChannel
 
 
 FROZEN_GENERATION_ID = "sha256:" + "4" * 64
+RUNNER_FACTS = ProviderResultFacts(
+    identity=CHF_RESULT_IDENTITY,
+    runner_contract_id="nmrpeak.runner_session.chf.v1",
+    checkpoint_ref="sha256:" + "5" * 64,
+    image_input_ref="sha256:" + "6" * 64,
+)
 
 
 class CapturingApi:
@@ -63,6 +85,11 @@ class CapturingApi:
     def send(self, request: object) -> object:
         self.requests.append(request)
         return self.responses.pop(0)
+
+
+class UnusedSession:
+    def validate(self, **values: object) -> object:
+        raise AssertionError("CHF validation must not occur")
 
 
 class ChfLifecycleTests(unittest.TestCase):
@@ -386,6 +413,158 @@ class ChfLifecycleTests(unittest.TestCase):
                 self.assertEqual(journal.records(), (pending,))
         self.assertEqual(api.requests, [])
 
+    def test_preparing_receipt_then_runner_validation_stops_before_generation(self) -> None:
+        canonical_input = valid_chf_input()
+        active = active_attempt(canonical_input)
+        api = CapturingApi(success_response(progress_receipt()))
+        channel = FakeChfRunnerChannel(ready_frame())
+        session = ChfRunnerSession.admit(
+            channel,
+            RUNNER_FACTS,
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_chf_execution(
+                    api=api,
+                    journal=journal,
+                    session=session,
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+                self.assertEqual(journal.records(), (active,))
+
+        self.assertIs(type(outcome), ChfPreparedForExecution)
+        self.assertEqual(outcome.record, active)
+        self.assertEqual(
+            [request.operation for request in api.requests],
+            [ProviderOperation.EXECUTION_ATTEMPT_PROGRESS],
+        )
+        self.assertEqual(
+            api.requests[0].body,
+            canonical_json_bytes({
+                "schema_id": "nmr.provider.execution_attempt_progress_request.v1",
+                "phase": "preparing",
+                "condition_code": None,
+            }),
+        )
+        self.assertEqual(len(channel.received_frames), 1)
+        self.assertIs(type(channel.received_frames[0]), ValidateFrame)
+
+    def test_product_rejection_becomes_one_durable_fixed_failure(self) -> None:
+        canonical_input = b"{}"
+        active = active_attempt(canonical_input)
+        api = CapturingApi()
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_chf_execution(
+                    api=api,
+                    journal=journal,
+                    session=UnusedSession(),
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+            self.assertIs(type(outcome), ChfInputFailurePending)
+            with AttemptJournalStore(root, maximum_records=1) as reopened:
+                self.assertEqual(reopened.records(), (outcome.record,))
+        terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(terminal_body["failure_code"], "input_rejected")
+        self.assertEqual(
+            terminal_body["failure_message"],
+            InputRejected.public_message,
+        )
+        self.assertEqual(api.requests, [])
+
+    def test_runner_rejection_uses_the_same_durable_failure_policy(self) -> None:
+        canonical_input = valid_chf_input()
+        active = active_attempt(canonical_input)
+        api = CapturingApi(success_response(progress_receipt()))
+        channel = FakeChfRunnerChannel(ready_frame(), rejected_validations=1)
+        session = ChfRunnerSession.admit(
+            channel,
+            RUNNER_FACTS,
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_chf_execution(
+                    api=api,
+                    journal=journal,
+                    session=session,
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+                self.assertEqual(journal.records(), (outcome.record,))
+        self.assertIs(type(outcome), ChfInputFailurePending)
+        self.assertEqual(len(channel.received_frames), 1)
+
+    def test_uncertain_preparing_progress_does_not_reach_the_runner(self) -> None:
+        canonical_input = valid_chf_input()
+        active = active_attempt(canonical_input)
+        cases = (
+            (
+                ProviderRequestUnavailable(RequestDelivery.NOT_SENT),
+                AttemptMutationNotCommitted,
+            ),
+            (
+                ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
+                AttemptMutationCommitPossible,
+            ),
+        )
+        for evidence, expected_type in cases:
+            with self.subTest(expected_type=expected_type), journal_directory() as root:
+                api = CapturingApi(evidence)
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    journal.admit(pending_from_active(active))
+                    journal.replace(pending_from_active(active), active)
+                    outcome = prepare_chf_execution(
+                        api=api,
+                        journal=journal,
+                        session=UnusedSession(),
+                        record=active,
+                        canonical_input=canonical_input,
+                    )
+                    self.assertIs(type(outcome), expected_type)
+                    self.assertEqual(journal.records(), (active,))
+
+    def test_preparation_checks_phase_and_input_binding_before_effects(self) -> None:
+        canonical_input = valid_chf_input()
+        pre_execution = active_attempt(canonical_input)
+        entered = ActiveAttempt(
+            job_ref=pre_execution.job_ref,
+            provider_attempt_key=pre_execution.provider_attempt_key,
+            input_fingerprint=pre_execution.input_fingerprint,
+            frozen_generation_id=pre_execution.frozen_generation_id,
+            execution_attempt_ref=pre_execution.execution_attempt_ref,
+            local_phase=LocalExecutionPhase.EXECUTION_ENTERED,
+        )
+        cases = (
+            (pre_execution, canonical_input + b" ", "input does not match"),
+            (entered, canonical_input, "pre-execution"),
+        )
+        for record, supplied_input, message in cases:
+            with self.subTest(message=message), journal_directory() as root:
+                api = CapturingApi()
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    journal.admit(pending_from_active(record))
+                    journal.replace(pending_from_active(record), record)
+                    with self.assertRaisesRegex(ValueError, message):
+                        prepare_chf_execution(
+                            api=api,
+                            journal=journal,
+                            session=UnusedSession(),
+                            record=record,
+                            canonical_input=supplied_input,
+                        )
+                    self.assertEqual(journal.records(), (record,))
+                self.assertEqual(api.requests, [])
+
 
 def chf_generation() -> RunGenerationIdentity:
     return RunGenerationIdentity(
@@ -425,6 +604,83 @@ def start_receipt(state: str, *, replayed: bool) -> dict[str, object]:
         "started_at": "2026-08-24T12:00:00Z",
         "replayed": replayed,
     }
+
+
+def active_attempt(canonical_input: bytes) -> ActiveAttempt:
+    input_fingerprint = fingerprint_of(canonical_input)
+    generation = chf_generation()
+    return ActiveAttempt(
+        job_ref="job:selected",
+        provider_attempt_key=derive_provider_attempt_key(
+            provider_ref=generation.provider_ref,
+            run_generation_fingerprint=run_generation_fingerprint(generation),
+            job_ref="job:selected",
+            input_fingerprint=input_fingerprint,
+        ),
+        input_fingerprint=input_fingerprint,
+        frozen_generation_id=FROZEN_GENERATION_ID,
+        execution_attempt_ref="execution_attempt:sha256:" + "a" * 64,
+        local_phase=LocalExecutionPhase.PRE_EXECUTION,
+    )
+
+
+def pending_from_active(active: ActiveAttempt) -> StartPending:
+    return StartPending(
+        job_ref=active.job_ref,
+        provider_attempt_key=active.provider_attempt_key,
+        input_fingerprint=active.input_fingerprint,
+        frozen_generation_id=active.frozen_generation_id,
+    )
+
+
+def valid_chf_input() -> bytes:
+    return json.dumps(
+        {
+            "schema_id": "nmrpeak.structure_generation.request.v1",
+            "model_input": {
+                "formula": "C2H6O",
+                "spectra": {
+                    "1H": {
+                        "peaks": [
+                            {
+                                "shift_lo": "1.20",
+                                "shift_hi": "1.30",
+                                "integral": "3",
+                                "multiplicity": "t",
+                                "j_hz": ["7.1"],
+                            }
+                        ]
+                    },
+                    "13C": {"peaks": [{"shift": "70.4"}]},
+                },
+            },
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def progress_receipt() -> dict[str, object]:
+    return {
+        "schema_id": "nmr.provider.execution_attempt_progress_response.v1",
+        "execution_attempt_ref": "execution_attempt:sha256:" + "a" * 64,
+        "phase": "preparing",
+        "condition_code": None,
+        "updated_at": "2026-08-24T12:01:00Z",
+    }
+
+
+def ready_frame() -> ReadyFrame:
+    return ReadyFrame(
+        boot_generation="boot:" + "1" * 32,
+        runner_ref="nmrpeak_chf_v1",
+        runner_contract_id=RUNNER_FACTS.runner_contract_id,
+        release_sha256=RUNNER_FACTS.checkpoint_ref,
+        source_closure_sha256=NMRPEAK_SOURCE_CLOSURE_REF,
+        image_input_id=RUNNER_FACTS.image_input_ref,
+        target="cpu-x86_64",
+        device="cpu",
+        decode_policy_id="nmrpeak_chf_decode_v1",
+    )
 
 
 def jobs_page(

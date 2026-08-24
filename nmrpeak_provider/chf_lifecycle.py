@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
 
 from .attempt_identity import derive_provider_attempt_key
 from .attempt_journal import (
     ActiveAttempt,
+    LocalExecutionPhase,
     StartPending,
+    TerminalPending,
     bind_started_attempt,
+    retain_terminal_command,
     validate_frozen_generation_id,
 )
 from .attempt_journal_store import AttemptJournalStore
+from .chf_binding import bind_chf_runner_input
+from .chf_runner_session import (
+    ChfInputRejected,
+    ChfRunnerSession,
+    ValidatedChfRequest,
+)
 from .product import CHF_OFFERING
 from .provider_api import ProviderApiClient
 from .provider_https import (
@@ -31,13 +41,17 @@ from .provider_outcomes import (
     AttemptMutationCommitPossible,
     AttemptMutationCommitted,
     AttemptMutationNotCommitted,
+    interpret_execution_attempt_progress,
     interpret_execution_attempt_start,
 )
 from .provider_requests import (
+    prepare_execution_attempt_fail,
+    prepare_execution_attempt_progress,
     prepare_execution_attempt_start,
     prepare_job_input_read,
     prepare_jobs_list,
 )
+from .product_input import InputRejected, parse_job_input
 from .provider_success import (
     AttemptState,
     ExecutionAttemptStarted,
@@ -119,6 +133,29 @@ class ChfStartResolved:
 ChfStartOutcome = (
     ChfStartContinues
     | ChfStartResolved
+    | AttemptMutationNotCommitted
+    | AttemptMutationCommitPossible
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ChfPreparedForExecution:
+    """A PRE_EXECUTION Attempt and its session-owned validation capability."""
+
+    record: ActiveAttempt
+    request: ValidatedChfRequest = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ChfInputFailurePending:
+    """The fixed input rejection is durable and awaits API delivery."""
+
+    record: TerminalPending
+
+
+ChfPreExecutionOutcome = (
+    ChfPreparedForExecution
+    | ChfInputFailurePending
     | AttemptMutationNotCommitted
     | AttemptMutationCommitPossible
 )
@@ -237,6 +274,53 @@ def start_chf_attempt(
     return ChfStartResolved(receipt)
 
 
+def prepare_chf_execution(
+    *,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    session: ChfRunnerSession,
+    record: ActiveAttempt,
+    canonical_input: bytes,
+) -> ChfPreExecutionOutcome:
+    """Validate one active CHF Attempt without entering model execution."""
+
+    if type(record) is not ActiveAttempt:
+        raise TypeError("CHF preparation requires an active Attempt record")
+    if record.local_phase is not LocalExecutionPhase.PRE_EXECUTION:
+        raise ValueError("CHF preparation requires a pre-execution Attempt")
+    if type(canonical_input) is not bytes:
+        raise TypeError("CHF preparation requires exact input bytes")
+    if "sha256:" + sha256(canonical_input).hexdigest() != record.input_fingerprint:
+        raise ValueError("CHF preparation input does not match the Attempt journal")
+
+    try:
+        model_input = parse_job_input(canonical_input, CHF_OFFERING)
+    except InputRejected:
+        return _retain_chf_input_rejection(journal, record)
+    runner_input = bind_chf_runner_input(model_input)
+
+    progress = prepare_execution_attempt_progress(
+        execution_attempt_ref=record.execution_attempt_ref,
+        phase="preparing",
+        condition_code=None,
+    )
+    progress_outcome = interpret_execution_attempt_progress(
+        progress,
+        api.send(progress),
+    )
+    if type(progress_outcome) is not AttemptMutationCommitted:
+        return progress_outcome
+
+    validated = session.validate(
+        execution_attempt_ref=record.execution_attempt_ref,
+        provider_attempt_key=record.provider_attempt_key,
+        model_input=runner_input,
+    )
+    if type(validated) is ChfInputRejected:
+        return _retain_chf_input_rejection(journal, record)
+    return ChfPreparedForExecution(record, validated)
+
+
 def _first_in_generation(
     jobs: tuple[JobFeedItem, ...],
     generation: RunGenerationIdentity,
@@ -261,3 +345,17 @@ def _read_failure(
     }:
         return outcome
     raise TypeError("CHF provider read returned unsupported transport evidence")
+
+
+def _retain_chf_input_rejection(
+    journal: AttemptJournalStore,
+    record: ActiveAttempt,
+) -> ChfInputFailurePending:
+    prepared = prepare_execution_attempt_fail(
+        execution_attempt_ref=record.execution_attempt_ref,
+        failure_code="input_rejected",
+        failure_message=InputRejected.public_message,
+    )
+    terminal = retain_terminal_command(record, prepared)
+    journal.replace(record, terminal)
+    return ChfInputFailurePending(terminal)
