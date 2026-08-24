@@ -24,6 +24,8 @@ from nmrpeak_provider.attempt_journal_store import (
 from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.chf_lifecycle import (
     ChfFeedReadFailed,
+    ChfAttemptObserved,
+    ChfAttemptObservationFailed,
     ChfInputReadFailed,
     ChfJobAdmitted,
     ChfPageExhausted,
@@ -32,6 +34,7 @@ from nmrpeak_provider.chf_lifecycle import (
     ChfStartContinues,
     ChfStartResolved,
     admit_next_chf_job,
+    observe_chf_attempt,
     prepare_chf_execution,
     start_chf_attempt,
 )
@@ -565,6 +568,61 @@ class ChfLifecycleTests(unittest.TestCase):
                     self.assertEqual(journal.records(), (record,))
                 self.assertEqual(api.requests, [])
 
+    def test_point_observation_binds_the_retained_attempt_and_job(self) -> None:
+        active = active_attempt(valid_chf_input())
+        api = CapturingApi(
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=active.execution_attempt_ref,
+                    job_ref=active.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            )
+        )
+        outcome = observe_chf_attempt(api=api, record=active)
+
+        self.assertIs(type(outcome), ChfAttemptObserved)
+        self.assertEqual(
+            outcome.snapshot.execution_attempt_ref,
+            active.execution_attempt_ref,
+        )
+        self.assertEqual(outcome.snapshot.job_ref, active.job_ref)
+        self.assertEqual(
+            [request.operation for request in api.requests],
+            [ProviderOperation.EXECUTION_ATTEMPT_READ],
+        )
+
+    def test_point_observation_preserves_drift_and_transport_evidence(self) -> None:
+        active = active_attempt(valid_chf_input())
+        cases = (
+            (
+                success_response(
+                    attempt_snapshot(
+                        execution_attempt_ref=active.execution_attempt_ref,
+                        job_ref="job:another",
+                        state="in_progress",
+                        job_state="open",
+                    )
+                ),
+                ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT),
+            ),
+            (
+                ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
+                ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
+            ),
+        )
+        for response, evidence in cases:
+            with self.subTest(evidence=evidence):
+                outcome = observe_chf_attempt(
+                    api=CapturingApi(response),
+                    record=active,
+                )
+                self.assertEqual(
+                    outcome,
+                    ChfAttemptObservationFailed(evidence),
+                )
+
 
 def chf_generation() -> RunGenerationIdentity:
     return RunGenerationIdentity(
@@ -666,6 +724,22 @@ def progress_receipt() -> dict[str, object]:
         "phase": "preparing",
         "condition_code": None,
         "updated_at": "2026-08-24T12:01:00Z",
+    }
+
+
+def attempt_snapshot(
+    *,
+    execution_attempt_ref: str,
+    job_ref: str,
+    state: str,
+    job_state: str,
+) -> dict[str, object]:
+    return {
+        "schema_id": "nmr.provider.execution_attempt_read_response.v1",
+        "execution_attempt_ref": execution_attempt_ref,
+        "job_ref": job_ref,
+        "state": state,
+        "job_state": job_state,
     }
 
 

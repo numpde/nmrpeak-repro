@@ -46,6 +46,7 @@ from .provider_outcomes import (
 )
 from .provider_requests import (
     prepare_execution_attempt_fail,
+    prepare_execution_attempt_read,
     prepare_execution_attempt_progress,
     prepare_execution_attempt_start,
     prepare_job_input_read,
@@ -54,9 +55,11 @@ from .provider_requests import (
 from .product_input import InputRejected, parse_job_input
 from .provider_success import (
     AttemptState,
+    ExecutionAttemptSnapshot,
     ExecutionAttemptStarted,
     JobFeedItem,
     ProviderSuccessRejected,
+    parse_execution_attempt_read_success,
     parse_job_input_read_success,
     parse_jobs_list_success,
 )
@@ -159,6 +162,23 @@ ChfPreExecutionOutcome = (
     | AttemptMutationNotCommitted
     | AttemptMutationCommitPossible
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ChfAttemptObserved:
+    """One authoritative point snapshot bound to the retained Attempt and Job."""
+
+    snapshot: ExecutionAttemptSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ChfAttemptObservationFailed:
+    """Server A did not yield an admitted point snapshot."""
+
+    evidence: ChfReadFailureEvidence
+
+
+ChfAttemptObservation = ChfAttemptObserved | ChfAttemptObservationFailed
 
 
 def admit_next_chf_job(
@@ -319,6 +339,31 @@ def prepare_chf_execution(
     if type(validated) is ChfInputRejected:
         return _retain_chf_input_rejection(journal, record)
     return ChfPreparedForExecution(record, validated)
+
+
+def observe_chf_attempt(
+    *,
+    api: ProviderApiClient,
+    record: ActiveAttempt,
+) -> ChfAttemptObservation:
+    """Read Server A's current state for one retained CHF Attempt."""
+
+    if type(record) is not ActiveAttempt:
+        raise TypeError("CHF observation requires an active Attempt record")
+    prepared = prepare_execution_attempt_read(record.execution_attempt_ref)
+    response = api.send(prepared)
+    if type(response) is not ProviderHttpResponse or response.status != 200:
+        return ChfAttemptObservationFailed(
+            _read_failure(prepared.operation, response)
+        )
+    snapshot = parse_execution_attempt_read_success(
+        prepared,
+        response,
+        expected_job_ref=record.job_ref,
+    )
+    if type(snapshot) is ProviderSuccessRejected:
+        return ChfAttemptObservationFailed(snapshot)
+    return ChfAttemptObserved(snapshot)
 
 
 def _first_in_generation(
