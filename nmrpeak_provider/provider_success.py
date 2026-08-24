@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -22,6 +22,12 @@ _ANALYSIS_RESULT_REF = re.compile(r"analysis_result:sha256:[0-9a-f]{64}")
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 _ANALYSIS_KIND = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 _CONDITION_CODE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
+_ATTEMPT_KEY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+_CURSOR = re.compile(
+    r"(?:[A-Za-z0-9_-]{4})*"
+    r"(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048]|"
+    r"[A-Za-z0-9_-]{4})"
+)
 _TIMESTAMP = re.compile(
     r"(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-"
     r"(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):"
@@ -103,6 +109,47 @@ class ExecutionAttemptFailed:
     execution_attempt_ref: str
     committed_at: str
     replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class InProgressAttempt:
+    analysis_kind_ref: str
+    execution_attempt_ref: str
+    job_ref: str
+    provider_attempt_key: str
+    started_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAttemptsPage:
+    attempts: tuple[InProgressAttempt, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class JobFeedItem:
+    job_ref: str
+    analysis_kind_ref: str
+    input_fingerprint: str
+    input_schema_id: str
+    input_byte_length: int
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class JobsPage:
+    analysis_kind_ref: str
+    has_provider_execution_attempt: bool
+    jobs: tuple[JobFeedItem, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class JobInput:
+    job_ref: str
+    input_fingerprint: str
+    input_schema_id: str
+    canonical_input: bytes
 
 
 def parse_provider_hello_success(
@@ -383,6 +430,155 @@ def parse_execution_attempt_fail_success(
     )
 
 
+def parse_execution_attempts_list_success(
+    prepared: _PreparedProviderRequest,
+    response: ProviderHttpResponse,
+) -> ExecutionAttemptsPage | ProviderSuccessRejected:
+    """Parse one bounded page of the provider's live Attempt inventory."""
+
+    _require_operation(prepared, ProviderOperation.EXECUTION_ATTEMPTS_LIST)
+    document = _success_document(response)
+    if isinstance(document, ProviderSuccessRejected):
+        return document
+    if set(document) != {"schema_id", "attempts", "next_cursor"}:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_SHAPE)
+    attempts = document["attempts"]
+    next_cursor = document["next_cursor"]
+    if (
+        document["schema_id"]
+        != "nmr.provider.execution_attempts.list.response.v1"
+        or type(attempts) is not list
+        or len(attempts) > _prepared_page_limit(prepared)
+        or not _is_cursor_or_none(next_cursor)
+    ):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    parsed = tuple(_in_progress_attempt(item) for item in attempts)
+    if any(item is None for item in parsed):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    return ExecutionAttemptsPage(parsed, next_cursor)
+
+
+def parse_jobs_list_success(
+    prepared: _PreparedProviderRequest,
+    response: ProviderHttpResponse,
+) -> JobsPage | ProviderSuccessRejected:
+    """Bind one Job page to the exact selected analysis and Attempt filter."""
+
+    _require_operation(prepared, ProviderOperation.JOBS_LIST)
+    document = _success_document(response)
+    if isinstance(document, ProviderSuccessRejected):
+        return document
+    if set(document) != {
+        "schema_id",
+        "analysis_kind_ref",
+        "has_provider_execution_attempt",
+        "jobs",
+        "next_cursor",
+    }:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_SHAPE)
+    jobs = document["jobs"]
+    next_cursor = document["next_cursor"]
+    if (
+        document["schema_id"] != "nmr.provider.jobs.list.response.v1"
+        or not _matches(document["analysis_kind_ref"], _ANALYSIS_KIND, 128)
+        or type(document["has_provider_execution_attempt"]) is not bool
+        or type(jobs) is not list
+        or len(jobs) > _prepared_page_limit(prepared)
+        or not _is_cursor_or_none(next_cursor)
+    ):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    query = _prepared_query(prepared)
+    expected_analysis_kind = query["analysis_kind_ref"]
+    expected_attempt_filter = query.get("has_provider_execution_attempt", "false")
+    if (
+        document["analysis_kind_ref"] != expected_analysis_kind
+        or document["has_provider_execution_attempt"]
+        != (expected_attempt_filter == "true")
+    ):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    parsed = tuple(_job_feed_item(item) for item in jobs)
+    if any(item is None for item in parsed):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    if any(item.analysis_kind_ref != expected_analysis_kind for item in parsed):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    return JobsPage(
+        analysis_kind_ref=document["analysis_kind_ref"],
+        has_provider_execution_attempt=document["has_provider_execution_attempt"],
+        jobs=parsed,
+        next_cursor=next_cursor,
+    )
+
+
+def parse_job_input_read_success(
+    prepared: _PreparedProviderRequest,
+    response: ProviderHttpResponse,
+    *,
+    expected_job: JobFeedItem,
+) -> JobInput | ProviderSuccessRejected:
+    """Verify exact Job input bytes against every feed-supplied identity fact."""
+
+    _require_operation(prepared, ProviderOperation.JOB_INPUT_READ)
+    if type(expected_job) is not JobFeedItem:
+        raise TypeError("Job input parsing requires an exact feed item")
+    requested_job_ref = prepared.path.split("/")[-2]
+    requested_analysis_kind = _prepared_query(prepared)["analysis_kind_ref"]
+    if (
+        expected_job.job_ref != requested_job_ref
+        or expected_job.analysis_kind_ref != requested_analysis_kind
+    ):
+        raise ValueError("Job input feed identity does not match the prepared read")
+    document = _success_document(response)
+    if isinstance(document, ProviderSuccessRejected):
+        return document
+    if set(document) != {
+        "schema_id",
+        "job_ref",
+        "input_fingerprint",
+        "input_schema_id",
+        "input_byte_length",
+        "canonical_input_base64",
+    }:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_SHAPE)
+    encoded = document["canonical_input_base64"]
+    if (
+        document["schema_id"] != "nmr.provider.job_input.read.response.v1"
+        or not _matches(document["job_ref"], _JOB_REF)
+        or not _matches(document["input_fingerprint"], _SHA256_REF)
+        or document["input_schema_id"] != "nmr.job.specification.text.v1"
+        or type(document["input_byte_length"]) is not int
+        or not 1 <= document["input_byte_length"] <= 65_536
+        or type(encoded) is not str
+        or not 1 <= len(encoded) <= 87_384
+    ):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    try:
+        canonical_input = b64decode(encoded, validate=True)
+        canonical_input.decode("utf-8", errors="strict")
+    except (ValueError, UnicodeDecodeError):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    if b64encode(canonical_input).decode("ascii") != encoded:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    expected_fingerprint = "sha256:" + sha256(canonical_input).hexdigest()
+    if (
+        len(canonical_input) != document["input_byte_length"]
+        or expected_fingerprint != document["input_fingerprint"]
+    ):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    if (
+        document["job_ref"] != expected_job.job_ref
+        or document["input_fingerprint"] != expected_job.input_fingerprint
+        or document["input_schema_id"] != expected_job.input_schema_id
+        or document["input_byte_length"] != expected_job.input_byte_length
+    ):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    return JobInput(
+        job_ref=document["job_ref"],
+        input_fingerprint=document["input_fingerprint"],
+        input_schema_id=document["input_schema_id"],
+        canonical_input=canonical_input,
+    )
+
+
 def _success_document(
     response: ProviderHttpResponse,
 ) -> dict[str, object] | ProviderSuccessRejected:
@@ -405,6 +601,76 @@ def _prepared_document(prepared: _PreparedProviderRequest) -> dict[str, object]:
     if type(document) is not dict:
         raise AssertionError("prepared command body must remain a canonical object")
     return document
+
+
+def _prepared_query(prepared: _PreparedProviderRequest) -> dict[str, str]:
+    return dict(field.split("=", 1) for field in prepared.query.split("&"))
+
+
+def _prepared_page_limit(prepared: _PreparedProviderRequest) -> int:
+    return int(_prepared_query(prepared).get("limit", "50"))
+
+
+def _is_cursor_or_none(value: object) -> bool:
+    return value is None or _matches(value, _CURSOR)
+
+
+def _in_progress_attempt(value: object) -> InProgressAttempt | None:
+    if type(value) is not dict or set(value) != {
+        "analysis_kind_ref",
+        "execution_attempt_ref",
+        "job_ref",
+        "provider_attempt_key",
+        "state",
+        "started_at",
+    }:
+        return None
+    if (
+        not _matches(value["analysis_kind_ref"], _ANALYSIS_KIND, 128)
+        or not _matches(value["execution_attempt_ref"], _ATTEMPT_REF)
+        or not _matches(value["job_ref"], _JOB_REF)
+        or not _matches(value["provider_attempt_key"], _ATTEMPT_KEY)
+        or value["state"] != "in_progress"
+        or not _is_timestamp(value["started_at"])
+    ):
+        return None
+    return InProgressAttempt(
+        value["analysis_kind_ref"],
+        value["execution_attempt_ref"],
+        value["job_ref"],
+        value["provider_attempt_key"],
+        value["started_at"],
+    )
+
+
+def _job_feed_item(value: object) -> JobFeedItem | None:
+    if type(value) is not dict or set(value) != {
+        "job_ref",
+        "analysis_kind_ref",
+        "input_fingerprint",
+        "input_schema_id",
+        "input_byte_length",
+        "created_at",
+    }:
+        return None
+    if (
+        not _matches(value["job_ref"], _JOB_REF)
+        or not _matches(value["analysis_kind_ref"], _ANALYSIS_KIND, 128)
+        or not _matches(value["input_fingerprint"], _SHA256_REF)
+        or value["input_schema_id"] != "nmr.job.specification.text.v1"
+        or type(value["input_byte_length"]) is not int
+        or not 1 <= value["input_byte_length"] <= 65_536
+        or not _is_timestamp(value["created_at"])
+    ):
+        return None
+    return JobFeedItem(
+        value["job_ref"],
+        value["analysis_kind_ref"],
+        value["input_fingerprint"],
+        value["input_schema_id"],
+        value["input_byte_length"],
+        value["created_at"],
+    )
 
 
 def _require_operation(

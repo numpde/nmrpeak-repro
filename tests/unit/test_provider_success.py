@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from base64 import b64encode
 import json
 from hashlib import sha256
 import unittest
@@ -11,6 +12,9 @@ from nmrpeak_provider.provider_requests import (
     prepare_execution_attempt_complete,
     prepare_execution_attempt_fail,
     prepare_execution_attempt_progress,
+    prepare_execution_attempts_list,
+    prepare_job_input_read,
+    prepare_jobs_list,
     prepare_execution_attempt_read,
     prepare_execution_attempt_start,
     prepare_provider_hello,
@@ -22,6 +26,11 @@ from nmrpeak_provider.provider_success import (
     ExecutionAttemptCompleted,
     ExecutionAttemptFailed,
     ExecutionAttemptProgressed,
+    ExecutionAttemptsPage,
+    InProgressAttempt,
+    JobFeedItem,
+    JobInput,
+    JobsPage,
     JobState,
     ProviderHelloAccepted,
     ProviderSuccessRejected,
@@ -31,6 +40,9 @@ from nmrpeak_provider.provider_success import (
     parse_execution_attempt_complete_success,
     parse_execution_attempt_fail_success,
     parse_execution_attempt_progress_success,
+    parse_execution_attempts_list_success,
+    parse_job_input_read_success,
+    parse_jobs_list_success,
     parse_provider_hello_success,
 )
 
@@ -323,6 +335,129 @@ class ProviderSuccessTests(unittest.TestCase):
             ProviderSuccessRejected(SuccessRejection.INVALID_JSON),
         )
 
+    def test_attempt_inventory_is_bounded_by_the_requested_page(self) -> None:
+        prepared = prepare_execution_attempts_list(limit=1)
+        item = {
+            "analysis_kind_ref": "mol_from_1h_peaks",
+            "execution_attempt_ref": ATTEMPT_REF,
+            "job_ref": "job:test",
+            "provider_attempt_key": "attempt:test",
+            "state": "in_progress",
+            "started_at": "2026-08-24T12:00:00Z",
+        }
+        document = {
+            "schema_id": "nmr.provider.execution_attempts.list.response.v1",
+            "attempts": [item],
+            "next_cursor": "AAAA",
+        }
+        self.assertEqual(
+            parse_execution_attempts_list_success(
+                prepared,
+                _success_response(document),
+            ),
+            ExecutionAttemptsPage(
+                attempts=(
+                    InProgressAttempt(
+                        "mol_from_1h_peaks",
+                        ATTEMPT_REF,
+                        "job:test",
+                        "attempt:test",
+                        "2026-08-24T12:00:00Z",
+                    ),
+                ),
+                next_cursor="AAAA",
+            ),
+        )
+        self.assertEqual(
+            parse_execution_attempts_list_success(
+                prepared,
+                _success_response(document | {"attempts": [item, item]}),
+            ),
+            ProviderSuccessRejected(SuccessRejection.INVALID_FIELD),
+        )
+
+    def test_job_page_binds_query_echo_and_every_item_analysis(self) -> None:
+        prepared = prepare_jobs_list(
+            analysis_kind_ref="mol_from_1h_peaks",
+            has_provider_execution_attempt=False,
+            limit=1,
+        )
+        item = _job_item(b'{"schema_id":"input"}')
+        document = {
+            "schema_id": "nmr.provider.jobs.list.response.v1",
+            "analysis_kind_ref": "mol_from_1h_peaks",
+            "has_provider_execution_attempt": False,
+            "jobs": [item],
+            "next_cursor": None,
+        }
+        outcome = parse_jobs_list_success(prepared, _success_response(document))
+        self.assertIs(type(outcome), JobsPage)
+        self.assertEqual(outcome.jobs[0].job_ref, "job:test")
+        for changed in (
+            {"analysis_kind_ref": "other_kind"},
+            {"has_provider_execution_attempt": True},
+            {"jobs": [item | {"analysis_kind_ref": "other_kind"}]},
+        ):
+            with self.subTest(changed=changed):
+                self.assertEqual(
+                    parse_jobs_list_success(
+                        prepared,
+                        _success_response(document | changed),
+                    ),
+                    ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT),
+                )
+
+    def test_job_input_recomputes_base64_length_and_fingerprint(self) -> None:
+        canonical_input = b'{"schema_id":"input"}'
+        item_document = _job_item(canonical_input)
+        expected_job = JobFeedItem(
+            job_ref=item_document["job_ref"],
+            analysis_kind_ref=item_document["analysis_kind_ref"],
+            input_fingerprint=item_document["input_fingerprint"],
+            input_schema_id=item_document["input_schema_id"],
+            input_byte_length=item_document["input_byte_length"],
+            created_at=item_document["created_at"],
+        )
+        prepared = prepare_job_input_read(
+            job_ref="job:test",
+            analysis_kind_ref="mol_from_1h_peaks",
+        )
+        document = {
+            "schema_id": "nmr.provider.job_input.read.response.v1",
+            "job_ref": "job:test",
+            "input_fingerprint": expected_job.input_fingerprint,
+            "input_schema_id": "nmr.job.specification.text.v1",
+            "input_byte_length": len(canonical_input),
+            "canonical_input_base64": b64encode(canonical_input).decode("ascii"),
+        }
+        self.assertEqual(
+            parse_job_input_read_success(
+                prepared,
+                _success_response(document),
+                expected_job=expected_job,
+            ),
+            JobInput(
+                "job:test",
+                expected_job.input_fingerprint,
+                "nmr.job.specification.text.v1",
+                canonical_input,
+            ),
+        )
+        for changed, reason in (
+            ({"canonical_input_base64": "AB=="}, SuccessRejection.INVALID_FIELD),
+            ({"input_byte_length": len(canonical_input) + 1}, SuccessRejection.INVALID_FIELD),
+            ({"input_fingerprint": "sha256:" + "0" * 64}, SuccessRejection.INVALID_FIELD),
+        ):
+            with self.subTest(changed=changed):
+                self.assertEqual(
+                    parse_job_input_read_success(
+                        prepared,
+                        _success_response(document | changed),
+                        expected_job=expected_job,
+                    ),
+                    ProviderSuccessRejected(reason),
+                )
+
 
 def _start_document() -> dict[str, object]:
     return {
@@ -334,6 +469,18 @@ def _start_document() -> dict[str, object]:
         "state": "in_progress",
         "started_at": "2026-08-24T12:00:00.123456Z",
         "replayed": False,
+    }
+
+
+def _job_item(canonical_input: bytes) -> dict[str, object]:
+    fingerprint = "sha256:" + sha256(canonical_input).hexdigest()
+    return {
+        "job_ref": "job:test",
+        "analysis_kind_ref": "mol_from_1h_peaks",
+        "input_fingerprint": fingerprint,
+        "input_schema_id": "nmr.job.specification.text.v1",
+        "input_byte_length": len(canonical_input),
+        "created_at": "2026-08-24T12:00:00Z",
     }
 
 
