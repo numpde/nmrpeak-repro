@@ -42,6 +42,7 @@ from nmrpeak_provider.provider_success import (
     parse_execution_attempt_progress_success,
     parse_execution_attempts_list_success,
     parse_job_input_read_success,
+    parse_retained_job_input_read_success,
     parse_jobs_list_success,
     parse_provider_hello_success,
 )
@@ -435,6 +436,29 @@ class ProviderSuccessTests(unittest.TestCase):
                 "nmr.job.specification.text.v1",
                 canonical_input,
             ),
+        )
+        self.assertEqual(
+            parse_retained_job_input_read_success(
+                prepared,
+                _success_response(document),
+                expected_job_ref=expected_job.job_ref,
+                expected_input_fingerprint=expected_job.input_fingerprint,
+            ),
+            JobInput(
+                "job:test",
+                expected_job.input_fingerprint,
+                "nmr.job.specification.text.v1",
+                canonical_input,
+            ),
+        )
+        self.assertEqual(
+            parse_retained_job_input_read_success(
+                prepared,
+                _success_response(document),
+                expected_job_ref=expected_job.job_ref,
+                expected_input_fingerprint="sha256:" + "1" * 64,
+            ),
+            ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT),
         )
         for changed, reason in (
             ({"canonical_input_base64": "AB=="}, SuccessRejection.INVALID_FIELD),

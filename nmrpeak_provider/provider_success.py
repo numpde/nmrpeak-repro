@@ -527,6 +527,52 @@ def parse_job_input_read_success(
         or expected_job.analysis_kind_ref != requested_analysis_kind
     ):
         raise ValueError("Job input feed identity does not match the prepared read")
+    parsed = _parse_job_input_response(response)
+    if isinstance(parsed, ProviderSuccessRejected):
+        return parsed
+    if (
+        parsed.job_ref != expected_job.job_ref
+        or parsed.input_fingerprint != expected_job.input_fingerprint
+        or parsed.input_schema_id != expected_job.input_schema_id
+        or len(parsed.canonical_input) != expected_job.input_byte_length
+    ):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    return parsed
+
+
+def parse_retained_job_input_read_success(
+    prepared: _PreparedProviderRequest,
+    response: ProviderHttpResponse,
+    *,
+    expected_job_ref: str,
+    expected_input_fingerprint: str,
+) -> JobInput | ProviderSuccessRejected:
+    """Bind a recovery input read to the minimum retained journal facts."""
+
+    _require_operation(prepared, ProviderOperation.JOB_INPUT_READ)
+    _require_match(expected_job_ref, _JOB_REF, "expected Job reference")
+    _require_match(
+        expected_input_fingerprint,
+        _SHA256_REF,
+        "expected input fingerprint",
+    )
+    requested_job_ref = prepared.path.split("/")[-2]
+    if requested_job_ref != expected_job_ref:
+        raise ValueError("Retained Job identity does not match the prepared input read")
+    parsed = _parse_job_input_response(response)
+    if isinstance(parsed, ProviderSuccessRejected):
+        return parsed
+    if (
+        parsed.job_ref != expected_job_ref
+        or parsed.input_fingerprint != expected_input_fingerprint
+    ):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    return parsed
+
+
+def _parse_job_input_response(
+    response: ProviderHttpResponse,
+) -> JobInput | ProviderSuccessRejected:
     document = _success_document(response)
     if isinstance(document, ProviderSuccessRejected):
         return document
@@ -564,13 +610,6 @@ def parse_job_input_read_success(
         or expected_fingerprint != document["input_fingerprint"]
     ):
         return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
-    if (
-        document["job_ref"] != expected_job.job_ref
-        or document["input_fingerprint"] != expected_job.input_fingerprint
-        or document["input_schema_id"] != expected_job.input_schema_id
-        or document["input_byte_length"] != expected_job.input_byte_length
-    ):
-        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
     return JobInput(
         job_ref=document["job_ref"],
         input_fingerprint=document["input_fingerprint"],
