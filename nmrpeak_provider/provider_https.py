@@ -205,6 +205,17 @@ ProviderHttpsOutcome = (
 )
 
 
+def provider_operation_admits_status(
+    operation: ProviderOperation,
+    status: int,
+) -> bool:
+    """Return whether the pinned operation declares this exact HTTP status."""
+
+    if type(operation) is not ProviderOperation or type(status) is not int:
+        return False
+    return status in _PROFILES[operation].statuses
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderHttpsEndpoint:
     """One canonical Server A origin and its transport trust policy."""
