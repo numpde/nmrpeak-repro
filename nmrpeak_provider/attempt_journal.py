@@ -289,6 +289,30 @@ def retain_terminal_command(
     )
 
 
+def prepared_terminal_replay(record: TerminalPending) -> _PreparedProviderRequest:
+    """Restore fixed route metadata around the exact retained terminal body."""
+
+    if type(record) is not TerminalPending:
+        raise TypeError("Terminal replay requires a retained terminal obligation")
+    operation, path = {
+        TerminalOperation.COMPLETE: (
+            ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
+            "/provider/v1/execution-attempts/complete",
+        ),
+        TerminalOperation.FAIL: (
+            ProviderOperation.EXECUTION_ATTEMPT_FAIL,
+            "/provider/v1/execution-attempts/fail",
+        ),
+    }[record.terminal_operation]
+    return _PreparedProviderRequest(
+        operation=operation,
+        method="POST",
+        path=path,
+        query="",
+        body=record.terminal_request_body,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ReplayStart:
     record: StartPending

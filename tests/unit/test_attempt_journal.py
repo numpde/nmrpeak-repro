@@ -24,9 +24,11 @@ from nmrpeak_provider.attempt_journal import (
     journal_record_name,
     mark_execution_entered,
     parse_journal_record,
+    prepared_terminal_replay,
     retain_terminal_command,
 )
 from nmrpeak_provider.canonical_json import canonical_json_bytes
+from nmrpeak_provider.provider_https import ProviderOperation
 from nmrpeak_provider.provider_requests import (
     prepare_execution_attempt_complete,
     prepare_execution_attempt_fail,
@@ -98,6 +100,44 @@ class AttemptJournalRecordTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 with self.assertRaises(ValueError):
                     parse_journal_record(canonical_json_bytes(changed))
+
+    def test_terminal_replay_wraps_the_retained_body_without_rendering_it_again(self) -> None:
+        records = (
+            retain_terminal_command(
+                active_attempt(),
+                prepare_execution_attempt_complete(
+                    execution_attempt_ref=ATTEMPT_REF,
+                    result_schema_id="nmrpeak.structure_candidates.result.v1",
+                    canonical_result=b'{"candidate":"C"}',
+                ),
+            ),
+            retain_terminal_command(
+                active_attempt(),
+                prepare_execution_attempt_fail(
+                    execution_attempt_ref=ATTEMPT_REF,
+                    failure_code="input_rejected",
+                    failure_message="The input is not supported.",
+                ),
+            ),
+        )
+        expected = (
+            (
+                ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
+                "/provider/v1/execution-attempts/complete",
+            ),
+            (
+                ProviderOperation.EXECUTION_ATTEMPT_FAIL,
+                "/provider/v1/execution-attempts/fail",
+            ),
+        )
+        for record, (operation, path) in zip(records, expected, strict=True):
+            with self.subTest(operation=operation):
+                replay = prepared_terminal_replay(record)
+                self.assertIs(operation, replay.operation)
+                self.assertEqual("POST", replay.method)
+                self.assertEqual(path, replay.path)
+                self.assertEqual("", replay.query)
+                self.assertEqual(record.terminal_request_body, replay.body)
 
     def test_transitions_bind_receipt_and_terminal_command_once(self) -> None:
         start = start_pending()
