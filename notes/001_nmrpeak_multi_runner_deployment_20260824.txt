@@ -1,0 +1,489 @@
+NMRPeak multi-runner deployment
+===============================
+
+Status: proposed; the current Compose checkout remains an isolated inference proof
+Date: 2026-08-24
+
+
+Purpose
+-------
+
+Package NMRPeak inference as a local, production-shaped deployment that can
+operate more than one explicitly selected model runner. HF and CHF are the first
+two concrete runner kinds:
+
+- HF consumes molecular formula plus 1H NMR;
+- CHF consumes molecular formula plus 1H and 13C NMR.
+
+The design preserves the current rule that no host process imports untrusted
+NMRPeak code or deserializes an untrusted `.pt` checkpoint. Checkpoint loading
+occurs only in an explicitly selected, network-isolated runner container. CPU is
+the default execution boundary; GPU access remains a separate opt-in target.
+
+This note defines package ownership, runtime composition, release identity,
+wire contracts, operator operations, and proof lanes. It does not implement a
+remote multi-tenant service, a dynamic plug-in system, scientific reranking, or
+automatic model selection.
+
+
+Current facts
+-------------
+
+- `compose.yaml` defines a common hardened, networkless runtime posture and
+  separate Docker-managed HF and CHF checkpoint volumes.
+- `docker/safe_extract.py` admits one exact ZIP member and rejects unsafe ZIP
+  members. The checkpoint archive enters that container read-only.
+- `docker/infer_hf_example.py` and `docker/infer_chf_example.py` prove the two
+  NMRPeak generation paths, but each embeds one example and starts a fresh model
+  process for every invocation.
+- The CHF proof preserves repeated 13C observations as separate peaks and has
+  produced formula-matching candidates for the supplied C16H27NO8 example.
+- The runtime image bakes the NMRPeak checkout and public BART configuration,
+  while checkpoint services have no network or source-checkout bind mount.
+- The current root is not a Git checkout. It therefore cannot yet provide the
+  clean committed source and immutable build-input identity expected of a
+  deployable artifact.
+- NMRPeak's checked-in license is CC BY-NC-SA 4.0. Deployment and distribution
+  must retain attribution and share-alike obligations and must not assume
+  commercial permission. The checkpoint publication's terms need an explicit
+  release audit rather than inference from the source license.
+
+
+Names and identities
+--------------------
+
+Keep four identities distinct:
+
+`implementation`
+    One deployment-local configured instance, such as `hf` or `chf`. An
+    implementation owns a runner selection, a checkpoint release, a target,
+    resource limits, and one private session volume.
+
+`runner`
+    One checked-in executable protocol and model adapter, such as
+    `nmrpeak_hf_v1` or `nmrpeak_chf_v1`. A runner name is not a checkpoint
+    fingerprint and does not select a runtime device.
+
+`release`
+    One exact checkpoint member and its reviewed byte identity. Its primary
+    identity is `sha256:<64 lowercase hex digits>`.
+
+`target`
+    One closed build and execution profile, initially `cpu-x86_64`. A later GPU
+    profile is an explicit target such as `cuda12-x86_64`, not a host-detected
+    mutation of the CPU target.
+
+The filesystem is the runner and target declaration inventory. `runner/list`
+enumerates valid checked-in pairs; it does not choose a default, interpret a
+target name, import arbitrary modules, or discover third-party plug-ins.
+
+
+Ownership and proposed tree
+---------------------------
+
+The deployment owns dependency-light provider and session mechanics. The
+NMRPeak family owns the common heavy source and dependency closure. Each runner
+owns only its model-specific contract, adapter, release declaration, and
+composition facts:
+
+    Makefile
+    compose/
+      provider.yml
+      deployment.yml
+      runtime-check.yml
+    nmrpeak_deploy/
+      canonical_json.py
+      framing.py
+      provider.py
+      runner_session.py
+    families/nmrpeak/
+      source/
+      source.sha256
+      Dockerfile.base
+      runtime/
+        checkpoint_identity.py
+        supervisor.py
+      targets/cpu-x86_64/
+        Dockerfile.lock
+        requirements.lock
+    models/nmrpeak_hf_v1/
+      contract.py
+      runner.toml
+      provider.compose.yml
+      runner/
+        Dockerfile
+        worker.py
+        serve.compose.yml
+      releases/
+        <release-name>.json
+    models/nmrpeak_chf_v1/
+      contract.py
+      runner.toml
+      provider.compose.yml
+      runner/
+        Dockerfile
+        worker.py
+        serve.compose.yml
+      releases/
+        <release-name>.json
+    config/deployments/<deployment>/
+      deployment.toml
+    notes/
+    repository_checks/
+
+HF and CHF justify a shared NMRPeak family image because they exercise the same
+upstream source, Torch/Uni-Core stack, dictionaries, and BART configuration.
+Their final runner images remain separate thin stages with fixed entrypoints
+and runner identities. Do not create one runtime command that accepts an
+arbitrary model name, import path, checkpoint path, or Python callable.
+
+A future runner with a materially different dependency closure owns its own
+family and Dockerfile. Do not generalize the NMRPeak base into a universal model
+image.
+
+
+Runtime composition
+-------------------
+
+One deployment consists of a dependency-light provider and zero or more
+explicitly configured runner services:
+
+    host client
+        |
+        | localhost HTTP or reviewed local CLI
+        v
+    provider container
+        |-- private UDS volume --> nmrpeak-hf runner  --> HF release volume
+        `-- private UDS volume --> nmrpeak-chf runner --> CHF release volume
+
+Each implementation receives a distinct Unix-domain socket directory backed by
+a small Docker-managed tmpfs volume. The provider mounts that volume at its
+implementation-specific path. The corresponding runner mounts the same volume
+at its fixed session path. No runner mounts another implementation's session or
+checkpoint volume.
+
+The runner service has `network_mode: none`, a read-only root, numeric non-root
+UID/GID, all capabilities dropped, `no-new-privileges`, bounded PIDs, CPU,
+memory, swap and tmpfs, bounded logs, no Docker socket, no credentials, and no
+host checkout mounts. The release volume is read-only. The only writable
+locations are bounded tmpfs mounts needed for libraries and the private socket
+session.
+
+The provider does not load Torch, NMRPeak, Uni-Core, RDKit, or checkpoints. It
+owns request admission, implementation selection, deadlines, runner sessions,
+and strict response validation. A local HTTP deployment binds only to
+127.0.0.1 and uses an internal Compose network without external egress. A
+CLI-only deployment may omit the published listener.
+
+The checkpoint-bearing worker loads one verified release once and serves one
+request at a time. It reports READY only after artifact verification, model
+construction, checkpoint deserialization, device verification, and a bounded
+startup probe. A request rejection leaves that boot reusable. A malformed
+protocol exchange, uncertain I/O outcome, model execution failure, or worker
+exit retires the boot. Docker replaces the runner service for later work; the
+provider does not silently replay an uncertain request.
+
+The supervisor and heavy worker remain separate processes. The dependency-light
+supervisor owns the listener, one attached provider owner, child termination,
+and stale-socket fencing. The worker owns checkpoint loading and inference. A
+malicious checkpoint may control the worker process after deserialization, so
+the provider must treat every response as hostile and enforce exact shapes,
+correlation IDs, lengths, candidate counts, and UTF-8/frame limits.
+
+Containers reduce exposure but are not a virtual-machine security boundary.
+CPU execution avoids the additional host-driver surface of a GPU container. A
+release considered actively malicious requires a stronger sandbox such as a
+disposable VM or an appropriately configured sandboxed container runtime.
+
+
+Input and output contracts
+--------------------------
+
+Use one dependency-light NMR envelope and runner-specific capability checks.
+The public document represents measurements without NMRPeak's internal column
+names or underscore-delimited coupling encoding:
+
+    {
+      "schema_id": "nmrpeak.generate.request.v1",
+      "request_id": 17,
+      "implementation": "chf",
+      "seed": 0,
+      "decode": {
+        "beam_size": 100
+      },
+      "model_input": {
+        "formula": "C16H27NO8",
+        "spectra": {
+          "1H": {
+            "frequency_mhz": "500",
+            "solvent": "CDCl3",
+            "peaks": [
+              {
+                "shift_lo": "4.91",
+                "shift_hi": "4.99",
+                "integral": "2",
+                "multiplicity": "m",
+                "j_hz": []
+              }
+            ]
+          },
+          "13C": {
+            "frequency_mhz": "126",
+            "solvent": "CDCl3",
+            "peaks": [
+              {"shift_lo": "109.4", "shift_hi": "109.4"},
+              {"shift_lo": "109.4", "shift_hi": "109.4"}
+            ]
+          }
+        }
+      }
+    }
+
+Measurements use finite, non-exponent decimal strings on the wire. Arrays
+preserve observation order and duplicates. Formula parsing is strict and
+bounded. The provider rejects unknown fields, unknown nuclei, unsupported
+multiplicities, reversed ranges, non-positive integrals, excessive coupling
+counts, excessive peak counts, and documents that exceed the runner frame cap.
+
+HF requires exactly formula plus 1H input. CHF requires exactly formula plus 1H
+and 13C input. Do not silently discard extra spectra or synthesize missing
+spectra. The model-specific adapter alone converts this validated document to
+NMRPeak's `molecular_formula`, `h_nmr_peaks`, `c_nmr_peaks`, `rangeMin`,
+`rangeMax`, `nH`, `category`, and `j_values` representation.
+
+The first decode contract supports deterministic beam generation only. Bound
+`beam_size` to a reviewed per-runner maximum; 100 is the initial deployment
+ceiling because the CHF behavior proof exercised that value. Keep NMRPeak
+reranking disabled until its checkpoints, dependencies, result semantics, and
+resource costs receive a separate release design. Do not expose arbitrary
+generation arguments.
+
+A successful response contains the correlated request ID, ordered candidates,
+canonical SMILES when RDKit accepts the candidate, calculated formula, and a
+formula-match boolean. Preserve generator order. Do not claim a scientific rank
+beyond that order and do not publish internal tensors or unreviewed score
+objects. Include stable execution provenance:
+
+- runner identity and contract revision;
+- checkpoint SHA-256;
+- final runner image ID/input ID;
+- source-closure identity;
+- target, device, seed, and effective bounded decode policy.
+
+Logs contain implementation/request identities, state transitions, durations,
+counts, and stable failure categories. They do not contain spectra, formulas,
+generated structures, raw exceptions from untrusted code, or checkpoint
+contents.
+
+
+Checkpoint release boundary
+---------------------------
+
+The 31 GB ZIP archive is an acquisition artifact, not a runtime model mount and
+not an image build context. Each reviewed release declaration names one exact
+regular-file member, uncompressed size, SHA-256, runner identity, upstream
+source revision, and relevant public resource identities.
+
+Release preparation has two explicit operations:
+
+    make release/write RUNNER=nmrpeak_chf_v1 ARCHIVE=/absolute/weights.zip
+    make checkpoint/import RUNNER=nmrpeak_chf_v1 RELEASE=<name> \
+        ARCHIVE=/absolute/weights.zip
+
+`release/write` runs the safe exact-member reader in a networkless container,
+streams the member through SHA-256 without deserializing it, and atomically
+writes only the small candidate release declaration to the checkout. Review and
+commit that declaration before deployment.
+
+`checkpoint/import` reads one committed declaration, creates a new
+content-addressed Docker volume, extracts only its declared member, verifies
+size and digest while streaming, and records non-authoritative Docker labels for
+operator inspection. The authoritative digest remains the committed release
+declaration and the actual byte verification. Runtime volume names derive from
+the full digest, for example:
+
+    nmrpeak-checkpoint-sha256-<64 lowercase hex digits>
+
+An existing volume is never overwritten. Import verifies an exact existing
+volume or refuses it. A failed newly created volume is removed only when the
+operation can prove it created that exact volume; unrelated and previously
+admitted volumes remain untouched.
+
+The runner verifies the checkpoint byte digest again before every
+deserialization. This costs one sequential read at boot but closes accidental
+or privileged out-of-band volume mutation before model loading. The volume is
+mounted read-only during verification and serving. Neither preparation
+operation imports Torch or invokes pickle loading.
+
+
+Build identity and dependency closure
+-------------------------------------
+
+Convert this directory into a tracked deployment repository, or place this
+package in a new tracked repository, before claiming reproducible images. Copy
+or materialize a reviewed NMRPeak runtime closure from the pinned upstream
+commit and record every admitted path and digest. Do not build production images
+from a mutable sibling checkout or send the full research tree by accident.
+
+Pin base images by digest. Resolve exact target-specific Python dependencies
+and hashes in an explicit networked lock operation. Production installation
+uses only the selected target lock and fails on dependency or hash drift. Pin
+the Uni-Core commit and include its source identity in the image input identity.
+Public BART configuration required for offline construction is acquired during
+the explicit image build and becomes part of the final image.
+
+The family base image contains no checkpoint. Each final HF or CHF image fixes
+one entrypoint, runner identity, protocol identity, and model mode. Image labels
+record the clean committed source revision and a digest of the exact admitted
+build inputs. Production Compose has no `build:` section, uses `pull_policy:
+never`, and receives an exact locally resolved image ID from the host operation.
+
+
+Deployment declaration
+----------------------
+
+A named deployment explicitly selects its implementations:
+
+    [implementations.hf]
+    runner = "nmrpeak_hf_v1"
+    release = "nmrpeak-zenodo-19122815-hf"
+    target = "cpu-x86_64"
+
+    [implementations.chf]
+    runner = "nmrpeak_chf_v1"
+    release = "nmrpeak-zenodo-19122815-chf"
+    target = "cpu-x86_64"
+
+Either implementation may be absent. Startup does not load disabled runners.
+Implementation names are deployment-local closed identifiers; clients select
+only an enabled implementation. A declaration may later configure two
+instances of the same runner with different reviewed releases, but it must give
+each a separate implementation name, service, session volume, and resource
+budget.
+
+The deployment renderer validates selectors and derives paths below checked-in
+declaration roots. It rejects symlinks, escaping paths, unknown keys, duplicate
+service names, duplicate session volumes, missing releases, incompatible
+runner/release pairs, and resource values outside reviewed bounds. It does not
+infer hardware or choose the nearest available target.
+
+
+Public operations
+-----------------
+
+The host Makefile is the public operation index:
+
+    make test
+    make runner/list
+    make runner/lock/check RUNNER=<runner> TARGET=<target>
+    make runner/lock/write RUNNER=<runner> TARGET=<target>
+    make runner/image/build RUNNER=<runner> TARGET=<target>
+    make release/check RUNNER=<runner> RELEASE=<name>
+    make release/write RUNNER=<runner> ARCHIVE=/absolute/weights.zip
+    make checkpoint/import RUNNER=<runner> RELEASE=<name> \
+        ARCHIVE=/absolute/weights.zip
+    make deployment/config DEPLOYMENT=<name>
+    make deployment/up DEPLOYMENT=<name>
+    make deployment/status DEPLOYMENT=<name>
+    make runner/logs DEPLOYMENT=<name> IMPLEMENTATION=<name>
+    make infer DEPLOYMENT=<name> IMPLEMENTATION=<name> INPUT=/absolute/input.json
+    make deployment/down DEPLOYMENT=<name>
+
+All selectors are literal command-line inputs validated before path derivation.
+There are no environment defaults, aliases, fuzzy matches, or automatic model
+and target selection. Runtime startup is offline and never builds, pulls,
+downloads, resolves, imports, or repairs a checkpoint.
+
+Large networked build and lock operations may opt into the existing temporary
+Wi-Fi-bound proxy with an outside selector:
+
+    make runner/image/build RUNNER=nmrpeak_chf_v1 TARGET=cpu-x86_64 ROUTE=wifi
+
+`ROUTE=wifi` affects only that operation's Docker build steps by starting a
+temporary loopback proxy whose outbound sockets bind the explicitly configured
+wireless interface. It does not modify host routes, interface metrics, policy
+routing, Docker daemon configuration, or later container networking. An absent
+route selector preserves ordinary behavior. Runtime and checkpoint import stay
+networkless; an archive download, if later added, is a separate explicit
+operation with its own route selector.
+
+
+Proof lanes
+-----------
+
+`make test` is unattended, networkless, checkpoint-free, GPU-free, and does not
+write the checkout. It proves:
+
+- exact request and response contracts for HF and CHF;
+- duplicate 13C observations survive public decoding and NMRPeak projection;
+- formula, decimal, spectrum, peak, coupling, beam and frame bounds;
+- hostile fake-runner responses cannot escape local validation;
+- timeout, owner loss, malformed readiness, uncertain exchange and shutdown
+  classifications;
+- declaration and selector traversal cannot escape reviewed roots;
+- release manifests have canonical exact shapes;
+- Compose enforces non-root, read-only, capability-free, no-new-privileges,
+  resource-bounded and networkless runner posture;
+- production Compose cannot build or pull implicitly; and
+- Wi-Fi selection reaches only the selected build invocation in mocked
+  orchestration checks.
+
+Real checkpoint proofs are explicit and excluded from the default lane:
+
+    make runner/test/runtime RUNNER=nmrpeak_hf_v1 TARGET=cpu-x86_64
+    make runner/test/runtime RUNNER=nmrpeak_chf_v1 TARGET=cpu-x86_64
+
+Each proof uses the prebuilt production runner image and reviewed release volume
+through the production session boundary. It establishes artifact verification,
+model readiness, one valid request, rejection followed by reuse, owner-loss
+shutdown, and bounded teardown. The CHF behavior vector retains both duplicate
+109.4 and duplicate 70.4 observations. A formula-matching candidate for the
+pinned C16H27NO8 vector is useful narrow release evidence, not proof that the
+model identifies an unknown structure or that generator order is a calibrated
+scientific ranking.
+
+GPU runtime proof is separate, requires one explicit device selection, and
+establishes compatibility only for that image, release, host driver and device.
+
+
+Implementation order
+--------------------
+
+1. Establish a tracked source root, copy the current safety proof unchanged,
+   and add default networkless repository checks.
+2. Define canonical JSON framing and the model-neutral NMR envelope with exact
+   HF and CHF validators. Convert both embedded examples into fixtures.
+3. Implement the content-addressed release declaration and checkpoint import
+   transaction without loading a checkpoint.
+4. Implement the CHF supervisor/worker/session vertical slice first, because
+   the current CHF beam-100 proof exercises formula, both nuclei, duplicate
+   peaks, candidate validation, and the larger input contract.
+5. Add HF as the second real runner over the same NMRPeak family base. Treat
+   any duplication or mismatch exposed by that consumer as evidence for the
+   smallest shared boundary; do not invent a general plug-in framework.
+6. Add named deployment rendering, the dependency-light provider, status,
+   logs, inference, and teardown.
+7. Lock CPU dependencies and build inputs, then pass production-shaped HF and
+   CHF runtime proofs.
+8. Consider a GPU target only after the CPU deployment and artifact identities
+   are stable.
+
+
+Limits and later decisions
+--------------------------
+
+This design deliberately omits batching across clients, automatic routing by
+available spectra, ensemble generation, cross-runner candidate merging,
+scientific reranking, result persistence, authentication, public network
+exposure, distributed scheduling, registry discovery, and checkpoint download.
+Each needs a concrete consumer and a separate authority and failure analysis.
+
+The initial provider serializes work per runner and bounds its queue. HF and CHF
+may execute concurrently because they own distinct services and budgets. Do not
+run multiple heavy workers inside one container or dynamically unload and load
+checkpoints in response to client input.
+
+The first deployment may remain local and CPU-only. Its critical path is one
+closed CHF request through a strict provider boundary to one verified,
+networkless, resident runner, followed by HF as the proof that the declaration
+shape genuinely supports another runner.

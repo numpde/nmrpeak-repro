@@ -1,0 +1,7 @@
+.git
+.gitignore
+weights
+**/__pycache__
+**/*.py[cod]
+nmrpeak-upstream/.git
+nmrpeak-upstream/.ipynb_checkpoints

@@ -1,0 +1,22 @@
+# Local checkpoint acquisition and generated model data.
+/weights/
+/output/
+*.pt
+*.pth
+*.ckpt
+*.zip
+*.download.log
+
+# Workspace-local agent state is not part of the deployment source.
+/.agents/
+/.codex/
+
+# Local configuration and credentials.
+.env
+.env.*
+/secrets/
+
+# Python and notebook byproducts.
+**/__pycache__/
+*.py[cod]
+**/.ipynb_checkpoints/
