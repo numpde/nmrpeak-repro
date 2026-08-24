@@ -113,36 +113,44 @@ class ProductResultTests(unittest.TestCase):
             runner_ref="nmrpeak_hf_v1",
             decode_policy=HF_RESULT_IDENTITY.decode_policy,
         )
-        cases = (
+        with self.assertRaisesRegex(AssertionError, "unowned runner identity"):
             ProviderResultFacts(
                 forged_identity,
                 "nmrpeak.runner_session.test.v1",
                 CHECKPOINT_REF,
                 IMAGE_INPUT_REF,
-            ),
-            ProviderResultFacts(
+            )
+
+        malformed_cases = (
+            (
                 HF_RESULT_IDENTITY,
                 "invalid contract",
                 CHECKPOINT_REF,
                 IMAGE_INPUT_REF,
+                "runner contract identity",
             ),
-            ProviderResultFacts(
+            (
                 HF_RESULT_IDENTITY,
                 "nmrpeak.runner_session.test.v1",
                 "sha256:short",
                 IMAGE_INPUT_REF,
+                "exact SHA-256 identities",
             ),
-            ProviderResultFacts(
+            (
                 HF_RESULT_IDENTITY,
                 "nmrpeak.runner_session.test.v1",
                 CHECKPOINT_REF,
                 "2" * 64,
+                "exact SHA-256 identities",
             ),
         )
-        for facts in cases:
-            with self.subTest(facts=facts):
-                with self.assertRaises((AssertionError, ValueError)):
-                    canonical_result_bytes(["C"], facts)
+        for *values, message in malformed_cases:
+            with self.subTest(values=values):
+                with self.assertRaisesRegex(ValueError, message):
+                    ProviderResultFacts(*values)
+
+        with self.assertRaisesRegex(TypeError, "provider-owned facts"):
+            canonical_result_bytes(["C"], object())
 
 
 if __name__ == "__main__":

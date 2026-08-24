@@ -64,6 +64,24 @@ class ProviderResultFacts:
     checkpoint_ref: str
     image_input_ref: str
 
+    def __post_init__(self) -> None:
+        if not any(self.identity is identity for identity in _RESULT_IDENTITIES):
+            raise AssertionError("NMRPeak result uses an unowned runner identity")
+        if (
+            type(self.runner_contract_id) is not str
+            or re.fullmatch(
+                r"[a-z0-9][a-z0-9_.-]{0,79}", self.runner_contract_id
+            ) is None
+        ):
+            raise ValueError(
+                "NMRPeak result provenance requires a runner contract identity"
+            )
+        for reference in (self.checkpoint_ref, self.image_input_ref):
+            if type(reference) is not str or _SHA256_REF.fullmatch(reference) is None:
+                raise ValueError(
+                    "NMRPeak result provenance requires exact SHA-256 identities"
+                )
+
 
 class RunnerResultRejected(ValueError):
     """Hostile runner output cannot be journaled as a success."""
@@ -75,7 +93,8 @@ def canonical_result_bytes(
 ) -> bytes:
     """Validate runner candidates and attach only provider-owned provenance."""
 
-    _validate_result_facts(facts)
+    if type(facts) is not ProviderResultFacts:
+        raise TypeError("NMRPeak result provenance must be provider-owned facts")
     generated_smiles = _validate_candidates(candidates)
     result: dict[str, JsonValue] = {
         "schema_id": RESULT_SCHEMA_ID,
@@ -105,23 +124,6 @@ def source_closure_ref(manifest: bytes) -> str:
     if type(manifest) is not bytes:
         raise TypeError("NMRPeak source manifest must be supplied as exact bytes")
     return f"sha256:{sha256(manifest).hexdigest()}"
-
-
-def _validate_result_facts(facts: ProviderResultFacts) -> None:
-    if type(facts) is not ProviderResultFacts:
-        raise TypeError("NMRPeak result provenance must be provider-owned facts")
-    if not any(facts.identity is identity for identity in _RESULT_IDENTITIES):
-        raise AssertionError("NMRPeak result uses an unowned runner identity")
-    if (
-        type(facts.runner_contract_id) is not str
-        or re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,79}", facts.runner_contract_id) is None
-    ):
-        raise ValueError("NMRPeak result provenance requires a runner contract identity")
-    for reference in (facts.checkpoint_ref, facts.image_input_ref):
-        if type(reference) is not str or _SHA256_REF.fullmatch(reference) is None:
-            raise ValueError(
-                "NMRPeak result provenance requires exact SHA-256 identities"
-            )
 
 
 def _validate_candidates(candidates: object) -> tuple[str, ...]:
