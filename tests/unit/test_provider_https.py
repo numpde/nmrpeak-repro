@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 from pathlib import Path
 import socket
 import ssl
@@ -28,6 +29,15 @@ from nmrpeak_provider.provider_https import (
     RequestDelivery,
     ResponseRejection,
     send_provider_request,
+)
+from nmrpeak_provider.provider_outcomes import (
+    AttemptMutationCommitPossible,
+    interpret_execution_attempt_start,
+)
+from nmrpeak_provider.provider_problems import ProviderProblem
+from nmrpeak_provider.provider_requests import (
+    prepare_execution_attempt_start,
+    sign_prepared_provider_request,
 )
 from nmrpeak_provider.provider_signing import sign_provider_request
 
@@ -273,6 +283,52 @@ class ProviderHttpsTests(unittest.TestCase):
             ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
         )
         self.assertEqual(len(server.requests), 1)
+
+    def test_start_problem_preserves_commit_uncertainty_across_tls(self) -> None:
+        document = {
+            "type": "urn:nmr-api:problem:service-unavailable",
+            "title": "Service unavailable",
+            "status": 503,
+            "instance": "/provider/v1/problems/test",
+            "request_id": "body-request",
+        }
+        headers = _valid_response_headers(
+            content_type="application/problem+json",
+            request_id="header-request",
+        )
+        with _tls_server(
+            self._certificate_directory,
+            status=503,
+            response_headers=headers,
+            response_body=json.dumps(document, separators=(",", ":")).encode(),
+        ) as server:
+            endpoint = self._endpoint(server.port)
+            prepared = prepare_execution_attempt_start(
+                job_ref="job:test",
+                provider_attempt_key="stable-key",
+            )
+            transport_outcome = send_provider_request(
+                endpoint=endpoint,
+                operation=ProviderOperation.EXECUTION_ATTEMPT_START,
+                request=sign_prepared_provider_request(
+                    prepared,
+                    private_key=_PRIVATE_KEY,
+                    credential_ref="credential:provider:test",
+                    authority=endpoint.authority,
+                    created=1_700_000_000,
+                    nonce=bytes(range(16)),
+                ),
+            )
+
+        outcome = interpret_execution_attempt_start(
+            prepared,
+            transport_outcome,
+            expected_provider_ref="provider:test",
+            expected_analysis_kind_ref="mol_from_1h_peaks",
+        )
+        self.assertIs(type(outcome), AttemptMutationCommitPossible)
+        self.assertIs(type(outcome.evidence), ProviderProblem)
+        self.assertEqual(outcome.evidence.status, 503)
 
     def _endpoint(
         self,
