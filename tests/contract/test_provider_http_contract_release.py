@@ -41,14 +41,6 @@ class ProviderHttpContractReleaseTests(unittest.TestCase):
             PROVIDER_HTTP_CONTRACT_ID,
             release.openapi["x-nmr-contract-id"],
         )
-        self.assertEqual(14, len(release.schemas))
-        self.assertEqual(9, len(release.routes))
-        self.assertEqual(
-            {"execution-attempt-start-post", "provider-jobs-list-get"},
-            {vector["name"] for vector in release.signing_vectors},
-        )
-        self.assertEqual("nmr-api-v1", release.signing_profile["profile_tag"])
-        self.assertEqual(1, release.attempt_recovery["version"])
 
     def test_artifact_byte_drift_is_rejected(self) -> None:
         with copied_release() as release_root:

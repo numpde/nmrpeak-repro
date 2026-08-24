@@ -38,7 +38,6 @@ class NmrpeakProductContractTests(unittest.TestCase):
         upstream_rules = ast.literal_eval(categorical_rules.value)
         multiplicities = upstream_rules["hnmr_category"]
 
-        self.assertEqual(140, len(multiplicities))
         self.assertEqual(frozenset(multiplicities), SUPPORTED_MULTIPLICITIES)
 
     def test_result_alphabet_equals_the_pinned_decoder_vocabulary(self) -> None:

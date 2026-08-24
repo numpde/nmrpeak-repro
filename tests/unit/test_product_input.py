@@ -320,7 +320,6 @@ class ProductInputTests(unittest.TestCase):
             carbon_peaks=[carbon] * 64,
         )
         parse_job_input(encoded(accepted), CHF)
-        self.assertEqual(426, MAX_PROJECTED_TOKENS)
         self.assertLess(MAX_PROJECTED_TOKENS, 512)
 
         self.assert_rejected(

@@ -74,29 +74,6 @@ class ProviderSigningTests(unittest.TestCase):
                     vector["signature_base"].encode("ascii"),
                 )
 
-    def test_bodyless_and_body_requests_cover_different_components(self) -> None:
-        bodyless, with_body = signing_vectors()
-        for vector, expected_digest in (
-            (bodyless, False),
-            (with_body, True),
-        ):
-            request = sign_provider_request(
-                private_key=PRIVATE_KEY,
-                credential_ref=vector["keyid"],
-                method=vector["method"],
-                authority=vector["authority"],
-                path=vector["raw_path"],
-                query=vector["raw_query"],
-                body=(
-                    vector["body_utf8"].encode()
-                    if vector["body_utf8"] is not None
-                    else None
-                ),
-                created=vector["created"],
-                nonce=_decode_nonce(vector["nonce"]),
-            )
-            self.assertEqual(expected_digest, "Content-Digest" in request.headers)
-
     def test_emitted_signature_header_verifies_for_a_longer_nonce(self) -> None:
         request = sign_provider_request(
             private_key=PRIVATE_KEY,

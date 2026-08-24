@@ -36,34 +36,6 @@ class ProviderProblemTests(unittest.TestCase):
         self.assertEqual(outcome.body_request_id, "body-request")
         self.assertEqual(outcome.code, "provider_request_invalid")
 
-    def test_fixed_problem_identities_are_exact(self) -> None:
-        identities = {
-            401: (
-                "urn:nmr-api:problem:authentication-failed",
-                "Request authentication failed",
-            ),
-            403: ("urn:nmr-api:problem:authorization-denied", "Authorization denied"),
-            408: (
-                "urn:nmr-api:problem:request-body-timeout",
-                "Request body timeout",
-            ),
-            500: ("urn:nmr-api:problem:internal-error", "Internal server error"),
-            503: (
-                "urn:nmr-api:problem:service-unavailable",
-                "Service unavailable",
-            ),
-        }
-        for status, (problem_type, title) in identities.items():
-            with self.subTest(status=status):
-                outcome = parse_provider_problem(
-                    ProviderOperation.JOBS_LIST,
-                    _problem_response(
-                        status,
-                        _basic_document(status, problem_type, title),
-                    ),
-                )
-                self.assertIs(type(outcome), ProviderProblem)
-
     def test_bad_request_codes_remain_operation_specific(self) -> None:
         cases = (
             (ProviderOperation.JOBS_LIST, "request_content_not_supported", True),

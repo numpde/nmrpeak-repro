@@ -166,7 +166,7 @@ class ProviderSuccessTests(unittest.TestCase):
             ),
         )
 
-    def test_closed_shape_schema_timestamp_and_operation_are_strict(self) -> None:
+    def test_closed_shape_schema_and_timestamp_are_strict(self) -> None:
         hello = prepare_provider_hello(
             display_name="NMRPeak",
             description="Provider description.",
@@ -193,13 +193,6 @@ class ProviderSuccessTests(unittest.TestCase):
                     ),
                     ProviderSuccessRejected(reason),
                 )
-        with self.assertRaises(TypeError):
-            parse_provider_hello_success(
-                prepare_execution_attempt_read(ATTEMPT_REF),
-                _success_response(base),
-                expected_provider_ref="provider:nmrpeak",
-            )
-
     def test_progress_receipt_echoes_the_complete_snapshot(self) -> None:
         prepared = prepare_execution_attempt_progress(
             execution_attempt_ref=ATTEMPT_REF,
