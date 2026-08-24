@@ -16,6 +16,8 @@ from nmrpeak_provider.attempt_identity import derive_provider_attempt_key
 from nmrpeak_provider.attempt_journal import (
     ActiveAttempt,
     LocalExecutionPhase,
+    ObserveUntilExpiry,
+    RetainTerminalConflict,
     StartPending,
     TerminalOperation,
     TerminalPending,
@@ -36,12 +38,15 @@ from nmrpeak_provider.chf_lifecycle import (
     ChfAttemptObserved,
     ChfAttemptObservationFailed,
     ChfInputReadFailed,
+    ChfInterruptedFailurePending,
     ChfObservationLost,
     ChfObservationPolicy,
     ChfJobAdmitted,
     ChfPageExhausted,
     ChfInputFailurePending,
     ChfPreparedForExecution,
+    ChfRecoveryResolved,
+    ChfRecoveryResumes,
     ChfStartContinues,
     ChfStartResolved,
     ChfTerminalDelivered,
@@ -50,6 +55,7 @@ from nmrpeak_provider.chf_lifecycle import (
     execute_prepared_chf,
     observe_chf_attempt,
     prepare_chf_execution,
+    reconcile_chf_record,
     select_chf_completion,
     start_chf_attempt,
 )
@@ -1004,6 +1010,171 @@ class ChfLifecycleTests(unittest.TestCase):
                     self.assertIs(type(outcome), expected_type)
                     self.assertEqual(journal.records(), (terminal,))
                 self.assertIs(api.requests[0].body, terminal.terminal_request_body)
+
+    def test_restart_resumes_pre_execution_from_the_retained_input_binding(self) -> None:
+        active = active_attempt(valid_chf_input())
+        api = CapturingApi(
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=active.execution_attempt_ref,
+                    job_ref=active.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            ),
+            success_response(job_input(active.job_ref, valid_chf_input())),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = reconcile_chf_record(
+                    api=api,
+                    journal=journal,
+                    generation=chf_generation(),
+                    frozen_generation_id=FROZEN_GENERATION_ID,
+                    record=active,
+                )
+                self.assertEqual(journal.records(), (active,))
+        self.assertEqual(outcome, ChfRecoveryResumes(active, valid_chf_input()))
+
+    def test_restart_replays_a_pending_start_without_changing_its_key(self) -> None:
+        pending = active_attempt(valid_chf_input())
+        record = pending_from_active(pending)
+        api = CapturingApi(success_response(start_receipt("in_progress", replayed=True)))
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(record)
+                outcome = reconcile_chf_record(
+                    api=api,
+                    journal=journal,
+                    generation=chf_generation(),
+                    frozen_generation_id=FROZEN_GENERATION_ID,
+                    record=record,
+                )
+                self.assertIs(type(outcome), ChfStartContinues)
+                self.assertEqual(outcome.record.provider_attempt_key, record.provider_attempt_key)
+                self.assertEqual(journal.records(), (outcome.record,))
+
+    def test_restart_converts_entered_execution_to_one_durable_failure(self) -> None:
+        entered = entered_attempt(valid_chf_input())
+        api = CapturingApi(
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=entered.execution_attempt_ref,
+                    job_ref=entered.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            )
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(entered))
+                journal.replace(pending_from_active(entered), entered)
+                outcome = reconcile_chf_record(
+                    api=api,
+                    journal=journal,
+                    generation=chf_generation(),
+                    frozen_generation_id=FROZEN_GENERATION_ID,
+                    record=entered,
+                )
+                self.assertIs(type(outcome), ChfInterruptedFailurePending)
+                self.assertEqual(journal.records(), (outcome.record,))
+        command = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(command["failure_code"], "provider_execution_interrupted")
+        self.assertEqual(
+            command["failure_message"],
+            "The provider process was interrupted before this execution completed.",
+        )
+
+    def test_restart_retains_cutoff_and_conflicting_terminal_obligations(self) -> None:
+        entered = entered_attempt(valid_chf_input())
+        complete = terminal_pending(TerminalOperation.COMPLETE)
+        cases = (
+            (
+                entered,
+                "in_progress",
+                "cancelled",
+                ObserveUntilExpiry,
+            ),
+            (
+                complete,
+                "failed",
+                "closed",
+                RetainTerminalConflict,
+            ),
+        )
+        for record, state, job_state, expected_type in cases:
+            with self.subTest(expected_type=expected_type), journal_directory() as root:
+                api = CapturingApi(
+                    success_response(
+                        attempt_snapshot(
+                            execution_attempt_ref=record.execution_attempt_ref,
+                            job_ref=record.job_ref,
+                            state=state,
+                            job_state=job_state,
+                        )
+                    )
+                )
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    if type(record) is TerminalPending:
+                        persist_terminal(journal, record)
+                    else:
+                        journal.admit(pending_from_active(record))
+                        journal.replace(pending_from_active(record), record)
+                    outcome = reconcile_chf_record(
+                        api=api,
+                        journal=journal,
+                        generation=chf_generation(),
+                        frozen_generation_id=FROZEN_GENERATION_ID,
+                        record=record,
+                    )
+                    self.assertIs(type(outcome), expected_type)
+                    self.assertEqual(journal.records(), (record,))
+
+    def test_restart_replays_terminal_or_retires_authoritatively_resolved_work(self) -> None:
+        terminal = terminal_pending(TerminalOperation.COMPLETE)
+        entered = entered_attempt(valid_chf_input())
+        cases = (
+            (
+                terminal,
+                "in_progress",
+                success_response(terminal_receipt(terminal, replayed=True)),
+                ChfTerminalDelivered,
+            ),
+            (entered, "expired", None, ChfRecoveryResolved),
+        )
+        for record, state, terminal_response, expected_type in cases:
+            with self.subTest(expected_type=expected_type), journal_directory() as root:
+                responses = [
+                    success_response(
+                        attempt_snapshot(
+                            execution_attempt_ref=record.execution_attempt_ref,
+                            job_ref=record.job_ref,
+                            state=state,
+                            job_state="closed" if state != "in_progress" else "open",
+                        )
+                    )
+                ]
+                if terminal_response is not None:
+                    responses.append(terminal_response)
+                api = CapturingApi(*responses)
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    if type(record) is TerminalPending:
+                        persist_terminal(journal, record)
+                    else:
+                        journal.admit(pending_from_active(record))
+                        journal.replace(pending_from_active(record), record)
+                    outcome = reconcile_chf_record(
+                        api=api,
+                        journal=journal,
+                        generation=chf_generation(),
+                        frozen_generation_id=FROZEN_GENERATION_ID,
+                        record=record,
+                    )
+                    self.assertIs(type(outcome), expected_type)
+                    self.assertEqual(journal.records(), ())
 
 
 def chf_generation() -> RunGenerationIdentity:

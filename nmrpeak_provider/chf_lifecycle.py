@@ -11,10 +11,18 @@ from .attempt_identity import derive_provider_attempt_key
 from .attempt_journal import (
     ActiveAttempt,
     LocalExecutionPhase,
+    ObserveUntilExpiry,
+    PublishInterruptedFailure,
+    ReplayStart,
+    ReplayTerminal,
+    ResumePreExecution,
+    RetainTerminalConflict,
+    RetireResolved,
     StartPending,
     TerminalOperation,
     TerminalPending,
     bind_started_attempt,
+    decide_restart,
     mark_execution_entered,
     prepared_terminal_replay,
     retain_terminal_command,
@@ -80,6 +88,7 @@ from .provider_success import (
     parse_execution_attempt_read_success,
     parse_job_input_read_success,
     parse_jobs_list_success,
+    parse_retained_job_input_read_success,
 )
 from .run_generation import (
     RunGenerationIdentity,
@@ -89,6 +98,9 @@ from .run_generation import (
 
 
 _FEED_PAGE_LIMIT = 50
+_INTERRUPTED_FAILURE_MESSAGE = (
+    "The provider process was interrupted before this execution completed."
+)
 
 ChfReadFailureEvidence = (
     ProviderProblem
@@ -245,6 +257,42 @@ ChfTerminalDeliveryOutcome = (
 
 
 @dataclass(frozen=True, slots=True)
+class ChfRecoveryResumes:
+    """A retained pre-execution Attempt and its re-read exact input bytes."""
+
+    record: ActiveAttempt
+    canonical_input: bytes = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ChfInterruptedFailurePending:
+    """A fixed restart failure is durable and awaits exact delivery."""
+
+    record: TerminalPending
+
+
+@dataclass(frozen=True, slots=True)
+class ChfRecoveryResolved:
+    """An authoritative terminal state retired one local obligation."""
+
+    record: ActiveAttempt | TerminalPending
+    snapshot: ExecutionAttemptSnapshot
+
+
+ChfRecoveryOutcome = (
+    ChfStartOutcome
+    | ChfRecoveryResumes
+    | ChfInterruptedFailurePending
+    | ChfRecoveryResolved
+    | ObserveUntilExpiry
+    | RetainTerminalConflict
+    | ChfTerminalDeliveryOutcome
+    | ChfAttemptObservationFailed
+    | ChfInputReadFailed
+)
+
+
+@dataclass(frozen=True, slots=True)
 class ChfExecutionCutOff:
     """The Job closed or was cancelled while its Attempt remained live."""
 
@@ -374,23 +422,9 @@ def start_chf_attempt(
 ) -> ChfStartOutcome:
     """Send one exact start and persist the command-bound server outcome."""
 
-    if type(generation) is not RunGenerationIdentity:
-        raise TypeError("CHF start requires an exact run generation")
-    if generation.analysis_kind_ref != CHF_OFFERING.analysis_kind_ref:
-        raise ValueError("CHF start requires the product-owned analysis kind")
     if type(record) is not StartPending:
         raise TypeError("CHF start requires a durable pending-start record")
-    validate_frozen_generation_id(frozen_generation_id)
-    if record.frozen_generation_id != frozen_generation_id:
-        raise ValueError("CHF start resolved the wrong frozen generation")
-    expected_attempt_key = derive_provider_attempt_key(
-        provider_ref=generation.provider_ref,
-        run_generation_fingerprint=run_generation_fingerprint(generation),
-        job_ref=record.job_ref,
-        input_fingerprint=record.input_fingerprint,
-    )
-    if record.provider_attempt_key != expected_attempt_key:
-        raise ValueError("CHF start record does not belong to this run generation")
+    _require_chf_generation(record, generation, frozen_generation_id)
 
     prepared = prepare_execution_attempt_start(
         job_ref=record.job_ref,
@@ -463,12 +497,12 @@ def prepare_chf_execution(
 def observe_chf_attempt(
     *,
     api: ProviderApiClient,
-    record: ActiveAttempt,
+    record: ActiveAttempt | TerminalPending,
 ) -> ChfAttemptObservation:
     """Read Server A's current state for one retained CHF Attempt."""
 
-    if type(record) is not ActiveAttempt:
-        raise TypeError("CHF observation requires an active Attempt record")
+    if type(record) not in {ActiveAttempt, TerminalPending}:
+        raise TypeError("CHF observation requires a retained Attempt reference")
     prepared = prepare_execution_attempt_read(record.execution_attempt_ref)
     response = api.send(prepared)
     if type(response) is not ProviderHttpResponse or response.status != 200:
@@ -637,6 +671,60 @@ def deliver_chf_terminal(
     return ChfTerminalDelivered(outcome.receipt)
 
 
+def reconcile_chf_record(
+    *,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    generation: RunGenerationIdentity,
+    frozen_generation_id: str,
+    record: StartPending | ActiveAttempt | TerminalPending,
+) -> ChfRecoveryOutcome:
+    """Apply the existing restart decision to one durable CHF obligation."""
+
+    if type(record) not in {StartPending, ActiveAttempt, TerminalPending}:
+        raise TypeError("CHF recovery requires an exact journal record")
+    if type(record) is StartPending:
+        decision = decide_restart(record, None)
+        if type(decision) is not ReplayStart:
+            raise AssertionError("Pending CHF start produced an unsupported restart action")
+        return start_chf_attempt(
+            api=api,
+            journal=journal,
+            generation=generation,
+            frozen_generation_id=frozen_generation_id,
+            record=decision.record,
+        )
+
+    _require_chf_generation(record, generation, frozen_generation_id)
+    observed = observe_chf_attempt(api=api, record=record)
+    if type(observed) is ChfAttemptObservationFailed:
+        return observed
+    decision = decide_restart(record, observed.snapshot)
+    if type(decision) is ResumePreExecution:
+        return _recover_chf_input(api, decision.record)
+    if type(decision) is PublishInterruptedFailure:
+        prepared = prepare_execution_attempt_fail(
+            execution_attempt_ref=decision.record.execution_attempt_ref,
+            failure_code=decision.failure_code,
+            failure_message=_INTERRUPTED_FAILURE_MESSAGE,
+        )
+        terminal = retain_terminal_command(decision.record, prepared)
+        journal.replace(decision.record, terminal)
+        return ChfInterruptedFailurePending(terminal)
+    if type(decision) in {ObserveUntilExpiry, RetainTerminalConflict}:
+        return decision
+    if type(decision) is ReplayTerminal:
+        return deliver_chf_terminal(
+            api=api,
+            journal=journal,
+            record=decision.record,
+        )
+    if type(decision) is RetireResolved:
+        journal.retire(decision.record)
+        return ChfRecoveryResolved(decision.record, observed.snapshot)
+    raise AssertionError("CHF recovery received an unsupported restart action")
+
+
 def _first_in_generation(
     jobs: tuple[JobFeedItem, ...],
     generation: RunGenerationIdentity,
@@ -719,3 +807,47 @@ def _retain_chf_input_rejection(
     terminal = retain_terminal_command(record, prepared)
     journal.replace(record, terminal)
     return ChfInputFailurePending(terminal)
+
+
+def _recover_chf_input(
+    api: ProviderApiClient,
+    record: ActiveAttempt,
+) -> ChfRecoveryResumes | ChfInputReadFailed:
+    prepared = prepare_job_input_read(
+        job_ref=record.job_ref,
+        analysis_kind_ref=CHF_OFFERING.analysis_kind_ref,
+    )
+    response = api.send(prepared)
+    if type(response) is not ProviderHttpResponse or response.status != 200:
+        return ChfInputReadFailed(_read_failure(prepared.operation, response))
+    recovered = parse_retained_job_input_read_success(
+        prepared,
+        response,
+        expected_job_ref=record.job_ref,
+        expected_input_fingerprint=record.input_fingerprint,
+    )
+    if type(recovered) is ProviderSuccessRejected:
+        return ChfInputReadFailed(recovered)
+    return ChfRecoveryResumes(record, recovered.canonical_input)
+
+
+def _require_chf_generation(
+    record: StartPending | ActiveAttempt | TerminalPending,
+    generation: RunGenerationIdentity,
+    frozen_generation_id: str,
+) -> None:
+    if type(generation) is not RunGenerationIdentity:
+        raise TypeError("CHF lifecycle requires an exact run generation")
+    if generation.analysis_kind_ref != CHF_OFFERING.analysis_kind_ref:
+        raise ValueError("CHF lifecycle requires the product-owned analysis kind")
+    validate_frozen_generation_id(frozen_generation_id)
+    if record.frozen_generation_id != frozen_generation_id:
+        raise ValueError("CHF lifecycle resolved the wrong frozen generation")
+    expected_attempt_key = derive_provider_attempt_key(
+        provider_ref=generation.provider_ref,
+        run_generation_fingerprint=run_generation_fingerprint(generation),
+        job_ref=record.job_ref,
+        input_fingerprint=record.input_fingerprint,
+    )
+    if record.provider_attempt_key != expected_attempt_key:
+        raise ValueError("CHF journal record does not belong to this run generation")
