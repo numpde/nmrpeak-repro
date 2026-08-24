@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier, Thread
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from nmrpeak_provider.attempt_journal import (
+    MAX_JOURNAL_RECORD_BYTES,
     ActiveAttempt,
     LocalExecutionPhase,
     StartPending,
@@ -19,6 +21,7 @@ from nmrpeak_provider.attempt_journal import (
     retain_terminal_command,
 )
 from nmrpeak_provider.attempt_journal_store import (
+    AttemptJournalAdmissionRejected,
     AttemptJournalConflict,
     AttemptJournalStateRejected,
     AttemptJournalStore,
@@ -50,9 +53,86 @@ class AttemptJournalStoreTests(unittest.TestCase):
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as store:
                 store.admit(start_pending("1"))
-                with self.assertRaises(AttemptJournalConflict):
+                with self.assertRaises(AttemptJournalAdmissionRejected):
                     store.admit(start_pending("2"))
                 self.assertEqual(store.records(), (start_pending("1"),))
+                store.retire(start_pending("1"))
+                store.admit(start_pending("2"))
+                self.assertEqual(store.records(), (start_pending("2"),))
+
+    def test_new_admission_requires_slots_and_full_recovery_reserve(self) -> None:
+        reserve = 4_096
+        required = 2 * MAX_JOURNAL_RECORD_BYTES + reserve
+        for available, admitted in ((required, True), (required - 1, False)):
+            with self.subTest(available=available), journal_directory() as root:
+                with patch(
+                    "nmrpeak_provider.attempt_journal_store.os.fstatvfs",
+                    return_value=filesystem_with_available_bytes(available),
+                ):
+                    with AttemptJournalStore(
+                        root,
+                        maximum_records=1,
+                        filesystem_reserve_bytes=reserve,
+                    ) as store:
+                        if admitted:
+                            store.admit(start_pending("1"))
+                            self.assertEqual(store.records(), (start_pending("1"),))
+                        else:
+                            with self.assertRaises(AttemptJournalAdmissionRejected):
+                                store.admit(start_pending("1"))
+                            self.assertEqual(store.records(), ())
+
+    def test_low_existing_recovery_reserve_makes_startup_unready(self) -> None:
+        with journal_directory() as root:
+            record = start_pending("1")
+            with AttemptJournalStore(root, maximum_records=1) as store:
+                store.admit(record)
+            required = (
+                MAX_JOURNAL_RECORD_BYTES - len(journal_record_bytes(record))
+                + MAX_JOURNAL_RECORD_BYTES
+            )
+            with patch(
+                "nmrpeak_provider.attempt_journal_store.os.fstatvfs",
+                return_value=filesystem_with_available_bytes(required - 1),
+            ):
+                with self.assertRaises(AttemptJournalStateRejected):
+                    AttemptJournalStore(root, maximum_records=1)
+            self.assertTrue((root / journal_record_name(record)).exists())
+            with patch(
+                "nmrpeak_provider.attempt_journal_store.os.fstatvfs",
+                return_value=filesystem_with_available_bytes(required),
+            ):
+                with AttemptJournalStore(root, maximum_records=1) as store:
+                    self.assertEqual(store.records(), (record,))
+
+    def test_populated_journal_admits_only_with_the_next_full_growth_reserved(self) -> None:
+        reserve = 4_096
+        first = start_pending("1")
+        required = (
+            MAX_JOURNAL_RECORD_BYTES - len(journal_record_bytes(first))
+            + 2 * MAX_JOURNAL_RECORD_BYTES
+            + reserve
+        )
+        for available, admitted in ((required, True), (required - 1, False)):
+            with self.subTest(available=available), journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as store:
+                    store.admit(first)
+                with patch(
+                    "nmrpeak_provider.attempt_journal_store.os.fstatvfs",
+                    return_value=filesystem_with_available_bytes(available),
+                ):
+                    with AttemptJournalStore(
+                        root,
+                        maximum_records=2,
+                        filesystem_reserve_bytes=reserve,
+                    ) as store:
+                        if admitted:
+                            store.admit(start_pending("2"))
+                            self.assertEqual(len(store.records()), 2)
+                        else:
+                            with self.assertRaises(AttemptJournalAdmissionRejected):
+                                store.admit(start_pending("2"))
+                            self.assertEqual(store.records(), (first,))
 
     def test_two_lanes_cannot_lose_each_others_record(self) -> None:
         with journal_directory() as root:
@@ -225,6 +305,10 @@ def active_attempt(start: StartPending) -> ActiveAttempt:
         execution_attempt_ref=ATTEMPT_REF,
         local_phase=LocalExecutionPhase.PRE_EXECUTION,
     )
+
+
+def filesystem_with_available_bytes(available: int) -> SimpleNamespace:
+    return SimpleNamespace(f_bavail=available, f_frsize=1)
 
 
 @contextmanager

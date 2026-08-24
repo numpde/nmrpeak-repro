@@ -37,16 +37,29 @@ class AttemptJournalWriteFailed(RuntimeError):
     """A journal mutation did not reach a confirmed durable outcome."""
 
 
+class AttemptJournalAdmissionRejected(RuntimeError):
+    """A new Attempt would exceed durable journal slots or recovery reserve."""
+
+
 class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
     """Serialize one provider process under the deployment's provider lock."""
 
-    def __init__(self, root: Path, *, maximum_records: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        maximum_records: int,
+        filesystem_reserve_bytes: int = 0,
+    ) -> None:
         if not isinstance(root, Path) or not root.is_absolute():
             raise TypeError("Attempt journal root must be an absolute Path")
         if type(maximum_records) is not int or maximum_records < 1:
             raise ValueError("Attempt journal maximum record count must be positive")
+        if type(filesystem_reserve_bytes) is not int or filesystem_reserve_bytes < 0:
+            raise ValueError("Attempt journal filesystem reserve cannot be negative")
         self._root = root
         self._maximum_records = maximum_records
+        self._filesystem_reserve_bytes = filesystem_reserve_bytes
         self._lock = Lock()
         self._directory_fd = -1
         self._poisoned = False
@@ -87,7 +100,10 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
                     "Attempt journal already contains this provider Attempt key"
                 )
             if len(names) >= self._maximum_records:
-                raise AttemptJournalConflict("Attempt journal record slots are exhausted")
+                raise AttemptJournalAdmissionRejected(
+                    "Attempt journal record slots are exhausted"
+                )
+            self._require_recovery_space(names, prospective_records=1)
             self._replace_record(target, journal_record_bytes(record))
             return record
 
@@ -104,6 +120,10 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         with self._lock:
             self._require_usable()
             self._require_current(expected_name, expected)
+            self._require_recovery_space(
+                self._record_names(),
+                prospective_records=0,
+            )
             self._replace_record(expected_name, journal_record_bytes(replacement))
             return replacement
 
@@ -138,6 +158,10 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             removed_staging = self._admit_persisted_state()
             if removed_staging:
                 os.fsync(self._directory_fd)
+            self._require_recovery_space(
+                self._record_names(),
+                prospective_records=0,
+            )
         except (OSError, ValueError, AttemptJournalStateRejected) as error:
             if self._directory_fd >= 0:
                 os.close(self._directory_fd)
@@ -295,6 +319,46 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             raise AttemptJournalWriteFailed(
                 "Attempt journal replacement durability is unconfirmed"
             ) from error
+
+    def _require_recovery_space(
+        self,
+        record_names: set[str],
+        *,
+        prospective_records: int,
+    ) -> None:
+        """Keep future record growth plus one serialized replacement writable."""
+
+        remaining_growth = 0
+        for name in record_names:
+            status = os.stat(
+                name,
+                dir_fd=self._directory_fd,
+                follow_symlinks=False,
+            )
+            self._validate_record_file(status)
+            remaining_growth += MAX_JOURNAL_RECORD_BYTES - status.st_size
+        temporary_replacement = (
+            MAX_JOURNAL_RECORD_BYTES
+            if record_names or prospective_records
+            else 0
+        )
+        required = (
+            remaining_growth
+            + temporary_replacement
+            + prospective_records * MAX_JOURNAL_RECORD_BYTES
+            + self._filesystem_reserve_bytes
+        )
+        filesystem = os.fstatvfs(self._directory_fd)
+        available = filesystem.f_bavail * filesystem.f_frsize
+        if available >= required:
+            return
+        if prospective_records:
+            raise AttemptJournalAdmissionRejected(
+                "Attempt journal recovery reserve cannot admit another record"
+            )
+        raise AttemptJournalStateRejected(
+            "Attempt journal recovery reserve cannot preserve existing obligations"
+        )
 
     def _require_usable(self) -> None:
         if self._directory_fd < 0:
