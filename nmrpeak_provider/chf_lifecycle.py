@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from hashlib import sha256
+import math
+from threading import Event, Thread
 
 from .attempt_identity import derive_provider_attempt_key
 from .attempt_journal import (
@@ -12,6 +14,7 @@ from .attempt_journal import (
     StartPending,
     TerminalPending,
     bind_started_attempt,
+    mark_execution_entered,
     retain_terminal_command,
     validate_frozen_generation_id,
 )
@@ -20,6 +23,8 @@ from .chf_binding import bind_chf_runner_input
 from .chf_runner_session import (
     ChfInputRejected,
     ChfRunnerSession,
+    ChfRunnerSessionRetired,
+    UntrustedChfCandidates,
     ValidatedChfRequest,
 )
 from .product import CHF_OFFERING
@@ -57,6 +62,7 @@ from .provider_success import (
     AttemptState,
     ExecutionAttemptSnapshot,
     ExecutionAttemptStarted,
+    JobState,
     JobFeedItem,
     ProviderSuccessRejected,
     parse_execution_attempt_read_success,
@@ -179,6 +185,85 @@ class ChfAttemptObservationFailed:
 
 
 ChfAttemptObservation = ChfAttemptObserved | ChfAttemptObservationFailed
+
+
+@dataclass(frozen=True, slots=True)
+class ChfObservationPolicy:
+    """Bound coordinator waits around fail-closed live point observation."""
+
+    poll_interval_seconds: float
+    shutdown_join_seconds: float
+
+    def __post_init__(self) -> None:
+        for value in (self.poll_interval_seconds, self.shutdown_join_seconds):
+            if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
+                raise ValueError(
+                    "CHF observation waits must be positive finite seconds"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class ChfCandidatesGenerated:
+    """Candidates completed while Server A still admitted local execution."""
+
+    record: ActiveAttempt
+    candidates: UntrustedChfCandidates = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ChfExecutionCutOff:
+    """The Job closed or was cancelled while its Attempt remained live."""
+
+    record: ActiveAttempt
+    snapshot: ExecutionAttemptSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ChfExecutionResolved:
+    """Server A reached a terminal Attempt state and the journal was retired."""
+
+    snapshot: ExecutionAttemptSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ChfObservationLost:
+    """Execution stopped because authoritative visibility was lost."""
+
+    record: ActiveAttempt
+    evidence: ChfReadFailureEvidence
+
+
+class ChfExecutionShutdownFailed(RuntimeError):
+    """Process-fatal: a generation worker may still be running after cancellation."""
+
+
+ChfExecutionOutcome = (
+    ChfCandidatesGenerated
+    | ChfExecutionCutOff
+    | ChfExecutionResolved
+    | ChfObservationLost
+    | AttemptMutationNotCommitted
+    | AttemptMutationCommitPossible
+)
+
+
+@dataclass(slots=True)
+class _GenerationWork:
+    """One worker's result slot and completion signal, owned by its coordinator."""
+
+    done: Event = field(default_factory=Event)
+    candidates: UntrustedChfCandidates | None = None
+    error: BaseException | None = None
+
+    def run(self, session: ChfRunnerSession, request: ValidatedChfRequest) -> None:
+        """Signal every thread exit and preserve it for coordinator re-raise."""
+
+        try:
+            self.candidates = session.generate(request)
+        except BaseException as error:
+            self.error = error
+        finally:
+            self.done.set()
 
 
 def admit_next_chf_job(
@@ -366,6 +451,96 @@ def observe_chf_attempt(
     return ChfAttemptObserved(snapshot)
 
 
+def execute_prepared_chf(
+    *,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    session: ChfRunnerSession,
+    prepared: ChfPreparedForExecution,
+    observation: ChfObservationPolicy,
+) -> ChfExecutionOutcome:
+    """Generate only while bounded point reads keep the Attempt executable."""
+
+    if type(prepared) is not ChfPreparedForExecution:
+        raise TypeError("CHF execution requires a prepared runner request")
+    if type(observation) is not ChfObservationPolicy:
+        raise TypeError("CHF execution requires an admitted observation policy")
+    record = prepared.record
+    if record.local_phase is not LocalExecutionPhase.PRE_EXECUTION:
+        raise ValueError("CHF execution requires a pre-execution Attempt")
+
+    running = prepare_execution_attempt_progress(
+        execution_attempt_ref=record.execution_attempt_ref,
+        phase="running",
+        condition_code=None,
+    )
+    running_outcome = interpret_execution_attempt_progress(
+        running,
+        api.send(running),
+    )
+    if type(running_outcome) is not AttemptMutationCommitted:
+        session.cancel()
+        return running_outcome
+
+    entered = mark_execution_entered(record)
+    try:
+        journal.replace(record, entered)
+    except BaseException as error:
+        try:
+            session.cancel()
+        except ChfRunnerSessionRetired:
+            error.add_note(
+                "The validated CHF session also failed to stop before generation."
+            )
+        raise
+
+    initial_observation = observe_chf_attempt(api=api, record=entered)
+    if not _observation_allows_execution(initial_observation):
+        session.cancel()
+        return _stopped_execution_outcome(journal, entered, initial_observation)
+
+    work = _GenerationWork()
+    worker = Thread(
+        target=work.run,
+        args=(session, prepared.request),
+        name="nmrpeak-chf-generation",
+    )
+    worker.start()
+    try:
+        while not work.done.is_set():
+            current = observe_chf_attempt(api=api, record=entered)
+            if not _observation_allows_execution(current):
+                _cancel_and_join_generation(session, worker, observation)
+                return _stopped_execution_outcome(journal, entered, current)
+            work.done.wait(observation.poll_interval_seconds)
+
+        worker.join(observation.shutdown_join_seconds)
+        if worker.is_alive():
+            raise ChfExecutionShutdownFailed(
+                "CHF generation signalled completion but its worker did not stop"
+            )
+        final_observation = observe_chf_attempt(api=api, record=entered)
+        if not _observation_allows_execution(final_observation):
+            session.cancel()
+            return _stopped_execution_outcome(journal, entered, final_observation)
+        if work.error is not None:
+            raise work.error
+        if work.candidates is None:
+            raise AssertionError(
+                "CHF generation finished without candidates or an error"
+            )
+        return ChfCandidatesGenerated(entered, work.candidates)
+    except BaseException as error:
+        if worker.is_alive():
+            try:
+                _cancel_and_join_generation(session, worker, observation)
+            except ChfExecutionShutdownFailed:
+                error.add_note(
+                    "The CHF generation worker also failed to stop after the error."
+                )
+        raise
+
+
 def _first_in_generation(
     jobs: tuple[JobFeedItem, ...],
     generation: RunGenerationIdentity,
@@ -375,6 +550,50 @@ def _first_in_generation(
         if generation.scope.contains(created_at):
             return job
     return None
+
+
+def _observation_allows_execution(
+    observation: ChfAttemptObservation,
+) -> bool:
+    return (
+        type(observation) is ChfAttemptObserved
+        and observation.snapshot.state is AttemptState.IN_PROGRESS
+        and observation.snapshot.job_state is JobState.OPEN
+    )
+
+
+def _stopped_execution_outcome(
+    journal: AttemptJournalStore,
+    record: ActiveAttempt,
+    observation: ChfAttemptObservation,
+) -> ChfExecutionCutOff | ChfExecutionResolved | ChfObservationLost:
+    if type(observation) is ChfAttemptObservationFailed:
+        return ChfObservationLost(record, observation.evidence)
+    snapshot = observation.snapshot
+    if snapshot.state is not AttemptState.IN_PROGRESS:
+        journal.retire(record)
+        return ChfExecutionResolved(snapshot)
+    return ChfExecutionCutOff(record, snapshot)
+
+
+def _cancel_and_join_generation(
+    session: ChfRunnerSession,
+    worker: Thread,
+    policy: ChfObservationPolicy,
+) -> None:
+    cancellation_error: ChfRunnerSessionRetired | None = None
+    try:
+        session.cancel()
+    except ChfRunnerSessionRetired as error:
+        cancellation_error = error
+    worker.join(policy.shutdown_join_seconds)
+    if worker.is_alive() or cancellation_error is not None:
+        failure = ChfExecutionShutdownFailed(
+            "CHF generation cancellation did not reach a confirmed stopped state"
+        )
+        if worker.is_alive():
+            failure.add_note("The CHF generation worker is still running.")
+        raise failure from cancellation_error
 
 
 def _read_failure(
