@@ -12,9 +12,11 @@ from .attempt_journal import (
     ActiveAttempt,
     LocalExecutionPhase,
     StartPending,
+    TerminalOperation,
     TerminalPending,
     bind_started_attempt,
     mark_execution_entered,
+    prepared_terminal_replay,
     retain_terminal_command,
     validate_frozen_generation_id,
 )
@@ -46,6 +48,8 @@ from .provider_outcomes import (
     AttemptMutationCommitPossible,
     AttemptMutationCommitted,
     AttemptMutationNotCommitted,
+    interpret_execution_attempt_complete,
+    interpret_execution_attempt_fail,
     interpret_execution_attempt_progress,
     interpret_execution_attempt_start,
 )
@@ -68,6 +72,8 @@ from .provider_success import (
     AttemptState,
     ExecutionAttemptSnapshot,
     ExecutionAttemptStarted,
+    ExecutionAttemptCompleted,
+    ExecutionAttemptFailed,
     JobState,
     JobFeedItem,
     ProviderSuccessRejected,
@@ -222,6 +228,20 @@ class ChfCompletionPending:
     """The exact canonical completion command is durable for delivery."""
 
     record: TerminalPending
+
+
+@dataclass(frozen=True, slots=True)
+class ChfTerminalDelivered:
+    """A command-bound receipt and durable journal retirement both succeeded."""
+
+    receipt: ExecutionAttemptCompleted | ExecutionAttemptFailed
+
+
+ChfTerminalDeliveryOutcome = (
+    ChfTerminalDelivered
+    | AttemptMutationNotCommitted
+    | AttemptMutationCommitPossible
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +612,29 @@ def select_chf_completion(
     terminal = retain_terminal_command(record, prepared)
     journal.replace(record, terminal)
     return ChfCompletionPending(terminal)
+
+
+def deliver_chf_terminal(
+    *,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    record: TerminalPending,
+) -> ChfTerminalDeliveryOutcome:
+    """Send one exact retained terminal command and retire only its receipt."""
+
+    if type(record) is not TerminalPending:
+        raise TypeError("CHF terminal delivery requires a retained command")
+    prepared = prepared_terminal_replay(record)
+    sent = api.send(prepared)
+    outcome = (
+        interpret_execution_attempt_complete(prepared, sent)
+        if record.terminal_operation is TerminalOperation.COMPLETE
+        else interpret_execution_attempt_fail(prepared, sent)
+    )
+    if type(outcome) is not AttemptMutationCommitted:
+        return outcome
+    journal.retire(record)
+    return ChfTerminalDelivered(outcome.receipt)
 
 
 def _first_in_generation(

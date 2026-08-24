@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from contextlib import contextmanager
 from datetime import datetime, UTC
 from hashlib import sha256
@@ -18,6 +18,8 @@ from nmrpeak_provider.attempt_journal import (
     LocalExecutionPhase,
     StartPending,
     TerminalOperation,
+    TerminalPending,
+    retain_terminal_command,
 )
 from nmrpeak_provider.attempt_journal_store import (
     AttemptJournalAdmissionRejected,
@@ -42,7 +44,9 @@ from nmrpeak_provider.chf_lifecycle import (
     ChfPreparedForExecution,
     ChfStartContinues,
     ChfStartResolved,
+    ChfTerminalDelivered,
     admit_next_chf_job,
+    deliver_chf_terminal,
     execute_prepared_chf,
     observe_chf_attempt,
     prepare_chf_execution,
@@ -72,6 +76,10 @@ from nmrpeak_provider.product_result import (
 from nmrpeak_provider.provider_outcomes import (
     AttemptMutationCommitPossible,
     AttemptMutationNotCommitted,
+)
+from nmrpeak_provider.provider_requests import (
+    prepare_execution_attempt_complete,
+    prepare_execution_attempt_fail,
 )
 from nmrpeak_provider.provider_https import (
     ProviderHttpResponse,
@@ -947,6 +955,56 @@ class ChfLifecycleTests(unittest.TestCase):
                     )
                 self.assertEqual(journal.records(), (selected_record,))
 
+    def test_command_bound_terminal_receipts_retire_complete_and_fail(self) -> None:
+        for operation in (TerminalOperation.COMPLETE, TerminalOperation.FAIL):
+            for replayed in (False, True):
+                with (
+                    self.subTest(operation=operation, replayed=replayed),
+                    journal_directory() as root,
+                ):
+                    terminal = terminal_pending(operation)
+                    api = CapturingApi(
+                        success_response(
+                            terminal_receipt(terminal, replayed=replayed)
+                        )
+                    )
+                    with AttemptJournalStore(root, maximum_records=1) as journal:
+                        persist_terminal(journal, terminal)
+                        outcome = deliver_chf_terminal(
+                            api=api,
+                            journal=journal,
+                            record=terminal,
+                        )
+                        self.assertEqual(journal.records(), ())
+                    self.assertIs(type(outcome), ChfTerminalDelivered)
+                    self.assertEqual(api.requests[0].body, terminal.terminal_request_body)
+
+    def test_uncertain_terminal_delivery_retains_exact_command(self) -> None:
+        terminal = terminal_pending(TerminalOperation.COMPLETE)
+        responses = (
+            ProviderRequestUnavailable(RequestDelivery.NOT_SENT),
+            ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
+            success_response({"schema_id": "wrong"}),
+        )
+        expected_types = (
+            AttemptMutationNotCommitted,
+            AttemptMutationCommitPossible,
+            AttemptMutationCommitPossible,
+        )
+        for response, expected_type in zip(responses, expected_types, strict=True):
+            with self.subTest(expected_type=expected_type), journal_directory() as root:
+                api = CapturingApi(response)
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    persist_terminal(journal, terminal)
+                    outcome = deliver_chf_terminal(
+                        api=api,
+                        journal=journal,
+                        record=terminal,
+                    )
+                    self.assertIs(type(outcome), expected_type)
+                    self.assertEqual(journal.records(), (terminal,))
+                self.assertIs(api.requests[0].body, terminal.terminal_request_body)
+
 
 def chf_generation() -> RunGenerationIdentity:
     return RunGenerationIdentity(
@@ -1134,6 +1192,75 @@ def generated_candidates(
     if type(request) is not ValidatedChfRequest:
         raise AssertionError("test runner unexpectedly rejected validation")
     return session.generate(request)
+
+
+def terminal_pending(operation: TerminalOperation) -> TerminalPending:
+    entered = entered_attempt(valid_chf_input())
+    prepared = (
+        prepare_execution_attempt_complete(
+            execution_attempt_ref=entered.execution_attempt_ref,
+            result_schema_id=RESULT_SCHEMA_ID,
+            canonical_result=b'{"candidates":[{"generated_smiles":"CCO"}]}',
+        )
+        if operation is TerminalOperation.COMPLETE
+        else prepare_execution_attempt_fail(
+            execution_attempt_ref=entered.execution_attempt_ref,
+            failure_code="input_rejected",
+            failure_message=InputRejected.public_message,
+        )
+    )
+    return retain_terminal_command(entered, prepared)
+
+
+def persist_terminal(
+    journal: AttemptJournalStore,
+    terminal: TerminalPending,
+) -> None:
+    pending = StartPending(
+        job_ref=terminal.job_ref,
+        provider_attempt_key=terminal.provider_attempt_key,
+        input_fingerprint=terminal.input_fingerprint,
+        frozen_generation_id=terminal.frozen_generation_id,
+    )
+    entered = ActiveAttempt(
+        job_ref=terminal.job_ref,
+        provider_attempt_key=terminal.provider_attempt_key,
+        input_fingerprint=terminal.input_fingerprint,
+        frozen_generation_id=terminal.frozen_generation_id,
+        execution_attempt_ref=terminal.execution_attempt_ref,
+        local_phase=LocalExecutionPhase.EXECUTION_ENTERED,
+    )
+    journal.admit(pending)
+    journal.replace(pending, entered)
+    journal.replace(entered, terminal)
+
+
+def terminal_receipt(
+    terminal: TerminalPending,
+    *,
+    replayed: bool,
+) -> dict[str, object]:
+    command = json.loads(terminal.terminal_request_body)
+    if terminal.terminal_operation is TerminalOperation.COMPLETE:
+        result = b64decode(command["canonical_result_base64"], validate=True)
+        return {
+            "schema_id": "nmr.provider.execution_attempt_complete_response.v1",
+            "execution_attempt_ref": terminal.execution_attempt_ref,
+            "analysis_result_ref": "analysis_result:sha256:" + "c" * 64,
+            "result_schema_id": command["result_schema_id"],
+            "result_fingerprint": fingerprint_of(result),
+            "result_byte_length": len(result),
+            "committed_at": "2026-08-24T12:02:00Z",
+            "replayed": replayed,
+        }
+    return {
+        "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
+        "execution_attempt_ref": terminal.execution_attempt_ref,
+        "failure_code": command["failure_code"],
+        "failure_message": command["failure_message"],
+        "committed_at": "2026-08-24T12:02:00Z",
+        "replayed": replayed,
+    }
 
 
 def jobs_page(
