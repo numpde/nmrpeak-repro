@@ -575,6 +575,10 @@ execution and rejects an empty sequence or one with 512 or more tokens before
 Uni-Core's pinned `TokenizeDataset` assertion can terminate the boot. The
 provider's structural limits are conservative pre-admission bounds; they do not
 duplicate tokenization. The provider does not maintain a second tokenizer.
+Canonical private frames carry admitted decimal values as normalized,
+non-exponent strings rather than relying on a second JSON-number
+canonicalization. The runner converts those strings to Python floats only when
+materializing the NMRPeak document immediately before tokenization.
 These rules are sourced from the pinned `nmrpeak/data/nmr_tokenizer.py`,
 `nmrpeak/utils/transform_token.py`, and Uni-Core
 `unicore/data/tokenize_dataset.py` closure.

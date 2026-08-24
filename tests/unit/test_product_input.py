@@ -9,10 +9,10 @@ import unittest
 from nmrpeak_provider.product import AnalysisOffering, NMRPEAK_PRODUCT
 from nmrpeak_provider.product_input import (
     CarbonPeak,
+    HfModelInput,
     InputRejected,
     InputRejectionReason,
     MAX_PROJECTED_TOKENS,
-    NmrpeakModelInput,
     ProtonPeak,
     parse_job_input,
 )
@@ -90,7 +90,7 @@ class ProductInputTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            NmrpeakModelInput(
+            HfModelInput(
                 formula="C17H16N2O3",
                 proton_peaks=(
                     ProtonPeak(Decimal("4.95"), 2, "m", ()),
@@ -101,7 +101,6 @@ class ProductInputTests(unittest.TestCase):
                         (Decimal("7.1"), Decimal("1.0")),
                     ),
                 ),
-                carbon_peaks=None,
             ),
             parsed,
         )

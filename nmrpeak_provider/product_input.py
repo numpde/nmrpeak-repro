@@ -228,17 +228,28 @@ class CarbonPeak:
 
 @dataclass(frozen=True, slots=True)
 class NmrpeakModelInput:
-    """Validated and normalized input ready for the private runner projection."""
+    """Scientific input shared by every admitted NMRPeak model lane."""
 
     formula: str
     proton_peaks: tuple[ProtonPeak, ...]
-    carbon_peaks: tuple[CarbonPeak, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class HfModelInput(NmrpeakModelInput):
+    """Validated formula and proton input for the HF model lane."""
+
+
+@dataclass(frozen=True, slots=True)
+class ChfModelInput(NmrpeakModelInput):
+    """Validated formula, proton, and carbon input for the CHF model lane."""
+
+    carbon_peaks: tuple[CarbonPeak, ...]
 
 
 def parse_job_input(
     raw: bytes,
     offering: AnalysisOffering,
-) -> NmrpeakModelInput:
+) -> HfModelInput | ChfModelInput:
     """Validate exact Job bytes for one statically selected product offering."""
 
     if not any(offering is admitted for admitted in NMRPEAK_PRODUCT.offerings):
@@ -262,14 +273,13 @@ def parse_job_input(
         _reject(InputRejectionReason.WRONG_SPECTRA)
 
     proton_peaks = _parse_proton_spectrum(spectra["1H"])
-    carbon_peaks = (
-        _parse_carbon_spectrum(spectra["13C"]) if requires_carbon else None
-    )
-    return NmrpeakModelInput(
-        formula=formula,
-        proton_peaks=proton_peaks,
-        carbon_peaks=carbon_peaks,
-    )
+    if requires_carbon:
+        return ChfModelInput(
+            formula=formula,
+            proton_peaks=proton_peaks,
+            carbon_peaks=_parse_carbon_spectrum(spectra["13C"]),
+        )
+    return HfModelInput(formula=formula, proton_peaks=proton_peaks)
 
 
 def _decode_document(raw: bytes) -> object:
