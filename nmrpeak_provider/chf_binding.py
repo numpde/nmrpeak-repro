@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import re
 
 from .canonical_json import JsonValue, canonical_json_bytes
 from .product_input import ChfModelInput
+
+
+_CANONICAL_DECIMAL = re.compile(r"(?:0|-?[1-9][0-9]*)(?:\.[0-9]*[1-9])?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,9 +41,11 @@ class ChfRunnerInput:
     def canonical_bytes(self) -> bytes:
         """Render canonical wire bytes without JSON floating-point ambiguity."""
 
-        return canonical_json_bytes(self._document())
+        return canonical_json_bytes(self.wire_document())
 
-    def _document(self) -> dict[str, JsonValue]:
+    def wire_document(self) -> dict[str, JsonValue]:
+        """Render a fresh JSON value for the enclosing protocol frame."""
+
         return {
             "c_nmr_peaks": [
                 {"delta (ppm)": peak.shift} for peak in self.carbon_peaks
@@ -98,6 +104,87 @@ def materialize_chf_nmrpeak_document(
         ],
         "molecular_formula": runner_input.molecular_formula,
     }
+
+
+def parse_chf_runner_input(value: object) -> ChfRunnerInput:
+    """Parse the exact private CHF payload before runner materialization."""
+
+    document = _object_with_fields(
+        value,
+        {"c_nmr_peaks", "h_nmr_peaks", "molecular_formula"},
+    )
+    formula = document["molecular_formula"]
+    if type(formula) is not str or not formula:
+        raise ValueError("Cannot parse CHF runner input: formula must be text")
+
+    proton_peaks = tuple(
+        _parse_runner_proton_peak(peak)
+        for peak in _array(document["h_nmr_peaks"], "proton peaks")
+    )
+    carbon_peaks = tuple(
+        _parse_runner_carbon_peak(peak)
+        for peak in _array(document["c_nmr_peaks"], "carbon peaks")
+    )
+    if not proton_peaks or not carbon_peaks:
+        raise ValueError(
+            "Cannot parse CHF runner input: both peak arrays must be non-empty"
+        )
+    return ChfRunnerInput(formula, proton_peaks, carbon_peaks)
+
+
+def _parse_runner_proton_peak(value: object) -> ChfRunnerProtonPeak:
+    peak = _object_with_fields(value, {"centroid", "nH", "category", "j_values"})
+    centroid = _canonical_decimal(peak["centroid"], "proton centroid")
+    n_h = peak["nH"]
+    if type(n_h) is not int or n_h <= 0:
+        raise ValueError("Cannot parse CHF runner input: nH must be positive")
+    category = peak["category"]
+    if type(category) is not str or not category:
+        raise ValueError("Cannot parse CHF runner input: category must be text")
+    j_values = peak["j_values"]
+    if type(j_values) is not str or not _canonical_couplings(j_values):
+        raise ValueError(
+            "Cannot parse CHF runner input: j_values is not canonical"
+        )
+    return ChfRunnerProtonPeak(centroid, n_h, category, j_values)
+
+
+def _parse_runner_carbon_peak(value: object) -> ChfRunnerCarbonPeak:
+    peak = _object_with_fields(value, {"delta (ppm)"})
+    return ChfRunnerCarbonPeak(
+        _canonical_decimal(peak["delta (ppm)"], "carbon shift")
+    )
+
+
+def _object_with_fields(value: object, fields: set[str]) -> dict[str, object]:
+    if type(value) is not dict or set(value) != fields:
+        raise ValueError("Cannot parse CHF runner input: object fields are not exact")
+    return value
+
+
+def _array(value: object, name: str) -> list[object]:
+    if type(value) is not list:
+        raise ValueError(f"Cannot parse CHF runner input: {name} must be an array")
+    return value
+
+
+def _canonical_decimal(value: object, name: str) -> str:
+    if type(value) is not str or _CANONICAL_DECIMAL.fullmatch(value) is None:
+        raise ValueError(f"Cannot parse CHF runner input: {name} is not canonical")
+    return value
+
+
+def _canonical_couplings(value: str) -> bool:
+    if value == "_":
+        return True
+    components = value.split("_")
+    return (
+        components[-1] == ""
+        and all(
+            component and _CANONICAL_DECIMAL.fullmatch(component) is not None
+            for component in components[:-1]
+        )
+    )
 
 
 def _coupling_text(couplings: tuple[Decimal, ...]) -> str:

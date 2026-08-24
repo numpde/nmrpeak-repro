@@ -607,12 +607,14 @@ allocation. Compression, ancillary file descriptors, duplicate keys,
 NaN/Infinity, trailing bytes, unknown fields, and more than one in-flight
 request per boot are forbidden.
 
-The protocol has exact versioned READY, VALIDATE, GENERATE, REJECTED, RESULT,
-and RETIRE frame schemas. Every request and response is bound to the current
-Attempt ref, provider attempt key, and boot generation. A response cap applies
-before allocation and again after canonicalization. REJECTED is reusable only
-after the entire request was parsed and the rejection belongs to deterministic
-model input admission. Any other protocol failure retires the boot.
+The protocol has exact versioned READY, VALIDATE, VALIDATED, GENERATE,
+REJECTED, RESULT, and RETIRE frame schemas. READY and the provider's idle
+RETIRE command are bound to the boot generation. VALIDATE, VALIDATED, GENERATE,
+REJECTED, and RESULT are additionally bound to one provider-created correlation
+ID, Attempt ref, and provider attempt key. A response cap applies before
+allocation and again after canonicalization. REJECTED is reusable only after
+the entire request was parsed and the rejection belongs to deterministic model
+input admission. Any other protocol failure retires the boot.
 
 The provider's runner-session owner enforces connect, READY, validation,
 generation, and shutdown deadlines. Owner loss makes the supervisor kill and
