@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from base64 import b64decode
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from hashlib import sha256
 import re
 
 from .canonical_json import parse_canonical_json_bytes
@@ -16,7 +18,10 @@ from .provider_response_json import decode_provider_response_object
 _PROVIDER_REF = re.compile(r"provider:[A-Za-z0-9_.-]{1,119}")
 _JOB_REF = re.compile(r"job:[A-Za-z0-9_.-]{1,124}")
 _ATTEMPT_REF = re.compile(r"execution_attempt:sha256:[0-9a-f]{64}")
+_ANALYSIS_RESULT_REF = re.compile(r"analysis_result:sha256:[0-9a-f]{64}")
+_SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 _ANALYSIS_KIND = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
+_CONDITION_CODE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 _TIMESTAMP = re.compile(
     r"(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-"
     r"(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):"
@@ -75,6 +80,29 @@ class ExecutionAttemptSnapshot:
     job_ref: str
     state: AttemptState
     job_state: JobState
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAttemptProgressed:
+    execution_attempt_ref: str
+    phase: str
+    condition_code: str | None
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAttemptCompleted:
+    execution_attempt_ref: str
+    analysis_result_ref: str
+    committed_at: str
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAttemptFailed:
+    execution_attempt_ref: str
+    committed_at: str
+    replayed: bool
 
 
 def parse_provider_hello_success(
@@ -214,6 +242,147 @@ def parse_execution_attempt_read_success(
     )
 
 
+def parse_execution_attempt_progress_success(
+    prepared: _PreparedProviderRequest,
+    response: ProviderHttpResponse,
+) -> ExecutionAttemptProgressed | ProviderSuccessRejected:
+    """Accept progress only when the stored snapshot echoes the exact command."""
+
+    _require_operation(prepared, ProviderOperation.EXECUTION_ATTEMPT_PROGRESS)
+    document = _success_document(response)
+    if isinstance(document, ProviderSuccessRejected):
+        return document
+    if set(document) != {
+        "schema_id",
+        "execution_attempt_ref",
+        "phase",
+        "condition_code",
+        "updated_at",
+    }:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_SHAPE)
+    condition_code = document["condition_code"]
+    if (
+        document["schema_id"]
+        != "nmr.provider.execution_attempt_progress_response.v1"
+        or not _matches(document["execution_attempt_ref"], _ATTEMPT_REF)
+        or type(document["phase"]) is not str
+        or document["phase"] not in {"preparing", "running"}
+        or not (
+            condition_code is None
+            or _matches(condition_code, _CONDITION_CODE, 128)
+        )
+        or not _is_timestamp(document["updated_at"])
+    ):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    command = _prepared_document(prepared)
+    expected_attempt_ref = prepared.path.split("/")[-2]
+    if (
+        document["execution_attempt_ref"] != expected_attempt_ref
+        or document["phase"] != command["phase"]
+        or condition_code != command["condition_code"]
+    ):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    return ExecutionAttemptProgressed(
+        execution_attempt_ref=document["execution_attempt_ref"],
+        phase=document["phase"],
+        condition_code=condition_code,
+        updated_at=document["updated_at"],
+    )
+
+
+def parse_execution_attempt_complete_success(
+    prepared: _PreparedProviderRequest,
+    response: ProviderHttpResponse,
+) -> ExecutionAttemptCompleted | ProviderSuccessRejected:
+    """Accept completion only when the receipt binds the exact retained result."""
+
+    _require_operation(prepared, ProviderOperation.EXECUTION_ATTEMPT_COMPLETE)
+    document = _success_document(response)
+    if isinstance(document, ProviderSuccessRejected):
+        return document
+    if set(document) != {
+        "schema_id",
+        "execution_attempt_ref",
+        "analysis_result_ref",
+        "result_schema_id",
+        "result_fingerprint",
+        "result_byte_length",
+        "committed_at",
+        "replayed",
+    }:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_SHAPE)
+    if (
+        document["schema_id"]
+        != "nmr.provider.execution_attempt_complete_response.v1"
+        or not _matches(document["execution_attempt_ref"], _ATTEMPT_REF)
+        or not _matches(document["analysis_result_ref"], _ANALYSIS_RESULT_REF)
+        or not _is_scalar_text(document["result_schema_id"], 1_024)
+        or not _matches(document["result_fingerprint"], _SHA256_REF)
+        or type(document["result_byte_length"]) is not int
+        or not 1 <= document["result_byte_length"] <= 786_432
+        or not _is_timestamp(document["committed_at"])
+        or type(document["replayed"]) is not bool
+    ):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    command = _prepared_document(prepared)
+    result = b64decode(command["canonical_result_base64"], validate=True)
+    expected_fingerprint = "sha256:" + sha256(result).hexdigest()
+    if (
+        document["execution_attempt_ref"] != command["execution_attempt_ref"]
+        or document["result_schema_id"] != command["result_schema_id"]
+        or document["result_fingerprint"] != expected_fingerprint
+        or document["result_byte_length"] != len(result)
+    ):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    return ExecutionAttemptCompleted(
+        execution_attempt_ref=document["execution_attempt_ref"],
+        analysis_result_ref=document["analysis_result_ref"],
+        committed_at=document["committed_at"],
+        replayed=document["replayed"],
+    )
+
+
+def parse_execution_attempt_fail_success(
+    prepared: _PreparedProviderRequest,
+    response: ProviderHttpResponse,
+) -> ExecutionAttemptFailed | ProviderSuccessRejected:
+    """Accept failure only when the receipt echoes the reviewed command facts."""
+
+    _require_operation(prepared, ProviderOperation.EXECUTION_ATTEMPT_FAIL)
+    document = _success_document(response)
+    if isinstance(document, ProviderSuccessRejected):
+        return document
+    if set(document) != {
+        "schema_id",
+        "execution_attempt_ref",
+        "failure_code",
+        "failure_message",
+        "committed_at",
+        "replayed",
+    }:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_SHAPE)
+    if (
+        document["schema_id"] != "nmr.provider.execution_attempt_fail_response.v1"
+        or not _matches(document["execution_attempt_ref"], _ATTEMPT_REF)
+        or not _matches(document["failure_code"], _CONDITION_CODE, 128)
+        or not _is_scalar_text(document["failure_message"], 1_024)
+        or not _is_timestamp(document["committed_at"])
+        or type(document["replayed"]) is not bool
+    ):
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    command = _prepared_document(prepared)
+    if any(
+        document[field] != command[field]
+        for field in ("execution_attempt_ref", "failure_code", "failure_message")
+    ):
+        return ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
+    return ExecutionAttemptFailed(
+        execution_attempt_ref=document["execution_attempt_ref"],
+        committed_at=document["committed_at"],
+        replayed=document["replayed"],
+    )
+
+
 def _success_document(
     response: ProviderHttpResponse,
 ) -> dict[str, object] | ProviderSuccessRejected:
@@ -229,6 +398,13 @@ def _success_document(
         if document is not None
         else ProviderSuccessRejected(SuccessRejection.INVALID_JSON)
     )
+
+
+def _prepared_document(prepared: _PreparedProviderRequest) -> dict[str, object]:
+    document = parse_canonical_json_bytes(prepared.body or b"")
+    if type(document) is not dict:
+        raise AssertionError("prepared command body must remain a canonical object")
+    return document
 
 
 def _require_operation(
@@ -283,3 +459,13 @@ def _is_timestamp(value: object) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_scalar_text(value: object, maximum_characters: int) -> bool:
+    if type(value) is not str or not 1 <= len(value) <= maximum_characters:
+        return False
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    return "\0" not in value
