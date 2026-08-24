@@ -615,6 +615,9 @@ ID, Attempt ref, and provider attempt key. A response cap applies before
 allocation and again after canonicalization. REJECTED is reusable only after
 the entire request was parsed and the rejection belongs to deterministic model
 input admission. Any other protocol failure retires the boot.
+RETIRE is a one-way shutdown handoff, not a runner-exit acknowledgement. The
+provider can prove that it sent RETIRE and closed its session; the supervisor's
+separate process-exit and join observation owns termination proof.
 
 The provider's runner-session owner enforces connect, READY, validation,
 generation, and shutdown deadlines. Owner loss makes the supervisor kill and
