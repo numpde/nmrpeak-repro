@@ -1,0 +1,50 @@
+{
+  "schema_id": "nmrpeak.run_generation.vectors.v1",
+  "positive": [
+    {
+      "name": "open-ended-hf",
+      "material": {
+        "v": 1,
+        "provider_ref": "provider:nmrpeak-test",
+        "analysis_kind_ref": "mol_from_1h_peaks",
+        "generation_id": "nmrpeak-hf-2026-08-24",
+        "scope": {
+          "kind": "created_at_window",
+          "not_before": "2026-08-24T00:00:00Z",
+          "not_after": null
+        }
+      },
+      "canonical_material": "{\"analysis_kind_ref\":\"mol_from_1h_peaks\",\"generation_id\":\"nmrpeak-hf-2026-08-24\",\"provider_ref\":\"provider:nmrpeak-test\",\"scope\":{\"kind\":\"created_at_window\",\"not_after\":null,\"not_before\":\"2026-08-24T00:00:00Z\"},\"v\":1}",
+      "digest_hex": "f48f4450cc7cc59d3c28c87f9265f72c49139c5629937fe921f4b34caf918338",
+      "fingerprint": "sha256:f48f4450cc7cc59d3c28c87f9265f72c49139c5629937fe921f4b34caf918338"
+    },
+    {
+      "name": "bounded-chf",
+      "material": {
+        "v": 1,
+        "provider_ref": "provider:nmrpeak-test",
+        "analysis_kind_ref": "mol_from_1h_13c_formula",
+        "generation_id": "nmrpeak-chf-window",
+        "scope": {
+          "kind": "created_at_window",
+          "not_before": "2026-08-24T00:00:00.000001Z",
+          "not_after": "2026-09-01T00:00:00Z"
+        }
+      },
+      "canonical_material": "{\"analysis_kind_ref\":\"mol_from_1h_13c_formula\",\"generation_id\":\"nmrpeak-chf-window\",\"provider_ref\":\"provider:nmrpeak-test\",\"scope\":{\"kind\":\"created_at_window\",\"not_after\":\"2026-09-01T00:00:00Z\",\"not_before\":\"2026-08-24T00:00:00.000001Z\"},\"v\":1}",
+      "digest_hex": "d69c6f9f8538f3597202b848587ed030f3945aaa0a8fac6c1fe7ee27b4eee4cf",
+      "fingerprint": "sha256:d69c6f9f8538f3597202b848587ed030f3945aaa0a8fac6c1fe7ee27b4eee4cf"
+    }
+  ],
+  "malformed": [
+    {"field": "provider_ref", "value": "other:nmrpeak"},
+    {"field": "analysis_kind_ref", "value": "MolFromPeaks"},
+    {"field": "generation_id", "value": "NMRPeak-HF"},
+    {"field": "generation_id", "value": "-nmrpeak"},
+    {"field": "generation_id", "value": "nmrpeak-"},
+    {"field": "generation_id", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"field": "not_before", "value": "2026-08-24T00:00:00+00:00"},
+    {"field": "not_before", "value": "2026-02-30T00:00:00Z"},
+    {"field": "not_after", "value": "2026-08-24T00:00:00Z"}
+  ]
+}

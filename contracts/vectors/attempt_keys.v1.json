@@ -1,0 +1,37 @@
+{
+  "schema_id": "nmrpeak.provider_attempt_key.vectors.v1",
+  "positive": [
+    {
+      "name": "open-ended-hf-attempt",
+      "material": {
+        "v": 1,
+        "provider_ref": "provider:nmrpeak-test",
+        "run_generation_fingerprint": "sha256:f48f4450cc7cc59d3c28c87f9265f72c49139c5629937fe921f4b34caf918338",
+        "job_ref": "job:example-1",
+        "input_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "canonical_material": "{\"input_fingerprint\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"job_ref\":\"job:example-1\",\"provider_ref\":\"provider:nmrpeak-test\",\"run_generation_fingerprint\":\"sha256:f48f4450cc7cc59d3c28c87f9265f72c49139c5629937fe921f4b34caf918338\",\"v\":1}",
+      "digest_hex": "6222a29cae1d4f4e6b9640033a08af6c2d9023bdd38845d0af64f9c554eee1fd",
+      "provider_attempt_key": "nmrpeak-provider.v1:6222a29cae1d4f4e6b9640033a08af6c2d9023bdd38845d0af64f9c554eee1fd"
+    },
+    {
+      "name": "bounded-chf-attempt",
+      "material": {
+        "v": 1,
+        "provider_ref": "provider:nmrpeak-test",
+        "run_generation_fingerprint": "sha256:d69c6f9f8538f3597202b848587ed030f3945aaa0a8fac6c1fe7ee27b4eee4cf",
+        "job_ref": "job:example-2",
+        "input_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "canonical_material": "{\"input_fingerprint\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"job_ref\":\"job:example-2\",\"provider_ref\":\"provider:nmrpeak-test\",\"run_generation_fingerprint\":\"sha256:d69c6f9f8538f3597202b848587ed030f3945aaa0a8fac6c1fe7ee27b4eee4cf\",\"v\":1}",
+      "digest_hex": "2bb06d958bdb81867639779266d896356e97909bfe5894d7fb59d00424124a6d",
+      "provider_attempt_key": "nmrpeak-provider.v1:2bb06d958bdb81867639779266d896356e97909bfe5894d7fb59d00424124a6d"
+    }
+  ],
+  "malformed": [
+    {"field": "provider_ref", "value": "provider:"},
+    {"field": "run_generation_fingerprint", "value": "sha256:ABC"},
+    {"field": "job_ref", "value": "job:contains space"},
+    {"field": "input_fingerprint", "value": "sha256:short"}
+  ]
+}
