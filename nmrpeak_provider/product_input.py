@@ -377,10 +377,13 @@ def _parse_proton_peak(value: object) -> ProtonPeak:
         value,
         {"shift_lo", "shift_hi", "integral", "multiplicity", "j_hz"},
     )
-    shift_lo = _decimal(peak["shift_lo"], _PROTON_DECIMAL, Decimal("-1"), Decimal("16"))
-    shift_hi = _decimal(peak["shift_hi"], _PROTON_DECIMAL, Decimal("-1"), Decimal("16"))
-    if shift_lo > shift_hi:
-        _reject(InputRejectionReason.DECIMAL_OUT_OF_RANGE)
+    first_shift = _decimal(
+        peak["shift_lo"], _PROTON_DECIMAL, Decimal("-1"), Decimal("16")
+    )
+    second_shift = _decimal(
+        peak["shift_hi"], _PROTON_DECIMAL, Decimal("-1"), Decimal("16")
+    )
+    shift_lo, shift_hi = sorted((first_shift, second_shift))
     centroid = (shift_lo + shift_hi) / 2
     if centroid != centroid.quantize(Decimal("0.01")):
         _reject(InputRejectionReason.MIDPOINT_NOT_REPRESENTABLE)

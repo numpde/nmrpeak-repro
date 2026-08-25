@@ -72,8 +72,8 @@ class ProductInputTests(unittest.TestCase):
                 "j_hz": ["1.0", "7.1"],
             },
             {
-                "shift_lo": "4.91",
-                "shift_hi": "4.99",
+                "shift_lo": "4.99",
+                "shift_hi": "4.91",
                 "integral": "2",
                 "multiplicity": "m",
                 "j_hz": [],
@@ -268,7 +268,7 @@ class ProductInputTests(unittest.TestCase):
                     offering=CHF,
                 )
 
-    def test_reversed_and_non_string_measurements_are_rejected(self) -> None:
+    def test_non_string_measurements_are_rejected(self) -> None:
         base_peak = {
             "shift_lo": "1.0",
             "shift_hi": "1.0",
@@ -277,10 +277,6 @@ class ProductInputTests(unittest.TestCase):
             "j_hz": [],
         }
         cases = (
-            (
-                {**base_peak, "shift_lo": "2.0"},
-                InputRejectionReason.DECIMAL_OUT_OF_RANGE,
-            ),
             ({**base_peak, "shift_lo": 1}, InputRejectionReason.INVALID_STRUCTURE),
             ({**base_peak, "shift_lo": True}, InputRejectionReason.INVALID_STRUCTURE),
             ({**base_peak, "integral": 1}, InputRejectionReason.INVALID_STRUCTURE),
