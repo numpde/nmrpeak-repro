@@ -77,10 +77,20 @@ class ProviderConfigTests(unittest.TestCase):
         changed_origin = decode_provider_runtime_config(
             CONFIG.replace(b"api.example.test", b"other.example.test")
         )
+        changed_ca = decode_provider_runtime_config(
+            CONFIG.replace(
+                b"[server_a]\n",
+                b"[server_a]\nuse_private_ca = true\n",
+            )
+        )
 
         self.assertEqual(
             server_a_authority_id(configured.endpoint),
             server_a_authority_id(changed_timeout.endpoint),
+        )
+        self.assertEqual(
+            server_a_authority_id(configured.endpoint),
+            server_a_authority_id(changed_ca.endpoint),
         )
         self.assertNotEqual(
             server_a_authority_id(configured.endpoint),

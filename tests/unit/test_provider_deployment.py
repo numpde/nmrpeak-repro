@@ -144,9 +144,15 @@ class ProviderDeploymentTests(unittest.TestCase):
                 deployment: str,
                 environment: dict[str, str],
                 _docker: Path,
+                *,
+                localhost: bool,
             ) -> dict[str, object]:
                 renders.append(environment)
-                return compose_for_environment(deployment, environment)
+                return compose_for_environment(
+                    deployment,
+                    environment,
+                    localhost=localhost,
+                )
 
             with (
                 patch.object(
@@ -274,6 +280,103 @@ class ProviderDeploymentTests(unittest.TestCase):
                 "bytes have drifted",
             ):
                 materialize_deployment_plan(repository, "production", plan)
+
+    def test_localhost_plan_grants_only_provider_host_gateway_and_ca(self) -> None:
+        with render_repository() as repository, TemporaryDirectory() as temporary:
+            provider_config = repository / "config/deployments/production/provider.toml"
+            provider_config.write_bytes(
+                provider_config.read_bytes()
+                .replace(b"https://api.example.test", b"https://nmr.localhost:10443")
+                .replace(b'topology = "web"', b'topology = "dev-local"')
+                .replace(
+                    b"[server_a]\n",
+                    b"[server_a]\nuse_private_ca = true\n",
+                )
+            )
+            certificate = Path(temporary).resolve() / "ca.crt"
+            certificate.write_text("test CA\n", encoding="ascii")
+
+            with (
+                patch.object(provider_deployment, "_require_clean_checkout"),
+                patch.object(
+                    provider_deployment,
+                    "_image_input_ids",
+                    return_value=INPUTS,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_local_images",
+                    return_value=IMAGES,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_render_compose",
+                    side_effect=lambda _, deployment, environment, __, *, localhost: (
+                        compose_for_environment(
+                            deployment,
+                            environment,
+                            localhost=localhost,
+                        )
+                    ),
+                ),
+            ):
+                plan = render_deployment_plan(
+                    repository,
+                    "production",
+                    localhost_ca_certificate=certificate,
+                )
+
+            provider = plan.compose["services"]["provider"]
+            self.assertEqual(
+                provider["extra_hosts"],
+                ["nmr.localhost=host-gateway"],
+            )
+            self.assertIn(
+                {
+                    "type": "bind",
+                    "source": str(certificate),
+                    "target": "/run/config/nmrpeak-provider/server-a-ca.crt",
+                    "read_only": True,
+                },
+                provider["volumes"],
+            )
+            for runner in ("hf-runner", "chf-runner"):
+                service = plan.compose["services"][runner]
+                self.assertEqual(service["network_mode"], "none")
+                self.assertNotIn("extra_hosts", service)
+                self.assertNotIn("server-a-ca.crt", str(service["volumes"]))
+
+    def test_localhost_ca_path_is_explicit_resolved_and_mode_matched(self) -> None:
+        with render_repository() as repository, TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            certificate = directory / "ca.crt"
+            certificate.write_text("test CA\n", encoding="ascii")
+            symlink = directory / "ca-link.crt"
+            symlink.symlink_to(certificate)
+
+            for invalid, diagnostic in (
+                (Path("relative-ca.crt"), "absolute path"),
+                (symlink, "resolved non-symlink"),
+            ):
+                with self.subTest(path=invalid), self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    diagnostic,
+                ):
+                    render_deployment_plan(
+                        repository,
+                        "production",
+                        localhost_ca_certificate=invalid,
+                    )
+
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "requires the dev-local nmr.localhost origin",
+            ):
+                render_deployment_plan(
+                    repository,
+                    "production",
+                    localhost_ca_certificate=certificate,
+                )
 
     def test_start_admits_every_input_before_compose_and_readiness_proof(self) -> None:
         with render_repository() as repository:
@@ -508,6 +611,49 @@ class ProviderDeploymentTests(unittest.TestCase):
             ("--pull", "never"),
         )
         self.assertEqual(captured["timeout"], 720)
+
+    def test_localhost_render_selects_the_exact_overlay(self) -> None:
+        rendered = canonical_json_bytes(compose_document())
+        invocations: list[tuple[str, ...]] = []
+
+        def run(arguments: tuple[str, ...], **_kwargs: object):
+            invocations.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, rendered, b"")
+
+        with patch.object(subprocess, "run", side_effect=run):
+            provider_deployment._render_compose(
+                ROOT,
+                "localhost",
+                {"PATH": "/usr/bin:/bin"},
+                Path("/usr/bin/docker"),
+                localhost=True,
+            )
+            provider_deployment._render_compose(
+                ROOT,
+                "production",
+                {"PATH": "/usr/bin:/bin"},
+                Path("/usr/bin/docker"),
+                localhost=False,
+            )
+
+        localhost_files = [
+            invocations[0][index + 1]
+            for index, value in enumerate(invocations[0])
+            if value == "--file"
+        ]
+        public_files = [
+            invocations[1][index + 1]
+            for index, value in enumerate(invocations[1])
+            if value == "--file"
+        ]
+        self.assertEqual(
+            localhost_files,
+            [
+                str(ROOT / "compose/provider.yml"),
+                str(ROOT / "compose/provider-localhost.yml"),
+            ],
+        )
+        self.assertEqual(public_files, [str(ROOT / "compose/provider.yml")])
 
     def test_project_inspection_rejects_a_foreign_checkout(self) -> None:
         container_id = "a" * 64
@@ -1365,6 +1511,8 @@ not_before = "2026-08-25T00:00:00Z"
 def compose_for_environment(
     deployment: str,
     environment: dict[str, str],
+    *,
+    localhost: bool = False,
 ) -> dict[str, object]:
     document = compose_document()
     document["name"] = f"nmrpeak-{deployment}"
@@ -1388,6 +1536,16 @@ def compose_for_environment(
     provider_mounts[0]["source"] = environment["PROVIDER_CONFIG_PATH"]
     provider_mounts[1]["source"] = environment["PROVIDER_CREDENTIAL_PATH"]
     provider_mounts[2]["source"] = environment["FROZEN_GENERATION_PATH"]
+    if localhost:
+        services["provider"]["extra_hosts"] = ["nmr.localhost=host-gateway"]
+        provider_mounts.append(
+            {
+                "type": "bind",
+                "source": environment["LOCALHOST_CA_CERTIFICATE_PATH"],
+                "target": "/run/config/nmrpeak-provider/server-a-ca.crt",
+                "read_only": True,
+            }
+        )
     return document
 
 
@@ -1406,8 +1564,12 @@ def test_plan(repository: Path) -> DeploymentPlan:
         patch.object(
             provider_deployment,
             "_render_compose",
-            side_effect=lambda _, deployment, environment, __: (
-                compose_for_environment(deployment, environment)
+            side_effect=lambda _, deployment, environment, __, *, localhost: (
+                compose_for_environment(
+                    deployment,
+                    environment,
+                    localhost=localhost,
+                )
             ),
         ),
     ):

@@ -77,10 +77,6 @@ def server_a_authority_id(endpoint: ProviderEndpointConfig) -> str:
 
     if type(endpoint) is not ProviderEndpointConfig:
         raise TypeError("Server A authority identity requires endpoint config")
-    if endpoint.ca_file is not None:
-        raise ValueError(
-            "Server A authority identity requires the public trust configuration"
-        )
     material = canonical_json_bytes(
         {
             "origin": endpoint.origin,

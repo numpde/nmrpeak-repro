@@ -50,6 +50,7 @@ from nmrpeak_provider.frozen_generation import (
     load_frozen_generation,
 )
 from nmrpeak_provider.provider_config import (
+    ProviderEndpointConfig,
     ProviderRuntimeConfig,
     decode_provider_runtime_config,
     server_a_authority_id,
@@ -194,6 +195,7 @@ def render_deployment_plan(
     repository: Path,
     deployment: str,
     *,
+    localhost_ca_certificate: Path | None = None,
     docker: Path = _DOCKER,
 ) -> DeploymentPlan:
     """Resolve exact local artifacts and validate the effective Compose plan."""
@@ -205,6 +207,7 @@ def render_deployment_plan(
         )
     _require_deployment_name(deployment)
     _require_clean_checkout(root)
+    localhost_ca = _admit_localhost_ca_certificate(localhost_ca_certificate)
     config_root = root / "config/deployments" / deployment
     try:
         if config_root.resolve(strict=True) != config_root or not config_root.is_dir():
@@ -217,6 +220,10 @@ def render_deployment_plan(
         ) from error
     selection = load_named_deployment(config_root / "deployment.toml")
     provider_template = _read_regular_file(config_root / "provider.toml")
+    _admit_server_a_endpoint(
+        decode_provider_runtime_config(provider_template).endpoint,
+        localhost=localhost_ca is not None,
+    )
     upstream_revision = read_nmrpeak_source_revision(
         root / "families/nmrpeak/source-closure.paths"
     )
@@ -258,12 +265,20 @@ def render_deployment_plan(
         checkpoints,
         provider_config=state_root / "runtime-configs/pending/provider.toml",
         frozen_generation=state_root / "generations/pending/frozen",
+        localhost_ca_certificate=localhost_ca,
     )
-    provisional_compose = _render_compose(root, deployment, environment, docker)
+    provisional_compose = _render_compose(
+        root,
+        deployment,
+        environment,
+        docker,
+        localhost=localhost_ca is not None,
+    )
     topology = project_deployment_topology(
         provisional_compose,
         images,
         checkpoints,
+        private_ca=localhost_ca is not None,
     )
     generation = render_generation(
         selection,
@@ -280,10 +295,10 @@ def render_deployment_plan(
         topology=topology,
     )
     configured = decode_provider_runtime_config(generation.provider_config)
-    if configured.endpoint.ca_file is not None:
-        raise DeploymentOperationRejected(
-            "Public deployment config cannot select a private Server A CA"
-        )
+    _admit_server_a_endpoint(
+        configured.endpoint,
+        localhost=localhost_ca is not None,
+    )
     if configured.runner.ready_seconds > 600:
         raise DeploymentOperationRejected(
             "Runner ready timeout exceeds the Compose health start window"
@@ -301,9 +316,21 @@ def render_deployment_plan(
         frozen_generation=(
             state_root / "generations" / generation.frozen_generation_id / "frozen"
         ),
+        localhost_ca_certificate=localhost_ca,
     )
-    compose = _render_compose(root, deployment, environment, docker)
-    if project_deployment_topology(compose, images, checkpoints) != topology:
+    compose = _render_compose(
+        root,
+        deployment,
+        environment,
+        docker,
+        localhost=localhost_ca is not None,
+    )
+    if project_deployment_topology(
+        compose,
+        images,
+        checkpoints,
+        private_ca=localhost_ca is not None,
+    ) != topology:
         raise DeploymentOperationRejected(
             "Final retained paths changed the effective deployment topology"
         )
@@ -373,6 +400,7 @@ def start_deployment(
     repository: Path,
     deployment: str,
     *,
+    localhost_ca_certificate: Path | None = None,
     docker: Path = _DOCKER,
 ) -> DeploymentPlan:
     """Start one exact plan and prove all three durable services are ready."""
@@ -385,7 +413,12 @@ def start_deployment(
     _require_deployment_name(deployment)
     state_root = _ensure_deployment_state_root(root, deployment)
     with _locked_deployment_state(state_root):
-        plan = render_deployment_plan(root, deployment, docker=docker)
+        plan = render_deployment_plan(
+            root,
+            deployment,
+            localhost_ca_certificate=localhost_ca_certificate,
+            docker=docker,
+        )
         _validate_deployment_plan(plan)
         _materialize_locked(state_root, plan)
         _admit_installed_credential(state_root, plan.provider_ref)
@@ -1994,6 +2027,51 @@ def _read_regular_file(path: Path) -> bytes:
         os.close(descriptor)
 
 
+def _admit_localhost_ca_certificate(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise DeploymentOperationRejected(
+            "Localhost CA certificate must be an absolute path"
+        )
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            "Localhost CA certificate is unavailable"
+        ) from error
+    if resolved != path:
+        raise DeploymentOperationRejected(
+            "Localhost CA certificate must be a resolved non-symlink path"
+        )
+    if not _read_regular_file(path):
+        raise DeploymentOperationRejected(
+            "Localhost CA certificate must not be empty"
+        )
+    return path
+
+
+def _admit_server_a_endpoint(
+    endpoint: ProviderEndpointConfig,
+    *,
+    localhost: bool,
+) -> None:
+    if localhost:
+        if (
+            endpoint.origin != "https://nmr.localhost:10443"
+            or endpoint.expected_topology != "dev-local"
+            or endpoint.ca_file is None
+        ):
+            raise DeploymentOperationRejected(
+                "Localhost deployment requires the dev-local nmr.localhost origin "
+                "and private Server A CA"
+            )
+    elif endpoint.ca_file is not None:
+        raise DeploymentOperationRejected(
+            "Public deployment config cannot select a private Server A CA"
+        )
+
+
 def _committed_revision(repository: Path) -> str:
     result = subprocess.run(
         ("git", "-C", str(repository), "rev-parse", "--verify", "HEAD"),
@@ -2095,9 +2173,10 @@ def _compose_environment(
     *,
     provider_config: Path,
     frozen_generation: Path,
+    localhost_ca_certificate: Path | None,
 ) -> dict[str, str]:
     state_root = repository / "secrets/deployments" / deployment
-    return {
+    environment = {
         "PATH": "/usr/bin:/bin",
         "HOME": "/tmp",
         "DOCKER_CONTEXT": "default",
@@ -2119,6 +2198,11 @@ def _compose_environment(
         "HF_RUNNER_IMAGE_INPUT_ID": images.hf_input,
         "CHF_RUNNER_IMAGE_INPUT_ID": images.chf_input,
     }
+    if localhost_ca_certificate is not None:
+        environment["LOCALHOST_CA_CERTIFICATE_PATH"] = str(
+            localhost_ca_certificate
+        )
+    return environment
 
 
 def _render_compose(
@@ -2126,8 +2210,21 @@ def _render_compose(
     deployment: str,
     environment: dict[str, str],
     docker: Path,
+    *,
+    localhost: bool,
 ) -> dict[str, object]:
     project = f"nmrpeak-{deployment}"
+    compose_files = [
+        "--file",
+        str(repository / "compose/provider.yml"),
+    ]
+    if localhost:
+        compose_files.extend(
+            (
+                "--file",
+                str(repository / "compose/provider-localhost.yml"),
+            )
+        )
     try:
         result = subprocess.run(
             (
@@ -2137,8 +2234,7 @@ def _render_compose(
                 "/dev/null",
                 "--project-name",
                 project,
-                "--file",
-                str(repository / "compose/provider.yml"),
+                *compose_files,
                 "config",
                 "--format",
                 "json",
@@ -2304,6 +2400,7 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--frozen-generation")
     parser.add_argument("--confirm")
+    parser.add_argument("--localhost-ca-certificate", type=Path)
     options = parser.parse_args(arguments)
     repository = Path(__file__).resolve().parents[1]
     try:
@@ -2312,6 +2409,7 @@ def main(arguments: list[str] | None = None) -> int:
                 options.nmr_api_v1 is None
                 or options.frozen_generation is not None
                 or options.confirm is not None
+                or options.localhost_ca_certificate is not None
             ):
                 parser.error("credential-install requires --nmr-api-v1")
             installed = install_provider_credential(
@@ -2327,6 +2425,7 @@ def main(arguments: list[str] | None = None) -> int:
                 or options.confirm is None
                 or options.nmr_api_v1 is not None
                 or options.replace
+                or options.localhost_ca_certificate is not None
             ):
                 parser.error(
                     "generation-remove requires --frozen-generation and --confirm"
@@ -2347,6 +2446,7 @@ def main(arguments: list[str] | None = None) -> int:
                 or options.nmr_api_v1 is not None
                 or options.replace
                 or options.frozen_generation is not None
+                or options.localhost_ca_certificate is not None
             ):
                 parser.error("journal-retire requires --confirm")
             removed = retire_provider_journal(
@@ -2358,21 +2458,30 @@ def main(arguments: list[str] | None = None) -> int:
                 f"Retired provider journal volume: {removed}. "
                 "Docker volume deletion is not secure erasure of underlying storage."
             )
-        elif (
+        elif options.operation not in {"config", "up"} and (
             options.nmr_api_v1 is not None
             or options.replace
             or options.frozen_generation is not None
             or options.confirm is not None
+            or options.localhost_ca_certificate is not None
         ):
             parser.error("operation-specific options do not match the operation")
         elif options.operation == "init":
             initialized = initialize_deployment(repository, options.deployment)
             print(f"Initialized deployment {options.deployment}: {initialized}")
         elif options.operation == "config":
-            plan = render_deployment_plan(repository, options.deployment)
+            plan = render_deployment_plan(
+                repository,
+                options.deployment,
+                localhost_ca_certificate=options.localhost_ca_certificate,
+            )
             print(deployment_plan_bytes(plan).decode("utf-8"))
         elif options.operation == "up":
-            plan = start_deployment(repository, options.deployment)
+            plan = start_deployment(
+                repository,
+                options.deployment,
+                localhost_ca_certificate=options.localhost_ca_certificate,
+            )
             print(
                 "Provider deployment ready: "
                 f"{options.deployment} {plan.generation.frozen_generation_id}"

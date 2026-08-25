@@ -140,6 +140,43 @@ command validates those inputs, resolves the committed releases and local image
 identities, and prints the exact read-only deployment plan. `up` revalidates
 that plan and materializes the frozen generation consumed by startup.
 
+For the provider on `fw-a` to use the routed dev-local API, initialize a
+`localhost` deployment and bind its API-issued identity in `deployment.toml`:
+
+```toml
+provider_ref = "provider:nmrpeak-fw-a"
+```
+
+Select the fixed local edge and private trust in `provider.toml`:
+
+```toml
+[server_a]
+origin = "https://nmr.localhost:10443"
+topology = "dev-local"
+use_private_ca = true
+connect_timeout_seconds = 5
+io_deadline_seconds = 30
+```
+
+The localhost entrypoints require the edge repository's CA explicitly. They
+map `nmr.localhost` to Docker's host gateway and mount the CA read-only into the
+provider; the networkless runners receive neither grant:
+
+```sh
+make provider/deployment/config/localhost \
+  DEPLOYMENT=localhost \
+  LOCALHOST_CA_CERTIFICATE=/home/ra/repos/traefik-nmr-api/state/dev-local/tls/ca.crt
+
+make provider/deployment/up/localhost \
+  DEPLOYMENT=localhost \
+  LOCALHOST_CA_CERTIFICATE=/home/ra/repos/traefik-nmr-api/state/dev-local/tls/ca.crt
+```
+
+The routed edge and the registered `provider:nmrpeak-fw-a` credential must
+already exist. Journal retirement remains unavailable for private-CA
+deployments because that destructive host-side proof does not yet accept a
+separate host trust path.
+
 Starting the deployment loads the reviewed checkpoints inside the two isolated
 runner containers and begins signed API activity. It is therefore a deliberate
 operator action, not a validation step:

@@ -71,12 +71,15 @@ def project_deployment_topology(
     document: object,
     images: DeploymentImages,
     checkpoints: DeploymentCheckpoints,
+    *,
+    private_ca: bool = False,
 ) -> bytes:
     """Return canonical secret-free facts from one admitted Compose document."""
 
     if (
         type(images) is not DeploymentImages
         or type(checkpoints) is not DeploymentCheckpoints
+        or type(private_ca) is not bool
     ):
         raise TypeError("Deployment topology requires admitted image and release facts")
     if not all(
@@ -117,13 +120,14 @@ def project_deployment_topology(
     if type(network) is not dict or set(network) != {"ipam", "name"} or network["ipam"] != {}:
         raise DeploymentTopologyRejected("Provider default network fields are invalid")
 
-    provider = _service(services, "provider", _PROVIDER_FIELDS)
+    provider_fields = _PROVIDER_FIELDS | ({"extra_hosts"} if private_ca else set())
+    provider = _service(services, "provider", provider_fields)
     hf = _service(services, "hf-runner", _RUNNER_FIELDS)
     chf = _service(services, "chf-runner", _RUNNER_FIELDS)
     _common_posture(provider, images.provider, cpus=1, memory=268_435_456, pids=64)
     _common_posture(hf, images.hf, cpus=8, memory=34_359_738_368, pids=256)
     _common_posture(chf, images.chf, cpus=8, memory=34_359_738_368, pids=256)
-    _provider_posture(provider)
+    _provider_posture(provider, private_ca=private_ca)
     _runner_posture(hf, "hf", checkpoints.hf, images.hf_input)
     _runner_posture(chf, "chf", checkpoints.chf, images.chf_input)
     _volume_posture(volumes)
@@ -176,7 +180,7 @@ def _common_posture(
         raise DeploymentTopologyRejected("Deployment service posture has drifted")
 
 
-def _provider_posture(service: dict[str, object]) -> None:
+def _provider_posture(service: dict[str, object], *, private_ca: bool) -> None:
     if service.get("networks") != {"default": None}:
         raise DeploymentTopologyRejected("Only the provider may receive API egress")
     if service.get("command") is not None or service.get("entrypoint") is not None:
@@ -201,18 +205,25 @@ def _provider_posture(service: dict[str, object]) -> None:
         "/run/nmrpeak-provider:size=64k,mode=0700,noexec,nosuid,nodev,uid=65532,gid=65532",
     ]:
         raise DeploymentTopologyRejected("Provider scratch posture has drifted")
-    _mounts(
-        service,
-        {
-            "/run/config/nmrpeak-provider/provider.toml": ("bind", True),
-            "/run/secrets/nmrpeak-provider/signing.private.json": ("bind", True),
-            "/run/nmrpeak-provider/frozen": ("bind", True),
-            "/run/nmrpeak-provider-lock": ("volume", True),
-            "/var/lib/nmrpeak-provider": ("volume", False),
-            "/run/nmrpeak-provider/hf": ("volume", False),
-            "/run/nmrpeak-provider/chf": ("volume", False),
-        },
-    )
+    expected_mounts = {
+        "/run/config/nmrpeak-provider/provider.toml": ("bind", True),
+        "/run/secrets/nmrpeak-provider/signing.private.json": ("bind", True),
+        "/run/nmrpeak-provider/frozen": ("bind", True),
+        "/run/nmrpeak-provider-lock": ("volume", True),
+        "/var/lib/nmrpeak-provider": ("volume", False),
+        "/run/nmrpeak-provider/hf": ("volume", False),
+        "/run/nmrpeak-provider/chf": ("volume", False),
+    }
+    if private_ca:
+        expected_mounts["/run/config/nmrpeak-provider/server-a-ca.crt"] = (
+            "bind",
+            True,
+        )
+        if service.get("extra_hosts") != ["nmr.localhost=host-gateway"]:
+            raise DeploymentTopologyRejected(
+                "Localhost provider host-gateway mapping has drifted"
+            )
+    _mounts(service, expected_mounts)
     mounts = {item["target"]: item for item in service["volumes"]}
     expected_sources = {
         "/run/nmrpeak-provider-lock": "provider-identity-lock",
@@ -226,6 +237,11 @@ def _provider_posture(service: dict[str, object]) -> None:
         "/run/config/nmrpeak-provider/provider.toml",
         "/run/secrets/nmrpeak-provider/signing.private.json",
         "/run/nmrpeak-provider/frozen",
+        *(
+            ("/run/config/nmrpeak-provider/server-a-ca.crt",)
+            if private_ca
+            else ()
+        ),
     ):
         source = mounts[target]["source"]
         if type(source) is not str or not source.startswith("/"):
@@ -369,6 +385,8 @@ def _project_service(
     }
     if role == "provider":
         projected["healthcheck"] = service["healthcheck"]
+        if "extra_hosts" in service:
+            projected["extra_hosts"] = service["extra_hosts"]
     else:
         projected["command"] = service["command"]
         projected["shared_memory_bytes"] = int(service["shm_size"])

@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 test: test/unit test/contract test/repository
 
@@ -66,14 +66,26 @@ provider/deployment/init:
 provider/deployment/config: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/config:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'LOCALHOST_CA_CERTIFICATE is accepted only by provider/deployment/config/localhost or provider/deployment/up/localhost' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment config "$$DEPLOYMENT_INPUT"
 
 provider/deployment/up: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/up:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'LOCALHOST_CA_CERTIFICATE is accepted only by provider/deployment/config/localhost or provider/deployment/up/localhost' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment up "$$DEPLOYMENT_INPUT"
+
+provider/deployment/config/localhost provider/deployment/up/localhost: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/config/localhost provider/deployment/up/localhost: private export LOCALHOST_CA_CERTIFICATE_INPUT := $(value LOCALHOST_CA_CERTIFICATE)
+provider/deployment/config/localhost provider/deployment/up/localhost:
+	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" = command\ line || { echo 'LOCALHOST_CA_CERTIFICATE must be set on the make command line' >&2; exit 2; }
+	@operation="$(notdir $(@D))"; \
+	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment "$$operation" "$$DEPLOYMENT_INPUT" \
+		--localhost-ca-certificate "$$LOCALHOST_CA_CERTIFICATE_INPUT"
 
 provider/deployment/status provider/deployment/down: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/status provider/deployment/down:

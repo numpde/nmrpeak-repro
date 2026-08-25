@@ -80,6 +80,36 @@ class DeploymentTopologyTests(unittest.TestCase):
 
         self.assertNotEqual(changed, original)
 
+    def test_private_ca_topology_admits_only_the_fixed_provider_overlay(self) -> None:
+        document = compose_document()
+        provider = document["services"]["provider"]
+        provider["extra_hosts"] = ["nmr.localhost=host-gateway"]
+        provider["volumes"].append(
+            mount(
+                "/host/ca.crt",
+                "/run/config/nmrpeak-provider/server-a-ca.crt",
+                "bind",
+                True,
+            )
+        )
+
+        topology = parse_canonical_json_bytes(
+            project_deployment_topology(
+                document,
+                IMAGES,
+                CHECKPOINTS,
+                private_ca=True,
+            )
+        )
+
+        self.assertEqual(
+            topology["services"][0]["extra_hosts"],
+            ["nmr.localhost=host-gateway"],
+        )
+        self.assertNotIn("/host/ca.crt", str(topology))
+        with self.assertRaises(DeploymentTopologyRejected):
+            project_deployment_topology(document, IMAGES, CHECKPOINTS)
+
 
 def compose_document() -> dict[str, object]:
     common = {

@@ -1,0 +1,9 @@
+services:
+  provider:
+    extra_hosts:
+      - "nmr.localhost:host-gateway"
+    volumes:
+      - type: bind
+        source: "${LOCALHOST_CA_CERTIFICATE_PATH:?use provider/deployment/config/localhost or provider/deployment/up/localhost with LOCALHOST_CA_CERTIFICATE}"
+        target: /run/config/nmrpeak-provider/server-a-ca.crt
+        read_only: true
