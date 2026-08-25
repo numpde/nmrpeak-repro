@@ -58,6 +58,7 @@ from nmrpeak_provider.attempt_lifecycle import (
     prepare_execution,
     reconcile_record,
     run_admitted_job,
+    run_recovery_record,
     select_completion,
     start_attempt,
 )
@@ -1264,6 +1265,106 @@ class AttemptLifecycleTests(unittest.TestCase):
             command["failure_message"],
             "The provider process was interrupted before this execution completed.",
         )
+
+    def test_recovery_run_delivers_the_fixed_interrupted_failure(self) -> None:
+        entered = entered_attempt(valid_chf_input())
+        api = CapturingApi(
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=entered.execution_attempt_ref,
+                    job_ref=entered.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            ),
+            success_response(
+                {
+                    "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
+                    "execution_attempt_ref": entered.execution_attempt_ref,
+                    "failure_code": "provider_execution_interrupted",
+                    "failure_message": (
+                        "The provider process was interrupted before this execution completed."
+                    ),
+                    "committed_at": "2026-08-24T12:02:00Z",
+                    "replayed": False,
+                }
+            ),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(entered))
+                journal.replace(pending_from_active(entered), entered)
+                outcome = run_recovery_record(
+                    runtime=generation_runtime(),
+                    api=api,
+                    journal=journal,
+                    session=None,
+                    record=entered,
+                    observation=None,
+                )
+                self.assertEqual(journal.records(), ())
+        self.assertIs(type(outcome), TerminalDelivered)
+
+    def test_recovery_run_replays_retained_terminal_without_a_runner(self) -> None:
+        terminal = terminal_pending(TerminalOperation.COMPLETE)
+        api = CapturingApi(
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=terminal.execution_attempt_ref,
+                    job_ref=terminal.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            ),
+            success_response(terminal_receipt(terminal, replayed=True)),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                persist_terminal(journal, terminal)
+                outcome = run_recovery_record(
+                    runtime=generation_runtime(),
+                    api=api,
+                    journal=journal,
+                    session=None,
+                    record=terminal,
+                    observation=None,
+                )
+                self.assertEqual(journal.records(), ())
+        self.assertIs(type(outcome), TerminalDelivered)
+        self.assertTrue(outcome.receipt.replayed)
+
+    def test_recovery_run_replays_start_then_resumes_exact_input(self) -> None:
+        canonical_input = valid_chf_input()
+        active = active_attempt(canonical_input)
+        record = pending_from_active(active)
+        session, channel = chf_session()
+        api = CapturingApi(
+            success_response(start_receipt("in_progress", replayed=True)),
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=active.execution_attempt_ref,
+                    job_ref=active.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            ),
+            success_response(job_input(active.job_ref, canonical_input)),
+            ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(record)
+                outcome = run_recovery_record(
+                    runtime=generation_runtime(),
+                    api=api,
+                    journal=journal,
+                    session=session,
+                    record=record,
+                    observation=ObservationPolicy(0.01, 0.2),
+                )
+                self.assertEqual(journal.records(), (active,))
+        self.assertIs(type(outcome), AttemptMutationCommitPossible)
+        self.assertEqual(channel.received_frames, [])
 
     def test_restart_retains_cutoff_and_conflicting_terminal_obligations(self) -> None:
         entered = entered_attempt(valid_chf_input())

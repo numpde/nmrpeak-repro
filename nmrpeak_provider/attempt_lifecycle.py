@@ -334,6 +334,12 @@ AdmittedJobOutcome = (
     | ExecutionOutcome
     | TerminalDeliveryOutcome
 )
+RecoveryRunOutcome = (
+    RecoveryOutcome
+    | PreExecutionOutcome
+    | ExecutionOutcome
+    | TerminalDeliveryOutcome
+)
 
 
 @dataclass(slots=True)
@@ -460,11 +466,80 @@ def run_admitted_job(
         record=started.record,
         canonical_input=admitted.canonical_input,
     )
+    return _run_prepared_input(
+        api=api,
+        journal=journal,
+        session=session,
+        prepared=prepared,
+        observation=observation,
+    )
+
+
+def run_recovery_record(
+    *,
+    runtime: GenerationRuntime,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    session: RunnerSession | None,
+    record: StartPending | ActiveAttempt | TerminalPending,
+    observation: ObservationPolicy | None,
+) -> RecoveryRunOutcome:
+    """Reconcile one startup obligation through any safe resumed execution."""
+
+    resolved = runtime.resolve(record)
+    recovered = reconcile_record(
+        runtime=runtime,
+        api=api,
+        journal=journal,
+        record=record,
+    )
+    if type(recovered) is StartContinues:
+        recovered = reconcile_record(
+            runtime=runtime,
+            api=api,
+            journal=journal,
+            record=recovered.record,
+        )
+    if type(recovered) is InterruptedFailurePending:
+        return deliver_terminal(api=api, journal=journal, record=recovered.record)
+    if type(recovered) is not RecoveryResumes:
+        return recovered
+
+    if type(session) is not RunnerSession:
+        raise TypeError("Resumed NMRPeak execution requires an admitted runner session")
+    if type(observation) is not ObservationPolicy:
+        raise TypeError("Resumed NMRPeak execution requires an observation policy")
+    if session.result_facts != resolved.result_facts:
+        raise ValueError("NMRPeak recovery received another lane's runner session")
+    prepared = prepare_execution(
+        lane=resolved.lane,
+        api=api,
+        journal=journal,
+        session=session,
+        record=recovered.record,
+        canonical_input=recovered.canonical_input,
+    )
+    return _run_prepared_input(
+        api=api,
+        journal=journal,
+        session=session,
+        prepared=prepared,
+        observation=observation,
+    )
+
+
+def _run_prepared_input(
+    *,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    session: RunnerSession,
+    prepared: PreExecutionOutcome,
+    observation: ObservationPolicy,
+) -> PreExecutionOutcome | ExecutionOutcome | TerminalDeliveryOutcome:
     if type(prepared) is InputFailurePending:
         return deliver_terminal(api=api, journal=journal, record=prepared.record)
     if type(prepared) is not PreparedForExecution:
         return prepared
-
     generated = execute_prepared(
         api=api,
         journal=journal,
