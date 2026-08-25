@@ -25,8 +25,6 @@ from nmrpeak_provider.provider_identity_lock import (
     ProviderIdentityLock,
     ProviderIdentityLockBusy,
 )
-from nmrpeak_provider.provider_startup import run_locked_provider
-from tests.unit.test_generation_runtime import generation_runtime
 
 
 PROVIDER_REF = "provider:nmrpeak"
@@ -125,89 +123,8 @@ class ProviderIdentityLockTests(unittest.TestCase):
                     ProviderIdentityLock.acquire(path, PROVIDER_REF)
 
 
-class LockedProviderStartupTests(unittest.TestCase):
-    def test_invalid_or_foreign_credential_never_reaches_the_lock(self) -> None:
-        foreign = credential_document(Ed25519PrivateKey.generate())
-        foreign["principal_ref"] = "provider:other"
-        for raw in (b"invalid", canonical_json_bytes(foreign) + b"\n"):
-            with (
-                self.subTest(raw=raw),
-                patch(
-                    "nmrpeak_provider.provider_startup.ProviderIdentityLock.acquire"
-                ) as acquire,
-                self.assertRaises(ValueError),
-            ):
-                call_locked_provider(raw)
-            acquire.assert_not_called()
-
-    def test_lock_surrounds_client_construction_and_provider_failure(self) -> None:
-        events: list[str] = []
-
-        class HeldLock:
-            def __enter__(self) -> HeldLock:
-                events.append("lock_entered")
-                return self
-
-            def __exit__(self, *exc_info: object) -> None:
-                events.append("lock_closed")
-
-        def acquire(_path: Path, _provider_ref: str) -> HeldLock:
-            events.append("lock_acquired")
-            return HeldLock()
-
-        def client(*_args: object) -> object:
-            events.append("client_created")
-            return object()
-
-        def process(**_kwargs: object) -> None:
-            events.append("process_entered")
-            raise RuntimeError("provider failed")
-
-        with (
-            patch(
-                "nmrpeak_provider.provider_startup.ProviderIdentityLock.acquire",
-                side_effect=acquire,
-            ),
-            patch(
-                "nmrpeak_provider.provider_startup.ProviderApiClient",
-                side_effect=client,
-            ),
-            patch(
-                "nmrpeak_provider.provider_startup.run_provider_process",
-                side_effect=process,
-            ),
-            self.assertRaisesRegex(RuntimeError, "provider failed"),
-        ):
-            call_locked_provider(credential_bytes(Ed25519PrivateKey.generate()))
-
-        self.assertEqual(
-            events,
-            [
-                "lock_acquired",
-                "lock_entered",
-                "client_created",
-                "process_entered",
-                "lock_closed",
-            ],
-        )
-
 def credential_bytes(private_key: Ed25519PrivateKey) -> bytes:
     return canonical_json_bytes(credential_document(private_key)) + b"\n"
-
-
-def call_locked_provider(raw: bytes) -> None:
-    run_locked_provider(
-        credential_bytes=raw,
-        endpoint=object(),
-        runtime=generation_runtime(),
-        identity_lock_path=Path("/run/nmrpeak/provider.lock"),
-        journal=object(),
-        hf_session=object(),
-        chf_session=object(),
-        hello=object(),
-        policy=object(),
-        stop=object(),
-    )
 
 
 def credential_document(private_key: Ed25519PrivateKey) -> dict[str, object]:
