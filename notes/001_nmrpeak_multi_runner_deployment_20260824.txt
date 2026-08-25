@@ -985,7 +985,7 @@ The host Makefile is the operator index:
     make provider/deployment/down DEPLOYMENT=<name>
     make provider/deployment/generation/remove DEPLOYMENT=<name> \
         FROZEN_GENERATION=<sha256-id> CONFIRM=<sha256-id>
-    make provider/journal/retire DEPLOYMENT=<name> \
+    make provider/deployment/journal/retire DEPLOYMENT=<name> \
         CONFIRM=<full-journal-volume-name>
     make provider/identity-lock/remove PROVIDER_REF=<provider-ref> \
         CONFIRM=<full-volume-name>
