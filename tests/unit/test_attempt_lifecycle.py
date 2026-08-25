@@ -57,6 +57,7 @@ from nmrpeak_provider.attempt_lifecycle import (
     observe_attempt,
     prepare_execution,
     reconcile_record,
+    run_admitted_job,
     select_completion,
     start_attempt,
 )
@@ -1132,6 +1133,89 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertEqual(outcome.record.provider_attempt_key, record.provider_attempt_key)
                 self.assertEqual(journal.records(), (outcome.record,))
 
+    def test_admitted_job_stops_at_an_uncertain_start(self) -> None:
+        canonical_input = valid_chf_input()
+        active = active_attempt(canonical_input)
+        record = pending_from_active(active)
+        session, channel = chf_session()
+        api = CapturingApi(ProviderRequestUnavailable(RequestDelivery.POSSIBLE))
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(record)
+                outcome = run_admitted_job(
+                    runtime=generation_runtime(),
+                    api=api,
+                    journal=journal,
+                    session=session,
+                    admitted=JobAdmitted(record, canonical_input),
+                    observation=ObservationPolicy(0.01, 0.2),
+                )
+                self.assertEqual(journal.records(), (record,))
+        self.assertIs(type(outcome), AttemptMutationCommitPossible)
+        self.assertEqual(len(api.requests), 1)
+        self.assertEqual(channel.received_frames, [])
+
+    def test_admitted_job_rejects_another_lanes_session_before_start(self) -> None:
+        canonical_input = valid_hf_input()
+        active = active_attempt(canonical_input, hf_generation())
+        record = pending_from_active(active)
+        session, _ = chf_session()
+        api = CapturingApi()
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(record)
+                with self.assertRaisesRegex(ValueError, "another lane"):
+                    run_admitted_job(
+                        runtime=generation_runtime(),
+                        api=api,
+                        journal=journal,
+                        session=session,
+                        admitted=JobAdmitted(record, canonical_input),
+                        observation=ObservationPolicy(0.01, 0.2),
+                    )
+                self.assertEqual(journal.records(), (record,))
+        self.assertEqual(api.requests, [])
+
+    def test_admitted_job_delivers_a_deterministic_input_failure(self) -> None:
+        canonical_input = b"{}"
+        active = active_attempt(canonical_input)
+        record = pending_from_active(active)
+        session, channel = chf_session()
+        api = CapturingApi(
+            success_response(start_receipt("in_progress", replayed=False)),
+            success_response(
+                {
+                    "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
+                    "execution_attempt_ref": active.execution_attempt_ref,
+                    "failure_code": "input_rejected",
+                    "failure_message": InputRejected.public_message,
+                    "committed_at": "2026-08-24T12:02:00Z",
+                    "replayed": False,
+                }
+            ),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(record)
+                outcome = run_admitted_job(
+                    runtime=generation_runtime(),
+                    api=api,
+                    journal=journal,
+                    session=session,
+                    admitted=JobAdmitted(record, canonical_input),
+                    observation=ObservationPolicy(0.01, 0.2),
+                )
+                self.assertEqual(journal.records(), ())
+        self.assertIs(type(outcome), TerminalDelivered)
+        self.assertEqual(
+            [request.operation for request in api.requests],
+            [
+                ProviderOperation.EXECUTION_ATTEMPT_START,
+                ProviderOperation.EXECUTION_ATTEMPT_FAIL,
+            ],
+        )
+        self.assertEqual(channel.received_frames, [])
+
     def test_restart_rejects_an_unowned_pending_start_before_any_effect(self) -> None:
         record = pending_start(
             replace(chf_generation(), generation_id="unadmitted-generation")
@@ -1468,6 +1552,19 @@ def ready_frame() -> ReadyFrame:
         target="cpu-x86_64",
         device="cpu",
         decode_policy_id="nmrpeak_chf_decode_v1",
+    )
+
+
+def chf_session() -> tuple[RunnerSession, FakeRunnerChannel]:
+    channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame())
+    return (
+        RunnerSession.admit(
+            channel,
+            RUNNER_FACTS,
+            RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            CHF_RUNNER_CODEC,
+        ),
+        channel,
     )
 
 

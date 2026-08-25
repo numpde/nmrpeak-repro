@@ -328,6 +328,13 @@ ExecutionOutcome = (
     | AttemptMutationCommitPossible
 )
 
+AdmittedJobOutcome = (
+    StartOutcome
+    | PreExecutionOutcome
+    | ExecutionOutcome
+    | TerminalDeliveryOutcome
+)
+
 
 @dataclass(slots=True)
 class _GenerationWork:
@@ -411,6 +418,64 @@ def admit_next_job(
     )
     journal.admit(record)
     return JobAdmitted(record=record, canonical_input=job_input.canonical_input)
+
+
+def run_admitted_job(
+    *,
+    runtime: GenerationRuntime,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    session: RunnerSession,
+    admitted: JobAdmitted,
+    observation: ObservationPolicy,
+) -> AdmittedJobOutcome:
+    """Run one durable Job through its admitted lane until policy must decide again."""
+
+    if type(admitted) is not JobAdmitted:
+        raise TypeError("NMRPeak Job execution requires one admitted Job")
+    if type(session) is not RunnerSession:
+        raise TypeError("NMRPeak Job execution requires one admitted runner session")
+    if type(observation) is not ObservationPolicy:
+        raise TypeError("NMRPeak Job execution requires an admitted observation policy")
+    resolved = runtime.resolve(admitted.record)
+    if session.result_facts != resolved.result_facts:
+        raise ValueError("NMRPeak Job execution received another lane's runner session")
+
+    started = start_attempt(
+        lane=resolved.lane,
+        api=api,
+        journal=journal,
+        generation=resolved.generation,
+        frozen_generation_id=runtime.frozen_generation_id,
+        record=admitted.record,
+    )
+    if type(started) is not StartContinues:
+        return started
+
+    prepared = prepare_execution(
+        lane=resolved.lane,
+        api=api,
+        journal=journal,
+        session=session,
+        record=started.record,
+        canonical_input=admitted.canonical_input,
+    )
+    if type(prepared) is InputFailurePending:
+        return deliver_terminal(api=api, journal=journal, record=prepared.record)
+    if type(prepared) is not PreparedForExecution:
+        return prepared
+
+    generated = execute_prepared(
+        api=api,
+        journal=journal,
+        session=session,
+        prepared=prepared,
+        observation=observation,
+    )
+    if type(generated) is not CandidatesGenerated:
+        return generated
+    completion = select_completion(journal=journal, generated=generated)
+    return deliver_terminal(api=api, journal=journal, record=completion.record)
 
 
 def start_attempt(
