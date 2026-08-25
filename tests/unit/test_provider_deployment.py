@@ -269,7 +269,14 @@ class ProviderDeploymentTests(unittest.TestCase):
             )
             self.assertEqual(
                 stat.S_IMODE(first[0].stat().st_mode),
-                0o400,
+                0o440,
+            )
+            self.assertEqual(
+                provider_deployment._read_acl(
+                    first[0],
+                    "Retained deployment file",
+                ),
+                provider_deployment._PROVIDER_READONLY_FILE_ACL,
             )
             self.assertEqual(
                 stat.S_IMODE(
@@ -282,7 +289,10 @@ class ProviderDeploymentTests(unittest.TestCase):
 
             first[0].chmod(0o600)
             first[0].write_bytes(b"drift")
-            first[0].chmod(0o400)
+            provider_deployment._grant_provider_file_access(
+                first[0],
+                owner_write=False,
+            )
             with self.assertRaisesRegex(
                 DeploymentOperationRejected,
                 "bytes have drifted",
@@ -447,6 +457,51 @@ class ProviderDeploymentTests(unittest.TestCase):
                 ).is_file()
             )
 
+    def test_start_stops_before_engine_effects_when_input_access_fails(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+
+            with (
+                patch.object(
+                    provider_deployment,
+                    "render_deployment_plan",
+                    return_value=plan,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_grant_provider_tree_access",
+                    side_effect=DeploymentOperationRejected(
+                        "Provider input access operation was rejected"
+                    ),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "verify_hf_checkpoint",
+                ) as verify_hf,
+                patch.object(
+                    provider_deployment,
+                    "verify_chf_checkpoint",
+                ) as verify_chf,
+                patch.object(
+                    provider_deployment,
+                    "ensure_provider_state_volumes",
+                ) as ensure_volumes,
+                patch.object(
+                    provider_deployment,
+                    "_run_compose_plan",
+                ) as compose_up,
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "input access operation was rejected",
+                ),
+            ):
+                start_deployment(repository, "production")
+
+            verify_hf.assert_not_called()
+            verify_chf.assert_not_called()
+            ensure_volumes.assert_not_called()
+            compose_up.assert_not_called()
+
     def test_startup_credential_must_match_provider_and_private_posture(self) -> None:
         with TemporaryDirectory() as temporary:
             state = Path(temporary)
@@ -468,7 +523,7 @@ class ProviderDeploymentTests(unittest.TestCase):
             credential.chmod(0o644)
             with self.assertRaisesRegex(
                 DeploymentOperationRejected,
-                "mode 0600",
+                "exact private access",
             ):
                 provider_deployment._admit_installed_credential(
                     state,
@@ -491,7 +546,14 @@ class ProviderDeploymentTests(unittest.TestCase):
             )
             original_inode = destination.stat().st_ino
             self.assertEqual(destination.read_bytes(), source.read_bytes())
-            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
+            self.assertEqual(
+                provider_deployment._read_acl(
+                    destination,
+                    "Provider signing credential",
+                ),
+                provider_deployment._PROVIDER_WRITABLE_FILE_ACL,
+            )
             self.assertEqual(
                 install_provider_credential(repository, "production", api_root),
                 destination,

@@ -91,7 +91,33 @@ _TEMPLATES = {
     "deployment.toml": Path("config/deployment.toml.example"),
 }
 _DOCKER = Path("/usr/bin/docker")
+_SETFACL = Path("/usr/bin/setfacl")
+_GETFACL = Path("/usr/bin/getfacl")
 _MAX_FILE_BYTES = 262_144
+_PRIVATE_DIRECTORY_ACL = ("user::rwx", "group::---", "other::---")
+_PROVIDER_DIRECTORY_ACL = (
+    "user::rwx",
+    "user:65532:r-x",
+    "group::---",
+    "mask::r-x",
+    "other::---",
+)
+_PRIVATE_READONLY_FILE_ACL = ("user::r--", "group::---", "other::---")
+_PRIVATE_WRITABLE_FILE_ACL = ("user::rw-", "group::---", "other::---")
+_PROVIDER_READONLY_FILE_ACL = (
+    "user::r--",
+    "user:65532:r--",
+    "group::---",
+    "mask::r--",
+    "other::---",
+)
+_PROVIDER_WRITABLE_FILE_ACL = (
+    "user::rw-",
+    "user:65532:r--",
+    "group::---",
+    "mask::r--",
+    "other::---",
+)
 _PROVIDER_ENTRYPOINT = ("python", "-m", "nmrpeak_provider.provider_main")
 _HF_ENTRYPOINT = (
     "python",
@@ -545,6 +571,7 @@ def install_provider_credential(
                     "Installed provider signing credential belongs to another provider"
                 )
             if installed_bytes == credential_bytes:
+                _grant_provider_file_access(destination, owner_write=True)
                 return destination
             if not replace:
                 raise DeploymentOperationRejected(
@@ -827,11 +854,19 @@ def _admit_installed_credential(state_root: Path, provider_ref: str) -> None:
         raise DeploymentOperationRejected(
             "Provider signing credential belongs to another provider"
         )
+    _grant_provider_file_access(path, owner_write=True)
+    _read_owned_private_credential(
+        path,
+        "Provider signing credential",
+        require_provider_access=True,
+    )
 
 
 def _read_owned_private_credential(
     path: Path,
     operation: str,
+    *,
+    require_provider_access: bool = False,
 ) -> tuple[bytes, ProviderSigningCredential]:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -844,11 +879,26 @@ def _read_owned_private_credential(
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o600
             or metadata.st_size > PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES
         ):
             raise DeploymentOperationRejected(
-                f"{operation} must be operator-owned mode 0600"
+                f"{operation} must be operator-owned with exact private access"
+            )
+        mode = stat.S_IMODE(metadata.st_mode)
+        access = _read_acl(path, operation)
+        private_access = mode == 0o600 and access == _PRIVATE_WRITABLE_FILE_ACL
+        provider_access = (
+            mode == 0o640 and access == _PROVIDER_WRITABLE_FILE_ACL
+        )
+        if (
+            (require_provider_access and not provider_access)
+            or (
+                not require_provider_access
+                and not (private_access or provider_access)
+            )
+        ):
+            raise DeploymentOperationRejected(
+                f"{operation} must be operator-owned with exact private access"
             )
         raw = os.read(descriptor, PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES + 1)
         if len(raw) != metadata.st_size:
@@ -1389,6 +1439,7 @@ def _publish_private_credential(
     published = False
     try:
         _write_new_file(parent_fd, stage, content)
+        _grant_provider_file_access(destination.parent / stage, owner_write=True)
         if replace:
             os.rename(
                 stage,
@@ -1907,6 +1958,8 @@ def _publish_retained_tree(
     destination = parent / retained_name
     if destination.exists() or destination.is_symlink():
         _require_retained_tree(destination, files)
+        _grant_provider_tree_access(destination)
+        _require_retained_tree(destination, files, require_provider_access=True)
         return destination
     stage = parent / f".{retained_name}.{secrets.token_hex(16)}.staging"
     stage.mkdir(mode=0o700)
@@ -1938,6 +1991,7 @@ def _publish_retained_tree(
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+        _grant_provider_tree_access(stage)
         _fsync_tree(stage)
         os.rename(stage, destination)
         _fsync_directory(parent)
@@ -1945,7 +1999,7 @@ def _publish_retained_tree(
         if stage.exists() and not stage.is_symlink():
             shutil.rmtree(stage)
         raise
-    _require_retained_tree(destination, files)
+    _require_retained_tree(destination, files, require_provider_access=True)
     return destination
 
 
@@ -1953,7 +2007,12 @@ def _retained_identity_name(identity: str) -> str:
     return identity.removeprefix("sha256:")
 
 
-def _require_retained_tree(path: Path, expected: dict[str, bytes]) -> None:
+def _require_retained_tree(
+    path: Path,
+    expected: dict[str, bytes],
+    *,
+    require_provider_access: bool = False,
+) -> None:
     if path.is_symlink() or not path.is_dir():
         raise DeploymentOperationRejected(
             f"Retained deployment input is not a directory: {path.name}"
@@ -1963,10 +2022,20 @@ def _require_retained_tree(path: Path, expected: dict[str, bytes]) -> None:
     for directory, names, filenames in os.walk(path, followlinks=False):
         current = Path(directory)
         metadata = current.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise DeploymentOperationRejected(
+                f"Retained deployment directory posture has drifted: {path.name}"
+            )
+        mode = stat.S_IMODE(metadata.st_mode)
+        access = _read_acl(current, "Retained deployment directory")
+        private_access = mode == 0o700 and access == _PRIVATE_DIRECTORY_ACL
+        provider_access = mode == 0o750 and access == _PROVIDER_DIRECTORY_ACL
         if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o700
+            (require_provider_access and not provider_access)
+            or (
+                not require_provider_access
+                and not (private_access or provider_access)
+            )
         ):
             raise DeploymentOperationRejected(
                 f"Retained deployment directory posture has drifted: {path.name}"
@@ -1996,7 +2065,25 @@ def _require_retained_tree(path: Path, expected: dict[str, bytes]) -> None:
                 if (
                     not stat.S_ISREG(metadata.st_mode)
                     or metadata.st_uid != os.geteuid()
-                    or stat.S_IMODE(metadata.st_mode) != 0o400
+                ):
+                    raise DeploymentOperationRejected(
+                        "Retained deployment file posture has drifted: "
+                        f"{path.name}"
+                    )
+                mode = stat.S_IMODE(metadata.st_mode)
+                access = _read_acl(child, "Retained deployment file")
+                private_access = (
+                    mode == 0o400 and access == _PRIVATE_READONLY_FILE_ACL
+                )
+                provider_access = (
+                    mode == 0o440 and access == _PROVIDER_READONLY_FILE_ACL
+                )
+                if (
+                    (require_provider_access and not provider_access)
+                    or (
+                        not require_provider_access
+                        and not (private_access or provider_access)
+                    )
                 ):
                     raise DeploymentOperationRejected(
                         f"Retained deployment file posture has drifted: {path.name}"
@@ -2016,6 +2103,93 @@ def _require_retained_tree(path: Path, expected: dict[str, bytes]) -> None:
         raise DeploymentOperationRejected(
             f"Retained deployment input bytes have drifted: {path.name}"
         )
+
+
+def _grant_provider_tree_access(root: Path) -> None:
+    directories: list[Path] = []
+    for directory, names, filenames in os.walk(root, followlinks=False):
+        current = Path(directory)
+        directories.append(current)
+        for name in (*names, *filenames):
+            if (current / name).is_symlink():
+                raise DeploymentOperationRejected(
+                    "Retained deployment input contains a symlink"
+                )
+        for name in filenames:
+            _grant_provider_file_access(current / name, owner_write=False)
+    for directory in reversed(directories):
+        _replace_acl(directory, _PROVIDER_DIRECTORY_ACL, directory=True)
+
+
+def _grant_provider_file_access(path: Path, *, owner_write: bool) -> None:
+    access = (
+        _PROVIDER_WRITABLE_FILE_ACL
+        if owner_write
+        else _PROVIDER_READONLY_FILE_ACL
+    )
+    _replace_acl(path, access, directory=False)
+
+
+def _replace_acl(
+    path: Path,
+    access: tuple[str, ...],
+    *,
+    directory: bool,
+) -> None:
+    if _read_acl(path, "Provider input") == access:
+        return
+    if directory:
+        _run_acl_command(_SETFACL, "--physical", "--remove-default", "--", str(path))
+    _run_acl_command(
+        _SETFACL,
+        "--physical",
+        f"--set={','.join(access)}",
+        "--",
+        str(path),
+    )
+    if _read_acl(path, "Provider input") != access:
+        raise DeploymentOperationRejected(
+            f"Provider input access could not be proved: {path.name}"
+        )
+
+
+def _read_acl(path: Path, operation: str) -> tuple[str, ...]:
+    raw = _run_acl_command(
+        _GETFACL,
+        "--physical",
+        "--absolute-names",
+        "--omit-header",
+        "--numeric",
+        "--",
+        str(path),
+    )
+    try:
+        return tuple(line for line in raw.decode("ascii").splitlines() if line)
+    except UnicodeDecodeError as error:
+        raise DeploymentOperationRejected(
+            f"{operation} access record is invalid: {path.name}"
+        ) from error
+
+
+def _run_acl_command(executable: Path, *arguments: str) -> bytes:
+    try:
+        result = subprocess.run(
+            (str(executable), *arguments),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise DeploymentOperationRejected(
+            "Provider input access operation did not complete"
+        ) from error
+    if result.returncode != 0 or len(result.stdout) > 65_536 or result.stderr:
+        raise DeploymentOperationRejected(
+            "Provider input access operation was rejected"
+        )
+    return result.stdout
 
 
 def _fsync_tree(root: Path) -> None:
