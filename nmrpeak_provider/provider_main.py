@@ -42,7 +42,8 @@ _CONFIG_MAX_BYTES = 65_536
 _DISPLAY_NAME = "NMRPeak"
 _DESCRIPTION = (
     "Generates candidate molecular structures from molecular formula and NMR "
-    "peak-list input."
+    "peak-list input. License, attribution, and source details: "
+    "https://github.com/numpde/nmrpeak-repro#license"
 )
 _HELLO_FILES = ("hello/hf.txt", "hello/chf.txt")
 _FROZEN_FILES = {*_HELLO_FILES, "deployment/topology.json"}

@@ -121,7 +121,12 @@ class ProviderMainTests(unittest.TestCase):
             [item["description"] for item in document["analysis_offerings"]],
             [frozen_file.content.decode() for frozen_file in FILES[:2]],
         )
-        self.assertIn("NMR peak-list input", document["description"])
+        self.assertEqual(
+            document["description"],
+            "Generates candidate molecular structures from molecular formula and "
+            "NMR peak-list input. License, attribution, and source details: "
+            "https://github.com/numpde/nmrpeak-repro#license",
+        )
 
     def test_local_admission_precedes_locked_work_and_cleanup_surrounds_failure(self) -> None:
         events: list[str] = []
