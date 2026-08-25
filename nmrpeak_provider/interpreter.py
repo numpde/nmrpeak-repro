@@ -323,7 +323,7 @@ async def interpret(
                         _append_repair(
                             prompt,
                             assistant=assistant,
-                            tool_result=correction,
+                            tool_result=error.reason,
                             correction=correction,
                         )
                         continue

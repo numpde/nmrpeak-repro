@@ -139,6 +139,34 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertEqual(len(session.model_inputs), 1)
         self.assertIs(type(session.model_inputs[0]), ChfRunnerInput)
 
+    def test_protocol_repair_returns_the_exact_failure_to_the_model(self) -> None:
+        prompts: list[InterpreterPrompt] = []
+        turns = iter(
+            (
+                InterpreterTurn(
+                    assistant_message={"role": "assistant", "content": None},
+                    invocation=InterpreterToolInvocation("unknown_tool", {}),
+                    tool_call_ids=("call-1",),
+                ),
+                turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE}),
+            )
+        )
+
+        async def call(prompt: InterpreterPrompt) -> InterpreterTurn:
+            prompts.append(prompt)
+            return next(turns)
+
+        run_with_endpoint(call)
+
+        repair = prompts[1][3:]
+        self.assertEqual(
+            [message["role"] for message in repair],
+            ["assistant", "tool", "user"],
+        )
+        self.assertEqual(repair[1]["content"], "unexpected_tool_invocation")
+        self.assertIn("Use the preceding tool result", repair[2]["content"])
+        self.assertNotEqual(repair[1]["content"], repair[2]["content"])
+
     def test_product_rejection_propagates_its_exact_reason(self) -> None:
         invalid_value = VALUE | {
             "model_input": VALUE["model_input"] | {"formula": ""}
