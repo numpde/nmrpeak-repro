@@ -586,7 +586,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(len(channel.received_frames), 1)
         self.assertIs(type(channel.received_frames[0]), ValidateFrame)
 
-    def test_product_rejection_becomes_one_durable_fixed_failure(self) -> None:
+    def test_product_rejection_reason_reaches_the_durable_failure(self) -> None:
         canonical_input = b"{}"
         active = active_attempt(canonical_input)
         api = CapturingApi(success_response(progress_receipt()))
@@ -610,7 +610,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(terminal_body["failure_code"], "input_rejected")
         self.assertEqual(
             terminal_body["failure_message"],
-            InputRejected.public_message,
+            InputRejectionReason.INVALID_STRUCTURE.value,
         )
         self.assertEqual(
             [request.operation for request in api.requests],
@@ -1312,7 +1312,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
                     "execution_attempt_ref": active.execution_attempt_ref,
                     "failure_code": "input_rejected",
-                    "failure_message": InputRejected.public_message,
+                    "failure_message": InputRejectionReason.INVALID_STRUCTURE.value,
                     "committed_at": "2026-08-24T12:02:00Z",
                     "replayed": False,
                 }

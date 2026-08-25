@@ -196,8 +196,8 @@ class InputRejected(ValueError):
     )
 
     def __init__(self, reason: InputRejectionReason) -> None:
-        super().__init__("input_rejected")
         self.reason = reason
+        super().__init__(reason.value)
 
 
 @dataclass(frozen=True, slots=True)

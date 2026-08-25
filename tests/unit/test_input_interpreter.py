@@ -31,6 +31,7 @@ from nmrpeak_provider.lifecycle_lane import (
     LifecycleLane,
 )
 from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
+from nmrpeak_provider.product_input import InputRejected, InputRejectionReason
 from nmrpeak_provider.runner_session import RunnerInputRejected, ValidatedRunnerRequest
 
 
@@ -135,6 +136,23 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIs(type(validated), ValidatedRunnerRequest)
         self.assertEqual(len(session.model_inputs), 1)
         self.assertIs(type(session.model_inputs[0]), ChfRunnerInput)
+
+    def test_product_rejection_propagates_its_exact_reason(self) -> None:
+        invalid_value = VALUE | {
+            "model_input": VALUE["model_input"] | {"formula": ""}
+        }
+
+        async def call(_prompt: object) -> InterpreterTurn:
+            return turn(
+                InterpreterTool.SUBMIT_INTERPRETATION,
+                {"value": invalid_value},
+            )
+
+        with self.assertRaises(InputRejected) as raised:
+            run_with_endpoint(call)
+
+        self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_FORMULA)
+        self.assertEqual(str(raised.exception), "invalid_formula")
 
     def test_runner_rejection_does_not_ask_the_model_to_explain_it(self) -> None:
         prompts: list[InterpreterPrompt] = []

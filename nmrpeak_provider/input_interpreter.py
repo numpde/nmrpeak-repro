@@ -157,11 +157,11 @@ class _InterpretationCapability:
     def construct_interpretation(self, value: object, /) -> object:
         try:
             encoded = canonical_json_bytes(value)
-            return parse_job_input(encoded, self.lane.offering)
-        except (InputRejected, TypeError, ValueError, UnicodeError):
+        except (TypeError, ValueError, UnicodeError) as error:
             raise InterpreterProtocolError(
                 "submitted_value_not_constructible"
-            ) from None
+            ) from error
+        return parse_job_input(encoded, self.lane.offering)
 
 
 def _admit_source_text(source: bytes) -> UserProvidedText:

@@ -60,6 +60,7 @@ class ProductInputTests(unittest.TestCase):
         with self.assertRaises(InputRejected) as raised:
             parse_job_input(raw, offering)
         self.assertEqual(reason, raised.exception.reason)
+        self.assertEqual(reason.value, str(raised.exception))
 
     def test_hf_input_is_canonicalized_and_sorted_for_nmrpeak(self) -> None:
         proton_peaks = [

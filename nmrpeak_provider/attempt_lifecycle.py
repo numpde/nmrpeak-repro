@@ -663,8 +663,8 @@ def prepare_execution(
                 execution_attempt_ref=record.execution_attempt_ref,
                 provider_attempt_key=record.provider_attempt_key,
             )
-        except InputRejected:
-            return _retain_input_rejection(journal, record)
+        except InputRejected as rejection:
+            return _retain_input_rejection(journal, record, str(rejection))
         except ReportedInputProblem as problem:
             return _retain_input_rejection(journal, record, problem.message)
         except InterpretationRejected:
