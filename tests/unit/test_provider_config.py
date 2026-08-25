@@ -46,6 +46,11 @@ ready_seconds = 300
 validate_seconds = 30
 generate_seconds = 300
 retire_seconds = 10
+
+[interpreter]
+request_timeout_seconds = 25
+turn_timeout_seconds = 60
+interpretation_timeout_seconds = 240
 '''
 
 
@@ -58,6 +63,10 @@ class ProviderConfigTests(unittest.TestCase):
         self.assertEqual(configured.journal_maximum_records, 2)
         self.assertEqual(configured.process.hello_interval_seconds, 3600)
         self.assertEqual(configured.runner.generate_seconds, 300)
+        self.assertEqual(
+            configured.interpreter.interpretation_timeout_seconds,
+            240,
+        )
 
     def test_private_ca_is_selected_without_loading_runtime_trust(self) -> None:
         configured = decode_provider_runtime_config(

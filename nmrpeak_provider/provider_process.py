@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 from threading import Event, Thread
 import time
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .attempt_inventory import (
     AttemptInventoryReadFailed,
@@ -21,6 +21,7 @@ from .attempt_journal_store import (
 from .attempt_lifecycle import (
     AttemptObservationFailed,
     FeedReadFailed,
+    InputInterpretationUnavailable,
     InputReadFailed,
     JobAdmitted,
     ObservationPolicy,
@@ -52,6 +53,9 @@ from .provider_success import (
     parse_provider_hello_success,
 )
 from .runner_session import RunnerSession, RunnerSessionRetired
+
+if TYPE_CHECKING:
+    from .input_interpreter import InputInterpreter
 
 
 class ProviderStartupUnavailable(RuntimeError):
@@ -124,6 +128,7 @@ class _LaneWork:
         runtime: GenerationRuntime,
         api: ProviderApiClient,
         journal: AttemptJournalStore,
+        interpreter: InputInterpreter,
         policy: ProviderProcessPolicy,
         stop: Event,
     ) -> None:
@@ -132,6 +137,7 @@ class _LaneWork:
                 runtime=runtime,
                 api=api,
                 journal=journal,
+                interpreter=interpreter,
                 policy=policy,
                 stop=stop,
                 owner=self.owner,
@@ -147,6 +153,7 @@ def run_provider_process(
     runtime: GenerationRuntime,
     api: ProviderApiClient,
     journal: AttemptJournalStore,
+    interpreter: InputInterpreter,
     hf_session: RunnerSession,
     chf_session: RunnerSession,
     hello: _PreparedProviderRequest,
@@ -192,6 +199,7 @@ def run_provider_process(
             runtime=runtime,
             api=api,
             journal=journal,
+            interpreter=interpreter,
             owners=owners,
             policy=policy,
             stop=stop,
@@ -212,6 +220,7 @@ def run_provider_process(
                     "runtime": runtime,
                     "api": api,
                     "journal": journal,
+                    "interpreter": interpreter,
                     "policy": policy,
                     "stop": stop,
                 },
@@ -385,6 +394,7 @@ def _recover_startup(
     runtime: GenerationRuntime,
     api: ProviderApiClient,
     journal: AttemptJournalStore,
+    interpreter: InputInterpreter,
     owners: tuple[_LaneOwner, _LaneOwner],
     policy: ProviderProcessPolicy,
     stop: Event,
@@ -421,6 +431,7 @@ def _recover_startup(
                 runtime=runtime,
                 api=api,
                 journal=journal,
+                interpreter=interpreter,
                 session=owner.session,
                 record=current,
                 observation=policy.observation,
@@ -450,6 +461,7 @@ def _run_lane(
     runtime: GenerationRuntime,
     api: ProviderApiClient,
     journal: AttemptJournalStore,
+    interpreter: InputInterpreter,
     policy: ProviderProcessPolicy,
     stop: Event,
     owner: _LaneOwner,
@@ -473,6 +485,7 @@ def _run_lane(
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=interpreter,
                         session=owner.session,
                         record=record,
                         observation=policy.observation,
@@ -499,6 +512,7 @@ def _run_lane(
                         api=api,
                         journal=journal,
                         session=owner.session,
+                        interpreter=interpreter,
                         admitted=admitted,
                         observation=policy.observation,
                     )
@@ -550,6 +564,8 @@ def _owner_for_record(
 
 
 def _outcome_is_unavailable(outcome: object) -> bool:
+    if type(outcome) is InputInterpretationUnavailable:
+        return True
     if type(outcome) in {
         AttemptInventoryReadFailed,
         AttemptObservationFailed,

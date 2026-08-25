@@ -39,6 +39,7 @@ from nmrpeak_provider.attempt_lifecycle import (
     AttemptObserved,
     AttemptObservationFailed,
     InputReadFailed,
+    InputInterpretationUnavailable,
     InterruptedFailurePending,
     ObservationLost,
     ObservationPolicy,
@@ -62,6 +63,12 @@ from nmrpeak_provider.attempt_lifecycle import (
     select_completion,
     start_attempt,
 )
+from nmrpeak_provider.interpreter import (
+    InterpreterUnavailable,
+    InterpreterUnavailableReason,
+    ReportedInputProblem,
+)
+from nmrpeak_provider.text_provenance import ModelGeneratedText
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
     CHF_RUNNER_CONTRACT_ID,
@@ -91,7 +98,7 @@ from nmrpeak_provider.lifecycle_lane import (
     HF_LIFECYCLE_LANE,
 )
 from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
-from nmrpeak_provider.product_input import InputRejected
+from nmrpeak_provider.product_input import InputRejected, InputRejectionReason
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
     HF_RESULT_IDENTITY,
@@ -154,6 +161,31 @@ class CapturingApi:
 class UnusedSession:
     def validate(self, **values: object) -> object:
         raise AssertionError("CHF validation must not occur")
+
+
+class RejectingInterpreter:
+    def validate_freeform_input(self, **_values: object) -> object:
+        raise InputRejected(InputRejectionReason.INVALID_STRUCTURE)
+
+
+REJECTING_INTERPRETER = RejectingInterpreter()
+
+
+class UnavailableInterpreter:
+    def validate_freeform_input(self, **_values: object) -> object:
+        raise InterpreterUnavailable(
+            InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
+            ("fake",),
+        )
+
+
+class ReportingInterpreter:
+    def validate_freeform_input(self, **_values: object) -> object:
+        raise ReportedInputProblem(
+            ModelGeneratedText("The molecular formula contains unsupported sulfur."),
+            configuration_id="fake",
+            attempted_configuration_ids=("fake",),
+        )
 
 
 class NonStoppingSession:
@@ -524,6 +556,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=session,
+                    interpreter=REJECTING_INTERPRETER,
                     record=active,
                     canonical_input=canonical_input,
                 )
@@ -549,7 +582,7 @@ class AttemptLifecycleTests(unittest.TestCase):
     def test_product_rejection_becomes_one_durable_fixed_failure(self) -> None:
         canonical_input = b"{}"
         active = active_attempt(canonical_input)
-        api = CapturingApi()
+        api = CapturingApi(success_response(progress_receipt()))
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
@@ -559,6 +592,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=UnusedSession(),
+                    interpreter=REJECTING_INTERPRETER,
                     record=active,
                     canonical_input=canonical_input,
                 )
@@ -571,7 +605,55 @@ class AttemptLifecycleTests(unittest.TestCase):
             terminal_body["failure_message"],
             InputRejected.public_message,
         )
-        self.assertEqual(api.requests, [])
+        self.assertEqual(
+            [request.operation for request in api.requests],
+            [ProviderOperation.EXECUTION_ATTEMPT_PROGRESS],
+        )
+
+    def test_interpreter_unavailability_keeps_pre_execution_retryable(self) -> None:
+        canonical_input = b"Formula C2H6O with proton and carbon peaks."
+        active = active_attempt(canonical_input)
+        api = CapturingApi(success_response(progress_receipt()))
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
+                    api=api,
+                    journal=journal,
+                    session=UnusedSession(),
+                    interpreter=UnavailableInterpreter(),
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+                self.assertEqual(journal.records(), (active,))
+        self.assertIs(type(outcome), InputInterpretationUnavailable)
+
+    def test_reported_input_problem_uses_existing_terminal_authority(self) -> None:
+        canonical_input = b"Formula C2H6OS with proton and carbon peaks."
+        active = active_attempt(canonical_input)
+        api = CapturingApi(success_response(progress_receipt()))
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
+                    api=api,
+                    journal=journal,
+                    session=UnusedSession(),
+                    interpreter=ReportingInterpreter(),
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+                self.assertEqual(journal.records(), (outcome.record,))
+        self.assertIs(type(outcome), InputFailurePending)
+        terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(
+            terminal_body["failure_message"],
+            "The molecular formula contains unsupported sulfur.",
+        )
 
     def test_runner_rejection_uses_the_same_durable_failure_policy(self) -> None:
         canonical_input = valid_chf_input()
@@ -593,6 +675,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=session,
+                    interpreter=REJECTING_INTERPRETER,
                     record=active,
                     canonical_input=canonical_input,
                 )
@@ -624,6 +707,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                         api=api,
                         journal=journal,
                         session=UnusedSession(),
+                        interpreter=REJECTING_INTERPRETER,
                         record=active,
                         canonical_input=canonical_input,
                     )
@@ -657,6 +741,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                             api=api,
                             journal=journal,
                             session=UnusedSession(),
+                            interpreter=REJECTING_INTERPRETER,
                             record=record,
                             canonical_input=supplied_input,
                         )
@@ -1148,6 +1233,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=session,
+                    interpreter=REJECTING_INTERPRETER,
                     admitted=JobAdmitted(record, canonical_input),
                     observation=ObservationPolicy(0.01, 0.2),
                 )
@@ -1171,6 +1257,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                         api=api,
                         journal=journal,
                         session=session,
+                        interpreter=REJECTING_INTERPRETER,
                         admitted=JobAdmitted(record, canonical_input),
                         observation=ObservationPolicy(0.01, 0.2),
                     )
@@ -1184,6 +1271,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         session, channel = chf_session()
         api = CapturingApi(
             success_response(start_receipt("in_progress", replayed=False)),
+            success_response(progress_receipt()),
             success_response(
                 {
                     "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
@@ -1203,6 +1291,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=session,
+                    interpreter=REJECTING_INTERPRETER,
                     admitted=JobAdmitted(record, canonical_input),
                     observation=ObservationPolicy(0.01, 0.2),
                 )
@@ -1212,6 +1301,7 @@ class AttemptLifecycleTests(unittest.TestCase):
             [request.operation for request in api.requests],
             [
                 ProviderOperation.EXECUTION_ATTEMPT_START,
+                ProviderOperation.EXECUTION_ATTEMPT_PROGRESS,
                 ProviderOperation.EXECUTION_ATTEMPT_FAIL,
             ],
         )
@@ -1299,6 +1389,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=None,
+                    interpreter=REJECTING_INTERPRETER,
                     record=entered,
                     observation=None,
                 )
@@ -1326,6 +1417,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=None,
+                    interpreter=REJECTING_INTERPRETER,
                     record=terminal,
                     observation=None,
                 )
@@ -1359,6 +1451,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=session,
+                    interpreter=REJECTING_INTERPRETER,
                     record=record,
                     observation=ObservationPolicy(0.01, 0.2),
                 )

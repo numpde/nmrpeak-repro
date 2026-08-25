@@ -414,6 +414,11 @@ class ProviderDeploymentTests(unittest.TestCase):
                 ),
                 patch.object(
                     provider_deployment,
+                    "_admit_interpreter_configs",
+                    side_effect=lambda *_: events.append("interpreter"),
+                ),
+                patch.object(
+                    provider_deployment,
                     "verify_hf_checkpoint",
                     side_effect=lambda *_args, **_kwargs: events.append("hf"),
                 ),
@@ -445,7 +450,14 @@ class ProviderDeploymentTests(unittest.TestCase):
 
             self.assertEqual(
                 events,
-                ["credential", "hf", "chf", "provider_volumes", "compose_up"],
+                [
+                    "credential",
+                    "interpreter",
+                    "hf",
+                    "chf",
+                    "provider_volumes",
+                    "compose_up",
+                ],
             )
             self.assertTrue(
                 (
@@ -529,6 +541,46 @@ class ProviderDeploymentTests(unittest.TestCase):
                     state,
                     "provider:nmrpeak",
                 )
+
+    def test_interpreter_config_grants_only_one_bounded_toml_tree(self) -> None:
+        with TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            directory = state / "openai-chat-completions.d"
+            directory.mkdir(mode=0o700)
+            endpoint = directory / "10-primary.toml"
+            endpoint.write_text(
+                'id="primary"\nbase_url="https://example.test"\n'
+                'api_key="secret"\nmodel="model"\n',
+                encoding="utf-8",
+            )
+            endpoint.chmod(0o600)
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_read_acl",
+                    return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_grant_provider_tree_access",
+                ) as grant,
+            ):
+                provider_deployment._admit_interpreter_configs(state)
+            grant.assert_called_once_with(directory)
+
+            (directory / "README").write_text("unexpected", encoding="utf-8")
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_read_acl",
+                    return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL,
+                ),
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "invalid file",
+                ),
+            ):
+                provider_deployment._admit_interpreter_configs(state)
 
     def test_credential_install_is_idempotent_and_replaces_only_while_stopped(
         self,
@@ -1615,6 +1667,7 @@ def compose_for_environment(
     provider_mounts[0]["source"] = environment["PROVIDER_CONFIG_PATH"]
     provider_mounts[1]["source"] = environment["PROVIDER_CREDENTIAL_PATH"]
     provider_mounts[2]["source"] = environment["FROZEN_GENERATION_PATH"]
+    provider_mounts[7]["source"] = environment["INTERPRETER_CONFIG_PATH"]
     if localhost:
         services["provider"]["extra_hosts"] = ["nmr.localhost=host-gateway"]
         provider_mounts.append(

@@ -1,9 +1,10 @@
 NMRPeak multi-runner NMR API provider
 =====================================
 
-Status: implemented; checkpoint-free validation passes and reviewed release
-declarations are materialized; real-checkpoint/runtime proof remains outstanding
-Date: 2026-08-24
+Status: implemented through the prose-input correction; checkpoint-free
+validation passes and reviewed release declarations are materialized;
+real-checkpoint/runtime proof of the corrected provider remains outstanding
+Date: 2026-08-25
 
 
 Purpose
@@ -428,22 +429,33 @@ Keep three contracts separate:
     fingerprint and length facts. Those bytes are immutable provider input.
 
 `implementation input`
-    The complete specification text must be one strict JSON document with
-    schema ID `nmrpeak.structure_generation.request.v1`. No prose extraction,
-    LLM interpretation, Markdown fencing, comments, duplicate keys, unknown
-    fields, NaN/Infinity, or trailing data is accepted in v1.
+    A complete strict JSON document with schema ID
+    `nmrpeak.structure_generation.request.v1` enters the deterministic parser
+    directly. Other bounded UTF-8 specification text enters the same ordered,
+    deadline-bound OpenAI Chat Completions interpreter used by magnet-deploy.
+    The interpreter must submit that complete strict document; its candidate
+    then crosses the existing parser and runner `VALIDATE` exchange before it
+    can authorize generation. Markdown fencing, comments, duplicate keys,
+    unknown fields, NaN/Infinity, and trailing data remain invalid candidate
+    syntax rather than alternate input authorities.
 
 `runner session`
     The provider binding constructs an Attempt-correlated canonical request.
     The caller cannot choose `implementation_ref`, runner, release, target,
     request correlation, checkpoint path, import path, or Python callable.
 
-Using strict structured text under the existing analysis kinds is an explicit
-provider capability restriction. The `hello` descriptions must state it. Before
-public registration, API/product review must confirm that this restriction is
-acceptable for `mol_from_1h_peaks` and `mol_from_1h_13c_formula`; otherwise the
-API authority must register distinct structured-input analysis kinds. The
-provider must not silently publish unreviewed kind semantics.
+The existing analysis kinds accept their ordinary molecular-formula and NMR
+peak-list prose. Interpretation is translation, not scientific admission: the
+language model cannot expand supported elements, spectra, multiplicities,
+numeric ranges, token budgets, or runner capability. Direct JSON is retained
+only as a deterministic no-network fast path through the same authority.
+
+Endpoint files are ordered TOML secrets explicitly installed by the operator
+and exposed through one provider-only read-only mount. The provider snapshots
+one to four endpoint files at startup. Each turn has the same two-attempt
+request budget, repair and endpoint fallback are bounded, and all endpoints
+share one aggregate interpretation deadline. Runners receive neither endpoint
+secrets nor network access.
 
 The implementation document carries:
 
@@ -609,8 +621,14 @@ identity.
 
 Failure publication is closed and model-local:
 
-- invalid structured Job input or unsupported scientific value becomes
-  `input_rejected` with fixed reviewed text after Attempt start;
+- freeform text that cannot be admitted, an interpreter-reported caller problem,
+  or an exhausted deterministic candidate repair becomes `input_rejected`
+  after Attempt start;
+- interpreter transport, endpoint, prompt, or aggregate-deadline failure leaves
+  pre-execution work durable and retryable under the existing consecutive
+  unavailability budget;
+- a direct structured document or interpreted candidate still becomes
+  `input_rejected` when the product parser or runner deterministically rejects it;
 - a deterministic model admission rejection becomes `input_rejected` only
   through its reviewed safe mapping;
 - runner absence before start withholds lane readiness;
@@ -624,10 +642,12 @@ Failure publication is closed and model-local:
 - Job closure, cancellation, or Attempt expiry retires local work without
   inventing a new terminal claim.
 
-Logs and API failure messages never contain raw Job text, spectra, formulas,
-structures, runner output, endpoint URLs, credentials, checkpoint paths, raw
-exceptions, or stack traces. Provider logs use stable provider, Job, Attempt,
-implementation, boot, phase, duration, count, validated upstream request ID, and
+Logs never contain raw Job text, spectra, formulas, structures, model responses,
+runner output, endpoint URLs, credentials, checkpoint paths, raw exceptions, or
+stack traces. A bounded interpreter-reported input problem may be returned to
+the caller as untrusted failure text and can reproduce caller input; it is never
+logged. Provider logs use stable provider, Job, Attempt, implementation, boot,
+phase, duration, count, validated upstream request ID, and
 closed failure codes.
 
 
@@ -942,6 +962,23 @@ signed-inventory lane.
 Replacement does not claim secure erasure of the old file's storage blocks or
 backups.
 
+Interpreter endpoint configuration has no repository-owned issuer, so `up`
+does not infer, download, or copy it. Before the first `up`, the operator
+installs one or more endpoint documents explicitly:
+
+    install -d -m 0700 \
+        secrets/deployments/<name>/openai-chat-completions.d
+    install -m 0600 /absolute/endpoint.toml \
+        secrets/deployments/<name>/openai-chat-completions.d/10-primary.toml
+
+The directory contains one to four `.toml` files; filename order is runtime
+fallback order. The host admits the bounded private file tree and grants only
+the provider's runtime identity access. The provider's single endpoint parser
+then validates endpoint identity, URL, API key, model, and reasoning policy
+before it acquires the provider identity lock or contacts the NMR API. An
+invalid endpoint document therefore leaves the provider unready and makes `up`
+fail; the host does not mirror that semantic parser.
+
 All selectors are literal command-line inputs captured before Make expansion
 and validated before path derivation. There are no environment defaults,
 aliases, fuzzy matches, automatic runners, implicit pulls/builds/downloads,
@@ -1023,9 +1060,11 @@ checkout-read-only. It must prove:
 - cancellation/expiry during blocked runner work and bounded shutdown;
 - independent concurrent HF/CHF lanes with one request per runner and no
   unbounded provider queue;
-- strict structured input, formula, decimal, spectrum, peak, coupling, beam,
-  transformed-token, framing, and result bounds, including rejection at the
-  pinned 512-token assertion boundary;
+- direct structured-input bypass, bounded freeform admission, endpoint fallback,
+  repair, retryable interpretation outage, and reported input problems;
+- every interpreted candidate crosses the strict formula, decimal, spectrum,
+  peak, coupling, beam, transformed-token, framing, and result bounds, including
+  rejection at the pinned 512-token assertion boundary;
 - public candidates contain bounded generated strings and provider-owned
   provenance, but no runner-local RDKit validation claims;
 - duplicate 13C observations survive input decoding and NMRPeak projection;

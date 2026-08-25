@@ -1,1 +1,1 @@
-Generates candidate molecular structures from a molecular formula and a structured 1H NMR peak list.
+Generates candidate molecular structures from a molecular formula and a 1H NMR peak list.

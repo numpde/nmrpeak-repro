@@ -47,6 +47,10 @@ services:
       - type: volume
         source: chf-session
         target: /run/nmrpeak-provider/chf
+      - type: bind
+        source: "${INTERPRETER_CONFIG_PATH:?set INTERPRETER_CONFIG_PATH through make}"
+        target: /run/secrets/nmrpeak-provider/openai-chat-completions.d
+        read_only: true
     healthcheck:
       test:
         - CMD

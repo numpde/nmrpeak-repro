@@ -48,7 +48,7 @@ class ProviderMainTests(unittest.TestCase):
             [item["description"] for item in document["analysis_offerings"]],
             [frozen_file.content.decode() for frozen_file in FILES[:2]],
         )
-        self.assertIn("strict structured", document["description"])
+        self.assertIn("NMR peak-list input", document["description"])
 
     def test_local_admission_precedes_locked_work_and_cleanup_surrounds_failure(self) -> None:
         events: list[str] = []
@@ -68,6 +68,7 @@ class ProviderMainTests(unittest.TestCase):
             journal_filesystem_reserve_bytes=1024,
             endpoint=EndpointConfig(),
             process=object(),
+            interpreter=object(),
         )
         hf = FakeSession("hf", events)
         chf = FakeSession("chf", events)
@@ -130,6 +131,14 @@ class ProviderMainTests(unittest.TestCase):
             patch(
                 "nmrpeak_provider.provider_main.decode_provider_runtime_config",
                 return_value=configured,
+            ),
+            patch(
+                "nmrpeak_provider.provider_main.load_openai_chat_endpoint_specs",
+                return_value=(object(),),
+            ),
+            patch(
+                "nmrpeak_provider.provider_main.InputInterpreter",
+                return_value=object(),
             ),
             patch(
                 "nmrpeak_provider.provider_main.load_frozen_generation",

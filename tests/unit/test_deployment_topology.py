@@ -147,6 +147,12 @@ def compose_document() -> dict[str, object]:
             mount("provider-journal", "/var/lib/nmrpeak-provider", "volume", False),
             mount("hf-session", "/run/nmrpeak-provider/hf", "volume", False),
             mount("chf-session", "/run/nmrpeak-provider/chf", "volume", False),
+            mount(
+                "/host/interpreter",
+                "/run/secrets/nmrpeak-provider/openai-chat-completions.d",
+                "bind",
+                True,
+            ),
         ],
         "healthcheck": {
             "test": ["CMD", "python", "-m", "nmrpeak_provider.provider_readiness"],

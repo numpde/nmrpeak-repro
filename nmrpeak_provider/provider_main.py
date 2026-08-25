@@ -26,6 +26,11 @@ from .provider_credential import (
     parse_provider_signing_credential,
 )
 from .provider_identity_lock import ProviderIdentityLock
+from .input_interpreter import (
+    INTERPRETER_CONFIG_DIRECTORY,
+    InputInterpreter,
+)
+from .openai_chat_interpreter import load_openai_chat_endpoint_specs
 from .provider_process import run_provider_process
 from .provider_readiness import ProviderReadiness
 from .provider_requests import HelloOffering, prepare_provider_hello
@@ -35,8 +40,8 @@ from .runner_session import RunnerSession, open_runner_session
 _CONFIG_MAX_BYTES = 65_536
 _DISPLAY_NAME = "NMRPeak"
 _DESCRIPTION = (
-    "Generates candidate molecular structures from strict structured NMRPeak "
-    "formula and peak-list input."
+    "Generates candidate molecular structures from molecular formula and NMR "
+    "peak-list input."
 )
 _HELLO_FILES = ("hello/hf.txt", "hello/chf.txt")
 _FROZEN_FILES = {*_HELLO_FILES, "deployment/topology.json"}
@@ -55,6 +60,10 @@ def run_provider(config_path: Path = CONFIG_PATH) -> None:
 def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
     configured = decode_provider_runtime_config(
         _read_regular_file(config_path, _CONFIG_MAX_BYTES)
+    )
+    interpreter = InputInterpreter(
+        load_openai_chat_endpoint_specs(INTERPRETER_CONFIG_DIRECTORY),
+        configured.interpreter,
     )
     frozen = load_frozen_generation(
         FROZEN_ROOT,
@@ -109,6 +118,7 @@ def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
                     runtime=frozen.runtime,
                     api=api,
                     journal=journal,
+                    interpreter=interpreter,
                     hf_session=hf_session,
                     chf_session=chf_session,
                     hello=hello,

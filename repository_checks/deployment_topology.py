@@ -208,6 +208,10 @@ def _provider_posture(service: dict[str, object], *, private_ca: bool) -> None:
     expected_mounts = {
         "/run/config/nmrpeak-provider/provider.toml": ("bind", True),
         "/run/secrets/nmrpeak-provider/signing.private.json": ("bind", True),
+        "/run/secrets/nmrpeak-provider/openai-chat-completions.d": (
+            "bind",
+            True,
+        ),
         "/run/nmrpeak-provider/frozen": ("bind", True),
         "/run/nmrpeak-provider-lock": ("volume", True),
         "/var/lib/nmrpeak-provider": ("volume", False),
@@ -236,6 +240,7 @@ def _provider_posture(service: dict[str, object], *, private_ca: bool) -> None:
     for target in (
         "/run/config/nmrpeak-provider/provider.toml",
         "/run/secrets/nmrpeak-provider/signing.private.json",
+        "/run/secrets/nmrpeak-provider/openai-chat-completions.d",
         "/run/nmrpeak-provider/frozen",
         *(
             ("/run/config/nmrpeak-provider/server-a-ca.crt",)

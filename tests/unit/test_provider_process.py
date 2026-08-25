@@ -192,6 +192,8 @@ class PeriodicHelloApi:
 
 
 class ProviderProcessTests(unittest.TestCase):
+    _unused_interpreter = object()
+
     def test_recovers_retained_terminal_before_concurrent_lane_feeds(self) -> None:
         runtime = generation_runtime()
         terminal = completion_pending(runtime.chf.generation)
@@ -212,6 +214,7 @@ class ProviderProcessTests(unittest.TestCase):
                     runtime=runtime,
                     api=api,
                     journal=journal,
+                    interpreter=self._unused_interpreter,
                     hf_session=hf_session,
                     chf_session=chf_session,
                     hello=hello_request(),
@@ -260,6 +263,7 @@ class ProviderProcessTests(unittest.TestCase):
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=self._unused_interpreter,
                         hf_session=hf_session,
                         chf_session=chf_session,
                         hello=hello_request(),
@@ -287,6 +291,7 @@ class ProviderProcessTests(unittest.TestCase):
                     runtime=runtime,
                     api=api,
                     journal=journal,
+                    interpreter=self._unused_interpreter,
                     hf_session=hf_session,
                     chf_session=chf_session,
                     hello=hello_request(),
@@ -334,6 +339,7 @@ class ProviderProcessTests(unittest.TestCase):
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=self._unused_interpreter,
                         hf_session=hf_session,
                         chf_session=chf_session,
                         hello=hello_request(),
@@ -368,6 +374,7 @@ class ProviderProcessTests(unittest.TestCase):
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=self._unused_interpreter,
                         hf_session=hf_session,
                         chf_session=chf_session,
                         hello=hello_request(),
@@ -396,6 +403,7 @@ class ProviderProcessTests(unittest.TestCase):
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=self._unused_interpreter,
                         hf_session=chf_session,
                         chf_session=hf_session,
                         hello=hello_request(),
@@ -421,6 +429,7 @@ class ProviderProcessTests(unittest.TestCase):
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=self._unused_interpreter,
                         hf_session=hf_session,
                         chf_session=chf_session,
                         hello=hello_request(),
@@ -446,6 +455,7 @@ class ProviderProcessTests(unittest.TestCase):
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=self._unused_interpreter,
                         hf_session=hf_session,
                         chf_session=chf_session,
                         hello=hello_request(),
@@ -477,6 +487,7 @@ class ProviderProcessTests(unittest.TestCase):
                     runtime=runtime,
                     api=api,
                     journal=journal,
+                    interpreter=self._unused_interpreter,
                     hf_session=hf_session,
                     chf_session=chf_session,
                     hello=hello_request(),
@@ -506,6 +517,7 @@ class ProviderProcessTests(unittest.TestCase):
                         runtime=runtime,
                         api=api,
                         journal=journal,
+                        interpreter=self._unused_interpreter,
                         hf_session=hf_session,
                         chf_session=chf_session,
                         hello=hello_request(),
@@ -546,6 +558,7 @@ class ProviderProcessTests(unittest.TestCase):
                             runtime=runtime,
                             api=api,
                             journal=journal,
+                            interpreter=self._unused_interpreter,
                             hf_session=hf_session,
                             chf_session=chf_session,
                             hello=hello_request(),

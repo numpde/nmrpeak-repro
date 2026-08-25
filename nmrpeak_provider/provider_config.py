@@ -15,6 +15,7 @@ from .provider_https import (
     validate_provider_https_endpoint_config,
 )
 from .provider_process import ProviderProcessPolicy
+from .interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
 from .runner_session import RunnerDeadlines
 
 
@@ -70,6 +71,7 @@ class ProviderRuntimeConfig:
     journal_filesystem_reserve_bytes: int
     process: ProviderProcessPolicy
     runner: RunnerDeadlines
+    interpreter: InterpreterPolicy
 
 
 def server_a_authority_id(endpoint: ProviderEndpointConfig) -> str:
@@ -98,7 +100,15 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
     _fields(
         "top level",
         document,
-        {"frozen_generation_id", "journal", "process", "runner", "schema_id", "server_a"},
+        {
+            "frozen_generation_id",
+            "interpreter",
+            "journal",
+            "process",
+            "runner",
+            "schema_id",
+            "server_a",
+        },
     )
     if document["schema_id"] != SCHEMA_ID:
         raise ValueError("Provider runtime config schema is unsupported")
@@ -181,6 +191,24 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
         runner["generate_seconds"],
         runner["retire_seconds"],
     )
+    interpreter = _table(
+        document,
+        "interpreter",
+        {
+            "interpretation_timeout_seconds",
+            "request_timeout_seconds",
+            "turn_timeout_seconds",
+        },
+    )
+    interpreter_policy = InterpreterPolicy(
+        call_policy=OpenAIChatCallPolicy(
+            request_timeout_seconds=interpreter["request_timeout_seconds"],
+            turn_timeout_seconds=interpreter["turn_timeout_seconds"],
+        ),
+        interpretation_timeout_seconds=interpreter[
+            "interpretation_timeout_seconds"
+        ],
+    )
     return ProviderRuntimeConfig(
         frozen_id,
         endpoint,
@@ -188,6 +216,7 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
         reserve,
         process_policy,
         deadlines,
+        interpreter_policy,
     )
 
 

@@ -454,6 +454,7 @@ def start_deployment(
         _validate_deployment_plan(plan)
         _materialize_locked(state_root, plan)
         _admit_installed_credential(state_root, plan.provider_ref)
+        _admit_interpreter_configs(state_root)
         verify_hf_checkpoint(root, plan.releases.hf, docker_binary=docker)
         verify_chf_checkpoint(root, plan.releases.chf, docker_binary=docker)
         ensure_provider_state_volumes(
@@ -860,6 +861,50 @@ def _admit_installed_credential(state_root: Path, provider_ref: str) -> None:
         "Provider signing credential",
         require_provider_access=True,
     )
+
+
+def _admit_interpreter_configs(state_root: Path) -> None:
+    root = state_root / "openai-chat-completions.d"
+    try:
+        metadata = root.stat(follow_symlinks=False)
+        entries = tuple(root.iterdir())
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            "Interpreter endpoint configuration is unavailable"
+        ) from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or not 1 <= len(entries) <= 4
+    ):
+        raise DeploymentOperationRejected(
+            "Interpreter endpoint configuration must contain one to four private files"
+        )
+    for path in entries:
+        try:
+            entry = path.stat(follow_symlinks=False)
+        except OSError as error:
+            raise DeploymentOperationRejected(
+                "Interpreter endpoint configuration contains an unreadable entry"
+            ) from error
+        if (
+            path.suffix != ".toml"
+            or not stat.S_ISREG(entry.st_mode)
+            or entry.st_uid != os.geteuid()
+            or entry.st_size > 64 * 1024
+        ):
+            raise DeploymentOperationRejected(
+                "Interpreter endpoint configuration contains an invalid file"
+            )
+        access = _read_acl(path, "Interpreter endpoint configuration")
+        if access not in {
+            _PRIVATE_WRITABLE_FILE_ACL,
+            _PROVIDER_WRITABLE_FILE_ACL,
+        }:
+            raise DeploymentOperationRejected(
+                "Interpreter endpoint configuration must remain operator-owned"
+            )
+    _grant_provider_tree_access(root)
 
 
 def _read_owned_private_credential(
@@ -2380,6 +2425,9 @@ def _compose_environment(
         "CHF_RUNNER_IMAGE_REF": images.chf,
         "PROVIDER_CONFIG_PATH": str(provider_config),
         "PROVIDER_CREDENTIAL_PATH": str(state_root / "signing.private.json"),
+        "INTERPRETER_CONFIG_PATH": str(
+            state_root / "openai-chat-completions.d"
+        ),
         "FROZEN_GENERATION_PATH": str(frozen_generation),
         "PROVIDER_IDENTITY_LOCK_VOLUME": provider_identity_lock_volume_name(
             provider_ref

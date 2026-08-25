@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 import math
 from threading import Event, Thread
+from typing import TYPE_CHECKING
 
 from .attempt_identity import derive_provider_attempt_key
 from .attempt_journal import (
@@ -31,6 +32,11 @@ from .attempt_journal import (
 from .attempt_journal_store import AttemptJournalStore
 from .generation_runtime import GenerationRuntime
 from .lifecycle_lane import LifecycleLane
+from .interpreter import (
+    InterpretationRejected,
+    InterpreterUnavailable,
+    ReportedInputProblem,
+)
 from .runner_session import (
     RunnerInputRejected,
     RunnerSession,
@@ -95,6 +101,9 @@ from .run_generation import (
     parse_canonical_utc_timestamp,
     run_generation_fingerprint,
 )
+
+if TYPE_CHECKING:
+    from .input_interpreter import InputInterpreter
 
 
 _FEED_PAGE_LIMIT = 50
@@ -186,9 +195,17 @@ class InputFailurePending:
     record: TerminalPending
 
 
+@dataclass(frozen=True, slots=True)
+class InputInterpretationUnavailable:
+    """No configured interpreter produced a trustworthy answer in time."""
+
+    evidence: InterpreterUnavailable
+
+
 PreExecutionOutcome = (
     PreparedForExecution
     | InputFailurePending
+    | InputInterpretationUnavailable
     | AttemptMutationNotCommitted
     | AttemptMutationCommitPossible
 )
@@ -432,6 +449,7 @@ def run_admitted_job(
     api: ProviderApiClient,
     journal: AttemptJournalStore,
     session: RunnerSession,
+    interpreter: InputInterpreter,
     admitted: JobAdmitted,
     observation: ObservationPolicy,
 ) -> AdmittedJobOutcome:
@@ -463,6 +481,7 @@ def run_admitted_job(
         api=api,
         journal=journal,
         session=session,
+        interpreter=interpreter,
         record=started.record,
         canonical_input=admitted.canonical_input,
     )
@@ -481,6 +500,7 @@ def run_recovery_record(
     api: ProviderApiClient,
     journal: AttemptJournalStore,
     session: RunnerSession | None,
+    interpreter: InputInterpreter,
     record: StartPending | ActiveAttempt | TerminalPending,
     observation: ObservationPolicy | None,
 ) -> RecoveryRunOutcome:
@@ -516,6 +536,7 @@ def run_recovery_record(
         api=api,
         journal=journal,
         session=session,
+        interpreter=interpreter,
         record=recovered.record,
         canonical_input=recovered.canonical_input,
     )
@@ -595,6 +616,7 @@ def prepare_execution(
     api: ProviderApiClient,
     journal: AttemptJournalStore,
     session: RunnerSession,
+    interpreter: InputInterpreter,
     record: ActiveAttempt,
     canonical_input: bytes,
 ) -> PreExecutionOutcome:
@@ -612,8 +634,7 @@ def prepare_execution(
     try:
         model_input = parse_job_input(canonical_input, lane.offering)
     except InputRejected:
-        return _retain_input_rejection(journal, record)
-    runner_input = lane.bind_runner_input(model_input)
+        model_input = None
 
     progress = prepare_execution_attempt_progress(
         execution_attempt_ref=record.execution_attempt_ref,
@@ -627,13 +648,31 @@ def prepare_execution(
     if type(progress_outcome) is not AttemptMutationCommitted:
         return progress_outcome
 
-    validated = session.validate(
-        execution_attempt_ref=record.execution_attempt_ref,
-        provider_attempt_key=record.provider_attempt_key,
-        model_input=runner_input,
-    )
-    if type(validated) is RunnerInputRejected:
-        return _retain_input_rejection(journal, record)
+    if model_input is not None:
+        validated = session.validate(
+            execution_attempt_ref=record.execution_attempt_ref,
+            provider_attempt_key=record.provider_attempt_key,
+            model_input=lane.bind_runner_input(model_input),
+        )
+        if type(validated) is RunnerInputRejected:
+            return _retain_input_rejection(journal, record)
+    else:
+        try:
+            validated = interpreter.validate_freeform_input(
+                source=canonical_input,
+                lane=lane,
+                session=session,
+                execution_attempt_ref=record.execution_attempt_ref,
+                provider_attempt_key=record.provider_attempt_key,
+            )
+        except InputRejected:
+            return _retain_input_rejection(journal, record)
+        except ReportedInputProblem as problem:
+            return _retain_input_rejection(journal, record, problem.message)
+        except InterpretationRejected as rejection:
+            return _retain_input_rejection(journal, record, rejection.diagnostic)
+        except InterpreterUnavailable as unavailable:
+            return InputInterpretationUnavailable(unavailable)
     return PreparedForExecution(record, validated)
 
 
@@ -941,11 +980,12 @@ def _read_failure(
 def _retain_input_rejection(
     journal: AttemptJournalStore,
     record: ActiveAttempt,
+    message: str = InputRejected.public_message,
 ) -> InputFailurePending:
     prepared = prepare_execution_attempt_fail(
         execution_attempt_ref=record.execution_attempt_ref,
         failure_code="input_rejected",
-        failure_message=InputRejected.public_message,
+        failure_message=message,
     )
     terminal = retain_terminal_command(record, prepared)
     journal.replace(record, terminal)

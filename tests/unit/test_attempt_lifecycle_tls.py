@@ -65,6 +65,7 @@ from tests.fakes.tls_certificates import write_test_certificates
 _PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 _CREDENTIAL_REF = "credential:provider:nmrpeak-test"
 _FROZEN_GENERATION_ID = "sha256:" + "4" * 64
+_UNUSED_INTERPRETER = object()
 _CHF_RUNNER_FACTS = ProviderResultFacts(
     identity=CHF_RESULT_IDENTITY,
     runner_contract_id=CHF_RUNNER_CONTRACT_ID,
@@ -145,6 +146,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                             api=api,
                             journal=journal,
                             session=session,
+                            interpreter=_UNUSED_INTERPRETER,
                             record=started.record,
                             canonical_input=admitted.canonical_input,
                         )
@@ -264,6 +266,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                         api=api,
                         journal=journal,
                         session=session,
+                        interpreter=_UNUSED_INTERPRETER,
                         record=resumed.record,
                         canonical_input=admitted.canonical_input,
                     )
