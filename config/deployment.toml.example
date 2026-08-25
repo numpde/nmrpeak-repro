@@ -1,0 +1,18 @@
+schema_id = "nmrpeak.named_deployment.v1"
+provider_ref = "provider:replace-me"
+
+[implementations.hf]
+target = "cpu-x86_64"
+release = "replace-me"
+
+[implementations.hf.run_generation]
+generation_id = "replace-me"
+not_before = "2026-08-25T00:00:00Z"
+
+[implementations.chf]
+target = "cpu-x86_64"
+release = "replace-me"
+
+[implementations.chf.run_generation]
+generation_id = "replace-me"
+not_before = "2026-08-25T00:00:00Z"

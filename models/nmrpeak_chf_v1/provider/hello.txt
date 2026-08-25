@@ -1,0 +1,1 @@
+Generates candidate molecular structures from a molecular formula and structured 1H and 13C NMR peak lists.

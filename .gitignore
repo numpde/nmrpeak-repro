@@ -15,6 +15,7 @@
 .env
 .env.*
 /secrets/
+/config/deployments/
 
 # Python and notebook byproducts.
 **/__pycache__/
