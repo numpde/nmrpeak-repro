@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/init provider/deployment/status provider/deployment/up provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
+.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/init provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
 
 test: test/unit test/contract test/repository
 
@@ -81,6 +81,15 @@ provider/credential/install:
 	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment credential-install \
 		"$$DEPLOYMENT_INPUT" --nmr-api-v1 "$$NMR_API_V1_DIR_INPUT" $$replace_flag
+
+provider/identity-lock/remove: private export PROVIDER_REF_INPUT := $(value PROVIDER_REF)
+provider/identity-lock/remove: private export CONFIRM_INPUT := $(value CONFIRM)
+provider/identity-lock/remove:
+	@test "$(origin PROVIDER_REF)" = command\ line || { echo 'PROVIDER_REF must be set on the make command line' >&2; exit 2; }
+	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_volumes identity-lock-remove \
+		"$$PROVIDER_REF_INPUT" "$$CONFIRM_INPUT"
 
 release/write:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }

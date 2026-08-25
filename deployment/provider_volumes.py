@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 from hashlib import sha256
 import json
 import os
@@ -10,6 +13,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 
 from repository_checks.checkpoint import (
     DOCKER_CONTEXT,
@@ -28,6 +32,7 @@ _LOCK_SCHEMA = "nmrpeak.provider_identity_lock_volume.v1"
 _JOURNAL_SCHEMA = "nmrpeak.provider_journal_volume.v1"
 _HELPER = Path("docker/provider_volume.py")
 _OUTPUT_LIMIT = 1_048_576
+_DOCKER = Path("/usr/bin/docker")
 
 
 class ProviderVolumeOperationRejected(RuntimeError):
@@ -102,13 +107,94 @@ def ensure_provider_state_volumes(
             None,
         ),
     )
-    for spec in specs:
-        _ensure_volume(docker, spec)
-        _admit_volume_root(docker, helper, spec)
+    with _provider_volume_lock(repository, lock_name):
+        for spec in specs:
+            _ensure_volume(docker, spec)
+            _admit_volume_root(docker, helper, spec)
     return ProviderStateVolumes(lock_name, journal_name)
 
 
+def remove_provider_identity_lock(
+    docker: Path,
+    repository: Path,
+    provider_ref: str,
+    confirmation: str,
+) -> str:
+    """Remove one unattached exactly confirmed provider identity-lock volume."""
+
+    name = provider_identity_lock_volume_name(provider_ref)
+    if confirmation != name:
+        raise ProviderVolumeOperationRejected(
+            "Provider lock removal confirmation must equal the full volume name"
+        )
+    spec = _VolumeSpec(
+        name,
+        {
+            OWNER_LABEL: OWNER_LABEL_VALUE,
+            _PROVIDER_LABEL: provider_ref,
+            SCHEMA_LABEL: _LOCK_SCHEMA,
+        },
+        "identity-lock",
+        provider_ref,
+    )
+    with _provider_volume_lock(repository, name):
+        if not _inspect_volume(docker, spec):
+            raise ProviderVolumeOperationRejected(
+                "Provider identity-lock volume does not exist"
+            )
+        attachments = _docker(
+            docker,
+            "ps",
+            "--all",
+            "--no-trunc",
+            "--quiet",
+            "--filter",
+            f"volume={name}",
+        ).stdout.decode("ascii", errors="strict").splitlines()
+        if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in attachments):
+            raise ProviderVolumeOperationRejected(
+                "Docker returned malformed provider lock attachments"
+            )
+        if attachments:
+            raise ProviderVolumeOperationRejected(
+                "Provider identity-lock volume still has container attachments"
+            )
+        if not _inspect_volume(docker, spec):
+            raise ProviderVolumeOperationRejected(
+                "Provider identity-lock volume disappeared before removal"
+            )
+        if _docker(docker, "volume", "rm", name).stdout.decode(
+            "ascii", errors="strict"
+        ).strip() != name:
+            raise ProviderVolumeOperationRejected(
+                "Docker did not confirm the exact provider lock removal"
+            )
+        if _inspect_volume(docker, spec):
+            raise ProviderVolumeOperationRejected(
+                "Provider identity-lock volume remains after removal"
+            )
+    return name
+
+
 def _ensure_volume(docker: Path, spec: _VolumeSpec) -> None:
+    if _inspect_volume(docker, spec):
+        return
+    arguments = ["volume", "create", "--driver", "local"]
+    for name, value in sorted(spec.labels.items()):
+        arguments.extend(("--label", f"{name}={value}"))
+    arguments.append(spec.name)
+    created = _docker(docker, *arguments).stdout.decode("utf-8").strip()
+    if created != spec.name:
+        raise ProviderVolumeOperationRejected(
+            "Docker did not confirm the exact created provider volume"
+        )
+    if not _inspect_volume(docker, spec):
+        raise ProviderVolumeOperationRejected(
+            "Docker provider volume was not visible after creation"
+        )
+
+
+def _inspect_volume(docker: Path, spec: _VolumeSpec) -> bool:
     records = _json_lines(
         _docker(
             docker,
@@ -127,15 +213,7 @@ def _ensure_volume(docker: Path, spec: _VolumeSpec) -> None:
             "Docker provider volume inventory has an invalid shape"
         )
     if not names:
-        arguments = ["volume", "create", "--driver", "local"]
-        for name, value in sorted(spec.labels.items()):
-            arguments.extend(("--label", f"{name}={value}"))
-        arguments.append(spec.name)
-        created = _docker(docker, *arguments).stdout.decode("utf-8").strip()
-        if created != spec.name:
-            raise ProviderVolumeOperationRejected(
-                "Docker did not confirm the exact created provider volume"
-            )
+        return False
     elif names != [spec.name]:
         raise ProviderVolumeOperationRejected(
             "Docker provider volume inventory is ambiguous"
@@ -155,6 +233,53 @@ def _ensure_volume(docker: Path, spec: _VolumeSpec) -> None:
         raise ProviderVolumeOperationRejected(
             f"Docker provider volume ownership has drifted: {spec.name}"
         )
+    return True
+
+
+@contextmanager
+def _provider_volume_lock(repository: Path, volume_name: str):
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise ProviderVolumeOperationRejected(
+            "Provider volume repository must be one resolved directory"
+        )
+    secrets_root = _ensure_private_lock_directory(root / "secrets")
+    lock_root = _ensure_private_lock_directory(
+        secrets_root / "provider-volume-locks"
+    )
+    descriptor = os.open(
+        lock_root / f"{volume_name}.lock",
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        lock_status = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(lock_status.st_mode)
+            or lock_status.st_uid != os.geteuid()
+            or stat.S_IMODE(lock_status.st_mode) != 0o600
+        ):
+            raise ProviderVolumeOperationRejected(
+                "Provider volume lock must be operator-owned mode 0600"
+            )
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_private_lock_directory(path: Path) -> Path:
+    path.mkdir(mode=0o700, exist_ok=True)
+    metadata = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise ProviderVolumeOperationRejected(
+            "Provider volume lock directory must be operator-owned mode 0700"
+        )
+    return path
 
 
 def _admit_volume_root(docker: Path, helper: Path, spec: _VolumeSpec) -> None:
@@ -282,3 +407,31 @@ def _json_document(raw: bytes, operation: str) -> object:
         return json.loads(raw)
     except (UnicodeError, json.JSONDecodeError) as error:
         raise ProviderVolumeOperationRejected(f"{operation} returned invalid JSON") from error
+
+
+def main(arguments: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Operate provider-owned volumes.")
+    parser.add_argument("operation", choices=("identity-lock-remove",))
+    parser.add_argument("provider_ref")
+    parser.add_argument("confirmation")
+    options = parser.parse_args(arguments)
+    repository = Path(__file__).resolve().parents[1]
+    try:
+        removed = remove_provider_identity_lock(
+            _DOCKER,
+            repository,
+            options.provider_ref,
+            options.confirmation,
+        )
+        print(
+            f"Removed provider identity-lock volume: {removed}. "
+            "This does not securely erase storage or backups."
+        )
+    except (OSError, ProviderVolumeOperationRejected, UnicodeError) as error:
+        print(f"Cannot remove provider identity-lock volume: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

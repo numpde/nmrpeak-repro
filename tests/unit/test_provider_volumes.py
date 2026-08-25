@@ -12,6 +12,7 @@ import deployment.provider_volumes as provider_volumes
 from deployment.provider_volumes import (
     ProviderVolumeOperationRejected,
     ensure_provider_state_volumes,
+    remove_provider_identity_lock,
 )
 
 
@@ -77,10 +78,59 @@ class ProviderVolumesTests(unittest.TestCase):
             after = len([command for command in engine.commands if command[0] == "run"])
         self.assertEqual(after, before)
 
+    def test_identity_lock_removal_requires_confirmation_and_no_residue(self) -> None:
+        engine = FakeEngine()
+        with TemporaryDirectory() as temporary, patch.object(
+            provider_volumes,
+            "_committed_helper_path",
+            return_value=Path(temporary) / "provider_volume.py",
+        ), patch.object(provider_volumes, "_docker", side_effect=engine):
+            admitted = ensure_provider_state_volumes(
+                Path("/usr/bin/docker"),
+                Path(temporary),
+                "production",
+                "provider:nmrpeak",
+            )
+            with self.assertRaisesRegex(
+                ProviderVolumeOperationRejected,
+                "full volume name",
+            ):
+                remove_provider_identity_lock(
+                    Path("/usr/bin/docker"),
+                    Path(temporary),
+                    "provider:nmrpeak",
+                    "wrong",
+                )
+            engine.attachments[admitted.identity_lock] = ["a" * 64]
+            with self.assertRaisesRegex(
+                ProviderVolumeOperationRejected,
+                "attachments",
+            ):
+                remove_provider_identity_lock(
+                    Path("/usr/bin/docker"),
+                    Path(temporary),
+                    "provider:nmrpeak",
+                    admitted.identity_lock,
+                )
+            engine.attachments[admitted.identity_lock] = []
+            self.assertEqual(
+                remove_provider_identity_lock(
+                    Path("/usr/bin/docker"),
+                    Path(temporary),
+                    "provider:nmrpeak",
+                    admitted.identity_lock,
+                ),
+                admitted.identity_lock,
+            )
+
+        self.assertNotIn(admitted.identity_lock, engine.volumes)
+        self.assertIn(admitted.journal, engine.volumes)
+
 
 class FakeEngine:
     def __init__(self) -> None:
         self.volumes: dict[str, dict[str, object]] = {}
+        self.attachments: dict[str, list[str]] = {}
         self.created: list[str] = []
         self.commands: list[tuple[str, ...]] = []
 
@@ -102,6 +152,16 @@ class FakeEngine:
             return result(name.encode() + b"\n")
         if arguments[:2] == ("volume", "inspect"):
             return result(json.dumps([self.volumes[arguments[2]]]).encode())
+        if arguments[:2] == ("volume", "rm"):
+            name = arguments[2]
+            del self.volumes[name]
+            return result(name.encode() + b"\n")
+        if arguments[:2] == ("ps", "--all"):
+            name = arguments[arguments.index("--filter") + 1].removeprefix("volume=")
+            attachments = self.attachments.get(name, [])
+            return result(
+                ("\n".join(attachments) + ("\n" if attachments else "")).encode()
+            )
         if arguments[0] == "run":
             return result(b"")
         raise AssertionError(arguments)
