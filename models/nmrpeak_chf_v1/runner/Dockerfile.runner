@@ -7,10 +7,11 @@ RUN groupadd --gid 65532 nmrpeak \
         --shell /usr/sbin/nologin --no-create-home nmrpeak
 
 # NMRPeak imports RDKit's drawing module before reaching the CHF tokenizer.
-# Pin the complete Xrender library closure absent from the slim base.
+# Pin its complete native library closure absent from the slim base.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libbsd0=0.11.7-2 \
+        libexpat1=2.5.0-1+deb12u2 \
         libmd0=1.0.4-2 \
         libx11-6=2:1.8.4-2+deb12u2 \
         libx11-data=2:1.8.4-2+deb12u2 \
