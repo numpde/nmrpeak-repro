@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 from threading import Thread
 import unittest
+from unittest.mock import patch
 
 from nmrpeak_provider.canonical_json import JsonValue
 from nmrpeak_provider.chf_binding import (
@@ -79,6 +80,45 @@ DEADLINES = ChfRunnerDeadlines(1, 1, 1, 1, 1)
 
 
 class ChfWorkerTests(unittest.TestCase):
+    def test_worker_loads_the_verified_descriptor_before_publishing_ready(self) -> None:
+        checkpoint = object()
+        runtime = RecordingRuntime(candidates=["CCO"])
+        connection = object()
+        served: list[tuple[object, object, ReadyFrame]] = []
+
+        def serve(
+            received_connection: object,
+            received_runtime: object,
+            ready: ReadyFrame,
+        ) -> int:
+            served.append((received_connection, received_runtime, ready))
+            return 0
+
+        with (
+            patch.object(
+                worker_module,
+                "open_verified_chf_checkpoint",
+                return_value=CheckpointContext(checkpoint),
+            ) as open_checkpoint,
+            patch.object(
+                worker_module,
+                "load_nmrpeak_chf_runtime",
+                return_value=runtime,
+            ) as load_runtime,
+            patch.object(worker_module, "serve_loaded_chf_runtime", side_effect=serve),
+        ):
+            result = worker_module.serve_chf_worker(
+                connection,
+                checkpoint_ref=FACTS.checkpoint_ref,
+                image_input_id=FACTS.image_input_ref,
+                boot_generation=BOOT,
+            )
+
+        self.assertEqual(result, 0)
+        open_checkpoint.assert_called_once_with(FACTS.checkpoint_ref)
+        load_runtime.assert_called_once_with(checkpoint)
+        self.assertEqual(served, [(connection, runtime, READY)])
+
     def test_loaded_worker_completes_the_provider_session_and_retires(self) -> None:
         runtime = RecordingRuntime(candidates=["CCO", "OCC"])
         with WorkerHarness(runtime) as harness:
@@ -188,6 +228,17 @@ class RecordingRuntime:
         if self.generation_failure is not None:
             raise self.generation_failure
         return self.candidates
+
+
+class CheckpointContext:
+    def __init__(self, checkpoint: object) -> None:
+        self.checkpoint = checkpoint
+
+    def __enter__(self) -> object:
+        return self.checkpoint
+
+    def __exit__(self, *_error: object) -> None:
+        return None
 
 
 class WorkerHarness:
