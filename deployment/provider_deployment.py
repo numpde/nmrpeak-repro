@@ -640,7 +640,7 @@ def remove_frozen_generation(
             deployment,
             provider_ref,
             server_a_authority_id(
-                _journal_runtime_config(root, deployment).endpoint
+                _runtime_config(root, deployment).endpoint
             ),
             services,
         )
@@ -926,7 +926,7 @@ def _require_stopped_services(
             )
 
 
-def _journal_runtime_config(
+def _runtime_config(
     repository: Path,
     deployment: str,
 ) -> ProviderRuntimeConfig:
@@ -938,8 +938,16 @@ def _journal_runtime_config(
         )
     except (OSError, TypeError, ValueError) as error:
         raise DeploymentOperationRejected(
-            "Provider journal retirement runtime config is invalid"
+            "Deployment runtime config is invalid"
         ) from error
+    return configured
+
+
+def _journal_runtime_config(
+    repository: Path,
+    deployment: str,
+) -> ProviderRuntimeConfig:
+    configured = _runtime_config(repository, deployment)
     if configured.endpoint.ca_file is not None:
         raise DeploymentOperationRejected(
             "Provider journal retirement does not support a container-only private CA"

@@ -948,7 +948,9 @@ class ProviderDeploymentTests(unittest.TestCase):
         ):
             self.assertNotIn(retained_volume, teardown)
 
-    def test_generation_removal_preserves_referenced_and_neighboring_state(self) -> None:
+    def test_private_ca_generation_removal_preserves_referenced_and_neighboring_state(
+        self,
+    ) -> None:
         with render_repository() as repository:
             plan = test_plan(repository)
             materialize_deployment_plan(repository, "production", plan)
@@ -960,6 +962,13 @@ class ProviderDeploymentTests(unittest.TestCase):
             )
             neighbor = generation.parent / ("sha256:" + "f" * 64)
             neighbor.mkdir(mode=0o700)
+            provider_config = repository / "config/deployments/production/provider.toml"
+            provider_config.write_bytes(
+                provider_config.read_bytes()
+                .replace(b"https://api.example.test", b"https://nmr.localhost:10443")
+                .replace(b'topology = "web"', b'topology = "dev-local"')
+                .replace(b"[server_a]\n", b"[server_a]\nuse_private_ca = true\n")
+            )
             with (
                 patch.object(
                     provider_deployment,

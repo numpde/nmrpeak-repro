@@ -173,9 +173,10 @@ make provider/deployment/up/localhost \
 ```
 
 The routed edge and the registered `provider:nmrpeak-fw-a` credential must
-already exist. Journal retirement remains unavailable for private-CA
-deployments because that destructive host-side proof does not yet accept a
-separate host trust path.
+already exist. Generation removal is local and needs no CA input. Journal
+retirement remains unavailable for private-CA deployments because its
+destructive host-side proof has no host trust path. Ordinary `down`, `status`,
+and logs also need no CA input.
 
 Starting the deployment loads the reviewed checkpoints inside the two isolated
 runner containers and begins signed API activity. It is therefore a deliberate

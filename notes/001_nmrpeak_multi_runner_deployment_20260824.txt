@@ -224,9 +224,10 @@ destination. Public deployment uses ordinary HTTPS trust. The explicit
 localhost lane reaches only the routed `https://nmr.localhost:10443` edge by
 mapping that name to Docker's host gateway and mounting the operator-selected
 CA read-only into the provider. The overlay does not join an API-private
-network or grant either runner network or CA access. Host-side journal
-retirement remains unavailable for private-CA deployments until it owns an
-equally explicit host trust input. Runners remain networkless.
+network or grant either runner network or CA access. Generation removal reads
+only local deployment state and needs no CA input. Host-side journal retirement
+remains unavailable for private-CA deployments until it owns an explicit host
+trust input. Runners remain networkless.
 
 The provider handles API unavailability in-process with bounded timeouts and
 backoff; it does not turn transport retries into a local work queue. Compose
@@ -910,7 +911,11 @@ The host Makefile is the operator index:
     make checkpoint/recover VOLUME=<full-volume-name> \
         CONFIRM=<full-volume-name>
     make provider/deployment/config DEPLOYMENT=<name>
+    make provider/deployment/config/localhost DEPLOYMENT=<name> \
+        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
     make provider/deployment/up DEPLOYMENT=<name>
+    make provider/deployment/up/localhost DEPLOYMENT=<name> \
+        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
     make provider/deployment/status DEPLOYMENT=<name>
     make provider/logs DEPLOYMENT=<name>
     make provider/deployment/down DEPLOYMENT=<name>
