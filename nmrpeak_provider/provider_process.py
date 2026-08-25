@@ -437,13 +437,17 @@ def _recover_startup(
             return
         current = record
         for attempt in range(policy.maximum_consecutive_unavailable):
-            owner = _owner_for_record(runtime, owners, current)
+            owner = (
+                _owner_for_record(runtime, owners, current)
+                if current.frozen_generation_id == runtime.frozen_generation_id
+                else None
+            )
             outcome = run_recovery_record(
                 runtime=runtime,
                 api=api,
                 journal=journal,
                 interpreter=interpreter,
-                session=owner.session,
+                session=None if owner is None else owner.session,
                 record=current,
                 observation=policy.observation,
             )

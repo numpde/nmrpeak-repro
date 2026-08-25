@@ -127,9 +127,15 @@ def validate_startup_inventory(
     if type(inventory) is not AttemptInventory:
         raise TypeError("Startup inventory validation requires a complete inventory")
 
-    owned: dict[str, tuple[AttemptJournalRecord, GenerationLane]] = {}
+    owned: dict[str, tuple[AttemptJournalRecord, GenerationLane | None]] = {}
     for record in records:
-        resolved = runtime.resolve(record)
+        # A record from another generation may be observed and terminalized,
+        # but only a current-generation record may recover into execution.
+        resolved = (
+            runtime.resolve(record)
+            if record.frozen_generation_id == runtime.frozen_generation_id
+            else None
+        )
         if record.provider_attempt_key in owned:
             raise AttemptInventoryRejected(
                 "Attempt journal repeats a provider Attempt key"
@@ -156,13 +162,17 @@ def validate_startup_inventory(
                 "Server A has an in-progress Attempt without a journal owner"
             )
         record, resolved = owner
+        if attempt.job_ref != record.job_ref:
+            raise AttemptInventoryRejected(
+                "Server A Attempt identity differs from its journal owner"
+            )
         if (
-            attempt.job_ref != record.job_ref
-            or attempt.analysis_kind_ref
+            resolved is not None
+            and attempt.analysis_kind_ref
             != resolved.lane.offering.analysis_kind_ref
         ):
             raise AttemptInventoryRejected(
-                "Server A Attempt identity differs from its journal owner"
+                "Server A Attempt analysis kind differs from its journal owner"
             )
         if (
             type(record) in {ActiveAttempt, TerminalPending}

@@ -1360,6 +1360,31 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertEqual(journal.records(), (record,))
         self.assertEqual(api.requests, [])
 
+    def test_restart_retains_a_pending_start_from_an_older_generation(self) -> None:
+        record = replace(
+            pending_from_active(active_attempt(valid_chf_input())),
+            frozen_generation_id="sha256:" + "b" * 64,
+        )
+        api = CapturingApi()
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(record)
+                with self.assertRaisesRegex(
+                    GenerationRuntimeRejected,
+                    "Cannot replay a pending Attempt start.*journal record remains retained",
+                ):
+                    run_recovery_record(
+                        runtime=generation_runtime(),
+                        api=api,
+                        journal=journal,
+                        session=None,
+                        interpreter=REJECTING_INTERPRETER,
+                        record=record,
+                        observation=None,
+                    )
+                self.assertEqual(journal.records(), (record,))
+        self.assertEqual(api.requests, [])
+
     def test_restart_converts_entered_execution_to_one_durable_failure(self) -> None:
         entered = entered_attempt(valid_chf_input())
         api = CapturingApi(
@@ -1431,8 +1456,62 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertEqual(journal.records(), ())
         self.assertIs(type(outcome), TerminalDelivered)
 
+    def test_recovery_interrupts_pre_execution_from_an_older_generation(self) -> None:
+        active = replace(
+            active_attempt(valid_chf_input()),
+            frozen_generation_id="sha256:" + "b" * 64,
+        )
+        api = CapturingApi(
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=active.execution_attempt_ref,
+                    job_ref=active.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            ),
+            success_response(
+                {
+                    "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
+                    "execution_attempt_ref": active.execution_attempt_ref,
+                    "failure_code": "provider_execution_interrupted",
+                    "failure_message": (
+                        "The provider process was interrupted before this execution completed."
+                    ),
+                    "committed_at": "2026-08-24T12:02:00Z",
+                    "replayed": False,
+                }
+            ),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = run_recovery_record(
+                    runtime=generation_runtime(),
+                    api=api,
+                    journal=journal,
+                    session=None,
+                    interpreter=REJECTING_INTERPRETER,
+                    record=active,
+                    observation=None,
+                )
+                self.assertEqual(journal.records(), ())
+
+        self.assertIs(type(outcome), TerminalDelivered)
+        self.assertEqual(
+            [request.operation for request in api.requests],
+            [
+                ProviderOperation.EXECUTION_ATTEMPT_READ,
+                ProviderOperation.EXECUTION_ATTEMPT_FAIL,
+            ],
+        )
+
     def test_recovery_run_replays_retained_terminal_without_a_runner(self) -> None:
-        terminal = terminal_pending(TerminalOperation.COMPLETE)
+        terminal = replace(
+            terminal_pending(TerminalOperation.COMPLETE),
+            frozen_generation_id="sha256:" + "b" * 64,
+        )
         api = CapturingApi(
             success_response(
                 attempt_snapshot(

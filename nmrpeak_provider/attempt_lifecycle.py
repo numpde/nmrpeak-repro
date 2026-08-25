@@ -30,7 +30,7 @@ from .attempt_journal import (
     validate_frozen_generation_id,
 )
 from .attempt_journal_store import AttemptJournalStore
-from .generation_runtime import GenerationRuntime
+from .generation_runtime import GenerationRuntime, GenerationRuntimeRejected
 from .lifecycle_lane import LifecycleLane
 from .interpreter import (
     InterpretationRejected,
@@ -504,7 +504,6 @@ def run_recovery_record(
 ) -> RecoveryRunOutcome:
     """Reconcile one startup obligation through any safe resumed execution."""
 
-    resolved = runtime.resolve(record)
     recovered = reconcile_record(
         runtime=runtime,
         api=api,
@@ -523,6 +522,7 @@ def run_recovery_record(
     if type(recovered) is not RecoveryResumes:
         return recovered
 
+    resolved = runtime.resolve(recovered.record)
     if type(session) is not RunnerSession:
         raise TypeError("Resumed NMRPeak execution requires an admitted runner session")
     if type(observation) is not ObservationPolicy:
@@ -862,8 +862,14 @@ def reconcile_record(
 
     if type(record) not in {StartPending, ActiveAttempt, TerminalPending}:
         raise TypeError("NMRPeak recovery requires an exact journal record")
-    resolved = runtime.resolve(record)
     if type(record) is StartPending:
+        if record.frozen_generation_id != runtime.frozen_generation_id:
+            raise GenerationRuntimeRejected(
+                "Cannot replay a pending Attempt start from frozen generation "
+                f"{record.frozen_generation_id} under current generation "
+                f"{runtime.frozen_generation_id}. The journal record remains retained."
+            )
+        resolved = runtime.resolve(record)
         decision = decide_restart(record, None)
         if type(decision) is not ReplayStart:
             raise AssertionError("Pending NMRPeak start produced an unsupported restart action")
@@ -881,7 +887,11 @@ def reconcile_record(
         return observed
     decision = decide_restart(record, observed.snapshot)
     if type(decision) is ResumePreExecution:
-        return _recover_input(resolved.lane, api, decision.record)
+        if record.frozen_generation_id != runtime.frozen_generation_id:
+            decision = PublishInterruptedFailure(record)
+        else:
+            resolved = runtime.resolve(record)
+            return _recover_input(resolved.lane, api, decision.record)
     if type(decision) is PublishInterruptedFailure:
         prepared = prepare_execution_attempt_fail(
             execution_attempt_ref=decision.record.execution_attempt_ref,

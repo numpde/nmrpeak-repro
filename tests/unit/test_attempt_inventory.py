@@ -152,6 +152,37 @@ class AttemptInventoryTests(unittest.TestCase):
             inventory=inventory,
         )
 
+    def test_startup_inventory_accepts_an_exact_attempt_from_a_retained_generation(
+        self,
+    ) -> None:
+        runtime = generation_runtime()
+        pending = pending_record(runtime.chf.generation, "job:chf", "7")
+        record = ActiveAttempt(
+            job_ref=pending.job_ref,
+            provider_attempt_key=pending.provider_attempt_key,
+            input_fingerprint=pending.input_fingerprint,
+            frozen_generation_id="sha256:" + "6" * 64,
+            execution_attempt_ref="execution_attempt:sha256:" + "9" * 64,
+            local_phase=LocalExecutionPhase.PRE_EXECUTION,
+        )
+        inventory = AttemptInventory(
+            (
+                InProgressAttempt(
+                    analysis_kind_ref=CHF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                    execution_attempt_ref=record.execution_attempt_ref,
+                    job_ref=record.job_ref,
+                    provider_attempt_key=record.provider_attempt_key,
+                    started_at="2026-08-24T12:00:00Z",
+                ),
+            )
+        )
+
+        validate_startup_inventory(
+            runtime=runtime,
+            records=(record,),
+            inventory=inventory,
+        )
+
     def test_startup_inventory_rejects_server_only_and_drifted_work(self) -> None:
         runtime = generation_runtime()
         record = pending_record(runtime.hf.generation, "job:hf", "6")
