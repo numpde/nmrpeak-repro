@@ -69,7 +69,7 @@ from nmrpeak_provider.interpreter import (
     InterpreterUnavailableReason,
     ReportedInputProblem,
 )
-from nmrpeak_provider.text_provenance import ModelGeneratedText, ProviderDiagnosticText
+from nmrpeak_provider.text_provenance import ModelGeneratedText
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
     CHF_RUNNER_CONTRACT_ID,
@@ -183,21 +183,16 @@ class UnavailableInterpreter:
 class ReportingInterpreter:
     def validate_freeform_input(self, **_values: object) -> object:
         raise ReportedInputProblem(
-            ModelGeneratedText("The molecular formula contains unsupported sulfur."),
-            configuration_id="fake",
-            attempted_configuration_ids=("fake",),
+            ModelGeneratedText(
+                "The molecular formula is missing. Submit a new Job with the complete "
+                "molecular formula."
+            )
         )
 
 
-class RepairExhaustedInterpreter:
+class RejectedInterpreter:
     def validate_freeform_input(self, **_values: object) -> object:
-        raise InterpretationRejected(
-            ProviderDiagnosticText(
-                "Call submit_interpretation with one corrected complete document."
-            ),
-            configuration_id="fake",
-            attempted_configuration_ids=("fake",),
-        )
+        raise InterpretationRejected()
 
 
 class NonStoppingSession:
@@ -643,7 +638,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertIs(type(outcome), InputInterpretationUnavailable)
 
     def test_reported_input_problem_uses_existing_terminal_authority(self) -> None:
-        canonical_input = b"Formula C2H6OS with proton and carbon peaks."
+        canonical_input = b"Proton and carbon peak lists without a molecular formula."
         active = active_attempt(canonical_input)
         api = CapturingApi(success_response(progress_receipt()))
         with journal_directory() as root:
@@ -664,10 +659,11 @@ class AttemptLifecycleTests(unittest.TestCase):
         terminal_body = json.loads(outcome.record.terminal_request_body)
         self.assertEqual(
             terminal_body["failure_message"],
-            "The molecular formula contains unsupported sulfur.",
+            "The molecular formula is missing. Submit a new Job with the complete "
+            "molecular formula.",
         )
 
-    def test_exhausted_interpreter_repair_does_not_publish_model_instructions(
+    def test_interpreter_rejection_does_not_publish_model_instructions(
         self,
     ) -> None:
         canonical_input = b"Formula C2H6O with incomplete peak data."
@@ -682,7 +678,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=UnusedSession(),
-                    interpreter=RepairExhaustedInterpreter(),
+                    interpreter=RejectedInterpreter(),
                     record=active,
                     canonical_input=canonical_input,
                 )

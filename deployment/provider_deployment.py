@@ -49,6 +49,8 @@ from nmrpeak_provider.frozen_generation import (
     frozen_generation_id,
     load_frozen_generation,
 )
+from nmrpeak_provider.interpreter import MAX_INTERPRETER_ENDPOINTS
+from nmrpeak_provider.openai_chat_interpreter import MAX_INTERPRETER_CONFIG_BYTES
 from nmrpeak_provider.provider_config import (
     ProviderEndpointConfig,
     ProviderRuntimeConfig,
@@ -884,10 +886,10 @@ def _admit_interpreter_configs(state_root: Path) -> None:
             f"Cannot admit interpreter endpoints from {root}: the directory must be "
             f"owned by operator UID {os.geteuid()}, found UID {metadata.st_uid}"
         )
-    if not 1 <= len(entries) <= 4:
+    if not 1 <= len(entries) <= MAX_INTERPRETER_ENDPOINTS:
         raise DeploymentOperationRejected(
             f"Cannot admit interpreter endpoints from {root}: found {len(entries)} "
-            "entries; expected one to four .toml files"
+            f"entries; expected one to {MAX_INTERPRETER_ENDPOINTS} .toml files"
         )
     for path in entries:
         try:
@@ -911,10 +913,10 @@ def _admit_interpreter_configs(state_root: Path) -> None:
                 f"Cannot admit interpreter endpoint file {path}: it must be owned by "
                 f"operator UID {os.geteuid()}, found UID {entry.st_uid}"
             )
-        if entry.st_size > 64 * 1024:
+        if entry.st_size > MAX_INTERPRETER_CONFIG_BYTES:
             raise DeploymentOperationRejected(
                 f"Cannot admit interpreter endpoint file {path}: its {entry.st_size} "
-                "bytes exceed the 65536-byte limit"
+                f"bytes exceed the {MAX_INTERPRETER_CONFIG_BYTES}-byte limit"
             )
         access = _read_acl(path, "Interpreter endpoint configuration")
         if access not in {

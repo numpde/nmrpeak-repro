@@ -68,7 +68,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(policy.request_timeout_seconds, 4.0)
         self.assertEqual(policy.turn_timeout_seconds, 10.0)
 
-        with self.assertRaisesRegex(ValueError, "must cover both request attempts"):
+        with self.assertRaisesRegex(ValueError, "must cover every request attempt"):
             OpenAIChatCallPolicy(
                 request_timeout_seconds=5,
                 turn_timeout_seconds=10,
@@ -93,26 +93,6 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                     request_timeout_seconds=request_timeout,
                     turn_timeout_seconds=turn_timeout,
                 )
-
-    async def test_binding_uses_the_immutable_snapshot_without_file_reads(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            directory = Path(temporary_directory)
-            config_path = directory / "10-only.toml"
-            _write_config(config_path, model="prepared-model")
-            specs = load_openai_chat_endpoint_specs(directory)
-            config_path.write_text("invalid =", encoding="utf-8")
-
-            async with httpx.AsyncClient() as client:
-                endpoints = bind_openai_chat_endpoints(
-                    specs,
-                    OpenAIChatCallPolicy(
-                        request_timeout_seconds=4,
-                        turn_timeout_seconds=10,
-                    ),
-                    http_client=client,
-                )
-
-        self.assertEqual(endpoints.endpoints[0].model, "prepared-model")
 
     async def test_duplicate_ids_fail_during_resource_free_loading(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -189,7 +169,6 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             [endpoint.configuration_id for endpoint in endpoints],
             ["remote", "local"],
         )
-        self.assertEqual(endpoints[0].model, "remote-model")
         self.assertEqual(
             str(requests[0].url),
             "https://models.example/v1/chat/completions",
@@ -383,20 +362,14 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 json=_completion("submit_interpretation", {"value": 7}),
             )
 
-        with (
-            patch(
-                "nmrpeak_provider.interpreter_policy._RETRY_DELAY_SECONDS",
-                0,
-            ),
-            patch(
-                "nmrpeak_provider.openai_chat_interpreter._RETRY_DELAY_SECONDS",
-                0,
-            ),
+        with patch(
+            "nmrpeak_provider.openai_chat_interpreter.asyncio.sleep",
+            new=AsyncMock(),
         ):
             async with _loaded_endpoints(
                 handle,
                 request_timeout=0.01,
-                turn_timeout=0.1,
+                turn_timeout=1.1,
             ) as endpoint_owner:
                 turn = await endpoint_owner.endpoints[0].call(
                     [{"role": "system", "content": "generic"}]
@@ -412,7 +385,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient() as client:
                 with self.assertRaisesRegex(
                     ValueError,
-                    "must cover both request attempts",
+                    "must cover every request attempt",
                 ):
                     _load_and_bind_endpoints(
                         directory,
@@ -427,20 +400,14 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         async def handle(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, stream=stream)
 
-        with (
-            patch(
-                "nmrpeak_provider.interpreter_policy._RETRY_DELAY_SECONDS",
-                0,
-            ),
-            patch(
-                "nmrpeak_provider.openai_chat_interpreter._RETRY_DELAY_SECONDS",
-                0,
-            ),
+        with patch(
+            "nmrpeak_provider.openai_chat_interpreter.asyncio.sleep",
+            new=AsyncMock(),
         ):
             async with _loaded_endpoints(
                 handle,
                 request_timeout=0.01,
-                turn_timeout=0.03,
+                turn_timeout=1.1,
             ) as endpoint_owner:
                 call = asyncio.create_task(
                     endpoint_owner.endpoints[0].call(
@@ -667,7 +634,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                                 turn_timeout_seconds=10,
                             )
 
-    async def test_rejects_invalid_generic_endpoint_identity(self) -> None:
+    async def test_rejects_invalid_configuration_id_and_model(self) -> None:
         for configuration_id, model in (("UPPER", "model"), ("only", " ")):
             with self.subTest(configuration_id=configuration_id, model=model):
                 with tempfile.TemporaryDirectory() as temporary_directory:

@@ -23,6 +23,7 @@ from .openai_chat_interpreter import (
     bind_openai_chat_endpoints,
 )
 from .interpreter_policy import InterpreterPolicy
+from .product import CHF_OFFERING, HF_OFFERING
 from .product_input import (
     InputRejected,
     InputRejectionReason,
@@ -34,7 +35,7 @@ from .runner_session import (
     RunnerSession,
     ValidatedRunnerRequest,
 )
-from .text_provenance import ProviderDiagnosticText, UserProvidedText
+from .text_provenance import UserProvidedText
 
 
 INTERPRETER_CONFIG_DIRECTORY = Path(
@@ -44,30 +45,15 @@ MAX_FREEFORM_INPUT_BYTES = 16_384
 _PROMPT_DIRECTORY = Path(__file__).with_name("prompts")
 _LOG = logging.getLogger(__name__)
 _PROMPT_PATHS = {
-    "hf": _PROMPT_DIRECTORY / "hf_interpreter.md",
-    "chf": _PROMPT_DIRECTORY / "chf_interpreter.md",
+    HF_OFFERING: _PROMPT_DIRECTORY / "hf_interpreter.md",
+    CHF_OFFERING: _PROMPT_DIRECTORY / "chf_interpreter.md",
 }
-_RUNNER_REJECTION = ProviderDiagnosticText(
-    "The interpreted document does not meet the selected runner's input requirements. "
-    "Compare it with the source and preserve the caller's supplied values. If the prior "
-    "document mis-transcribed the source, call submit_interpretation with one accurate, "
-    "complete document. Otherwise, call report_input_problem and explain that the selected "
-    "runner cannot accept the supplied input unchanged."
-)
-
-
 @dataclass(frozen=True, slots=True)
 class InputInterpreter:
     """Own immutable endpoint facts used by both lifecycle lanes."""
 
     endpoint_specs: tuple[OpenAIChatEndpointSpec, ...]
     policy: InterpreterPolicy
-
-    def __post_init__(self) -> None:
-        if type(self.endpoint_specs) is not tuple or not self.endpoint_specs:
-            raise TypeError("Input interpreter requires configured endpoints")
-        if type(self.policy) is not InterpreterPolicy:
-            raise TypeError("Input interpreter requires admitted policy")
 
     def validate_freeform_input(
         self,
@@ -101,10 +87,10 @@ class InputInterpreter:
         provider_attempt_key: str,
     ) -> ValidatedRunnerRequest:
         capability = _InterpretationCapability(lane)
-        validated: ValidatedRunnerRequest | None = None
 
-        async def admit_interpretation(model_input: object) -> None:
-            nonlocal validated
+        async def admit_interpretation(
+            model_input: object,
+        ) -> ValidatedRunnerRequest:
             runner_input = lane.bind_runner_input(model_input)
             outcome = session.validate(
                 execution_attempt_ref=execution_attempt_ref,
@@ -112,8 +98,8 @@ class InputInterpreter:
                 model_input=runner_input,
             )
             if type(outcome) is RunnerInputRejected:
-                raise InterpretationCandidateRejected(_RUNNER_REJECTION)
-            validated = outcome
+                raise InterpretationCandidateRejected()
+            return outcome
 
         def report_endpoint_failure(event: InterpreterEndpointFailed) -> None:
             _report_endpoint_failure(
@@ -128,41 +114,36 @@ class InputInterpreter:
                 http_client=client,
             )
             try:
-                try:
-                    result = await interpret(
-                        source_text=source_text,
-                        capability=capability,
-                        endpoints=endpoints.endpoints,
-                        interpretation_timeout_seconds=(
-                            self.policy.interpretation_timeout_seconds
-                        ),
-                        report_endpoint_failure=report_endpoint_failure,
-                        admit_interpretation=admit_interpretation,
-                    )
-                except InterpreterUnavailable as unavailable:
-                    attempted = ",".join(
-                        unavailable.attempted_configuration_ids
-                    ) or "none"
-                    _LOG.warning(
-                        "Cannot interpret Attempt %s: %s; attempted endpoints: %s. "
-                        "No runner request was validated.",
-                        execution_attempt_ref,
-                        unavailable.reason.value,
-                        attempted,
-                    )
-                    raise
+                result = await interpret(
+                    source_text=source_text,
+                    capability=capability,
+                    endpoints=endpoints.endpoints,
+                    interpretation_timeout_seconds=(
+                        self.policy.interpretation_timeout_seconds
+                    ),
+                    report_endpoint_failure=report_endpoint_failure,
+                    admit_interpretation=admit_interpretation,
+                )
+            except InterpreterUnavailable as unavailable:
+                attempted = ",".join(
+                    unavailable.attempted_configuration_ids
+                ) or "none"
+                _LOG.warning(
+                    "Cannot interpret Attempt %s: %s; attempted endpoints: %s. "
+                    "No runner request was validated.",
+                    execution_attempt_ref,
+                    unavailable.reason.value,
+                    attempted,
+                )
+                raise
             finally:
                 await endpoints.join_response_releases()
-        if type(validated) is not ValidatedRunnerRequest:
-            raise AssertionError(
-                "Successful interpretation lacked runner validation"
-            )
         _LOG.info(
             "Interpreter accepted endpoint %s after route %s",
             result.configuration_id,
             ",".join(result.attempted_configuration_ids),
         )
-        return validated
+        return result.admitted
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,10 +152,7 @@ class _InterpretationCapability:
 
     @property
     def interpreter_prompt_path(self) -> Path:
-        try:
-            return _PROMPT_PATHS[self.lane.offering.implementation_ref]
-        except KeyError:
-            raise AssertionError("Input interpreter received an unknown lane") from None
+        return _PROMPT_PATHS[self.lane.offering]
 
     def construct_interpretation(self, value: object, /) -> object:
         try:

@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
-
-
-_HTTP_ATTEMPTS = 2
-_RETRY_DELAY_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenAIChatCallPolicy:
     request_timeout_seconds: float
     turn_timeout_seconds: float
+    maximum_attempts: int = field(default=2, init=False)
+    retry_delay_seconds: float = field(default=1.0, init=False)
 
     def __post_init__(self) -> None:
         request_timeout = _positive_timeout(
@@ -24,10 +22,13 @@ class OpenAIChatCallPolicy:
             self.turn_timeout_seconds,
             "turn_timeout_seconds",
         )
-        if turn_timeout < _HTTP_ATTEMPTS * request_timeout + _RETRY_DELAY_SECONDS:
+        minimum_turn_timeout = (
+            self.maximum_attempts * request_timeout
+            + (self.maximum_attempts - 1) * self.retry_delay_seconds
+        )
+        if turn_timeout < minimum_turn_timeout:
             raise ValueError(
-                "turn_timeout_seconds must cover both request attempts and their "
-                "retry delay"
+                "turn_timeout_seconds must cover every request attempt and retry delay"
             )
         object.__setattr__(self, "request_timeout_seconds", request_timeout)
         object.__setattr__(self, "turn_timeout_seconds", turn_timeout)
@@ -39,8 +40,6 @@ class InterpreterPolicy:
     interpretation_timeout_seconds: float
 
     def __post_init__(self) -> None:
-        if type(self.call_policy) is not OpenAIChatCallPolicy:
-            raise TypeError("Interpreter policy requires admitted call policy")
         object.__setattr__(
             self,
             "interpretation_timeout_seconds",

@@ -19,11 +19,6 @@ MAX_CARBON_PEAKS = 64
 MAX_COUPLINGS_PER_PEAK = 8
 MAX_FORMULA_ATOMS = 100
 
-_PUBLIC_REJECTION = (
-    "The input could not be validated, so this Job did not run the analysis. Check "
-    "the molecular formula and the peak lists required for this analysis. Because "
-    "this Job is terminal, submit corrected input as a new Job."
-)
 _FORMULA_TOKEN = re.compile(r"([A-Z][a-z]?)([1-9][0-9]{0,2})?")
 _PROTON_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?")
 _CARBON_OR_COUPLING_DECIMAL = re.compile(
@@ -194,10 +189,14 @@ class InputRejectionReason(StrEnum):
 class InputRejected(ValueError):
     """A Job document cannot enter one of this product's model lanes."""
 
-    public_message = _PUBLIC_REJECTION
+    public_message = (
+        "This analysis could not accept the supplied input, so the Job did not run. "
+        "Review the analysis's input requirements. Submit a new Job only if you can "
+        "provide input that meets them."
+    )
 
     def __init__(self, reason: InputRejectionReason) -> None:
-        super().__init__(_PUBLIC_REJECTION)
+        super().__init__("input_rejected")
         self.reason = reason
 
 

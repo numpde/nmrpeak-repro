@@ -27,7 +27,7 @@ from nmrpeak_provider.interpreter import (
     InterpreterToolInvocation,
     InterpreterTransportError,
     InterpreterTurn,
-    require_interpreter_endpoint_identity,
+    require_interpreter_configuration_id,
 )
 from nmrpeak_provider.local_input import (
     LocalInputFailureReason,
@@ -37,11 +37,10 @@ from nmrpeak_provider.local_input import (
 from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
 
 
-_MAX_HTTP_ATTEMPTS = 2
-_MAX_CONFIG_BYTES = 64 * 1024
+MAX_INTERPRETER_CONFIG_BYTES = 64 * 1024
 _MAX_CONFIG_DIRECTORY_ENTRIES = 32
+_MAX_MODEL_BYTES = 256
 _MAX_RESPONSE_BYTES = 256 * 1024
-_RETRY_DELAY_SECONDS = 1.0
 # OpenAI documents 401 as permanent. This deployment has also observed it
 # intermittently among successful calls, so one retry is cheaper and more
 # robust than depending on undocumented error-body distinctions.
@@ -75,7 +74,10 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": InterpreterTool.REPORT_INPUT_PROBLEM,
-            "description": "Explain why the source cannot be interpreted reliably.",
+            "description": (
+                "Name required source data that is missing or conflicting and state "
+                "what must be provided or clarified in a new Job."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"message": {"type": "string"}},
@@ -98,12 +100,10 @@ class OpenAIChatEndpointSpec:
 
     def __post_init__(self, base_url: str) -> None:
         _require_api_key(self.api_key)
+        _require_model(self.model)
         _require_reasoning_effort(self.reasoning_effort)
         url = _chat_completions_url(base_url)
-        require_interpreter_endpoint_identity(
-            configuration_id=self.configuration_id,
-            model=self.model,
-        )
+        require_interpreter_configuration_id(self.configuration_id)
         object.__setattr__(self, "url", url)
 
 
@@ -151,7 +151,7 @@ class _OpenAIChatCall:
     async def __call__(self, prompt: InterpreterPrompt) -> InterpreterTurn:
         """Return a normalized turn; classify expected failures without content.
 
-        Both HTTP attempts and their delay share the turn deadline. Any acquired
+        All HTTP attempts and retry delays share the turn deadline. Any acquired
         response that cannot be released synchronously remains process-owned
         for bounded shutdown cleanup.
         """
@@ -170,8 +170,8 @@ class _OpenAIChatCall:
         )
         try:
             async with asyncio.timeout_at(deadline):
-                for attempt in range(_MAX_HTTP_ATTEMPTS):
-                    final_attempt = attempt + 1 == _MAX_HTTP_ATTEMPTS
+                for attempt in range(self._policy.maximum_attempts):
+                    final_attempt = attempt + 1 == self._policy.maximum_attempts
                     try:
                         # A stalled request must leave time for the promised
                         # retry. The enclosing turn deadline remains the owner
@@ -199,14 +199,14 @@ class _OpenAIChatCall:
                     # Retrying here, rather than in generic interpretation,
                     # keeps endpoint fallback and protocol repair independent
                     # of OpenAI-specific operational failures. The sleep and
-                    # both attempts remain inside the one advertised deadline.
-                    await asyncio.sleep(_RETRY_DELAY_SECONDS)
+                    # all attempts remain inside the one advertised deadline.
+                    await asyncio.sleep(self._policy.retry_delay_seconds)
         except (httpx.TransportError, TimeoutError):
             raise InterpreterTransportError("endpoint_unavailable") from None
 
         try:
             return _parse_completion(response_body)
-        except (UnicodeError, ValueError, TypeError, RecursionError):
+        except (UnicodeError, ValueError, RecursionError):
             raise InterpreterTransportError("invalid_response_envelope") from None
 
     async def _post_once(
@@ -342,8 +342,6 @@ def bind_openai_chat_endpoints(
 ) -> OpenAIChatEndpoints:
     """Bind prepared endpoint facts to one live HTTP and release owner."""
 
-    if not isinstance(http_client, httpx.AsyncClient):
-        raise TypeError("http_client must be an httpx.AsyncClient")
     pending_response_releases: set[asyncio.Task[None]] = set()
     endpoints = tuple(
         _bind_endpoint(spec, policy, http_client, pending_response_releases)
@@ -359,7 +357,7 @@ def _snapshot_endpoint_configs(directory: Path) -> tuple[bytes, ...]:
             filename_suffix=".toml",
             maximum_directory_entries=_MAX_CONFIG_DIRECTORY_ENTRIES,
             maximum_files=MAX_INTERPRETER_ENDPOINTS,
-            maximum_file_bytes=_MAX_CONFIG_BYTES,
+            maximum_file_bytes=MAX_INTERPRETER_CONFIG_BYTES,
         )
     except LocalInputSnapshotError as error:
         _raise_config_snapshot_error(error.reason)
@@ -377,7 +375,7 @@ def _bind_endpoint(
         http_client=http_client,
         pending_response_releases=pending_response_releases,
     )
-    return InterpreterEndpoint(spec.configuration_id, spec.model, call)
+    return InterpreterEndpoint(spec.configuration_id, call)
 
 
 def _raise_config_snapshot_error(reason: LocalInputFailureReason) -> Never:
@@ -425,6 +423,17 @@ def _parse_config_document(raw: bytes) -> dict[str, object]:
 def _require_api_key(value: object) -> None:
     if type(value) is not str or not value:
         raise ValueError("invalid interpreter API key")
+
+
+def _require_model(value: object) -> None:
+    if type(value) is not str:
+        raise TypeError("model must be bounded non-blank UTF-8 text")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise TypeError("model must be bounded non-blank UTF-8 text") from None
+    if not value.strip() or len(encoded) > _MAX_MODEL_BYTES:
+        raise TypeError("model must be bounded non-blank UTF-8 text")
 
 
 def _require_reasoning_effort(value: object) -> None:
@@ -544,15 +553,13 @@ def _parse_invocation(
 ) -> InterpreterToolInvocation | None:
     if len(tool_calls) != 1:
         return None
-    function = tool_calls[0]["function"]
-    if type(function) is not dict:
-        return None
+    function = cast(dict[str, object], tool_calls[0]["function"])
     try:
         arguments = json.loads(
             function["arguments"],
             object_pairs_hook=_object_without_duplicates,
         )
-    except (json.JSONDecodeError, TypeError, RecursionError, ValueError):
+    except (RecursionError, ValueError):
         return None
     return InterpreterToolInvocation(function["name"], arguments)
 

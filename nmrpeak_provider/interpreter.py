@@ -13,7 +13,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import count
-import math
 from pathlib import Path
 import re
 from typing import Generic, Protocol, TypeVar
@@ -22,16 +21,15 @@ import nmrpeak_provider.provider_events as _events
 from nmrpeak_provider.failure_message import is_failure_message
 from nmrpeak_provider.text_provenance import (
     ModelGeneratedText,
-    ProviderDiagnosticText,
     UserProvidedText,
 )
 
 
-T = TypeVar("T")
+Candidate = TypeVar("Candidate")
+Admitted = TypeVar("Admitted")
 MAX_TURNS_PER_ENDPOINT = 3
 MAX_INTERPRETER_ENDPOINTS = 4
 MAX_INTERPRETER_CONFIGURATION_ID_BYTES = 128
-MAX_INTERPRETER_MODEL_BYTES = 256
 _MAX_PROMPT_BYTES = 64 * 1024
 _CONFIGURATION_ID = re.compile(
     rf"[a-z0-9][a-z0-9._-]{{0,{MAX_INTERPRETER_CONFIGURATION_ID_BYTES - 1}}}",
@@ -81,12 +79,7 @@ class InterpreterUnavailable(RuntimeError):
         reason: InterpreterUnavailableReason,
         attempted_configuration_ids: tuple[str, ...] = (),
     ) -> None:
-        if type(reason) is not InterpreterUnavailableReason:
-            raise TypeError("reason must be an InterpreterUnavailableReason")
         self.reason = reason
-        # The production interpreter derives these IDs only from validated
-        # endpoints. If an injected interpreter can construct this exception,
-        # validate the tuple and each ID here before logs render the evidence.
         self.attempted_configuration_ids = attempted_configuration_ids
         super().__init__("interpreter_unavailable")
 
@@ -97,41 +90,19 @@ class ReportedInputProblem(ValueError):
     def __init__(
         self,
         message: ModelGeneratedText,
-        *,
-        configuration_id: str,
-        attempted_configuration_ids: tuple[str, ...],
     ) -> None:
         self.message = message
-        self.configuration_id = configuration_id
-        self.attempted_configuration_ids = attempted_configuration_ids
         # The public message may quote caller input. Keep it available only for
         # deliberate projection, never in the incidental exception string.
         super().__init__("reported_input_problem")
 
 
 class InterpretationCandidateRejected(ValueError):
-    """An analysis-specific admission boundary supplied correction evidence."""
-
-    def __init__(self, diagnostic: ProviderDiagnosticText) -> None:
-        _require_publishable_diagnostic(diagnostic)
-        self.diagnostic = diagnostic
-        super().__init__("interpretation_candidate_rejected")
+    """An analysis-specific admission boundary rejected one candidate."""
 
 
 class InterpretationRejected(ValueError):
-    """Every configured endpoint exhausted deterministic input repair."""
-
-    def __init__(
-        self,
-        diagnostic: ProviderDiagnosticText,
-        *,
-        configuration_id: str,
-        attempted_configuration_ids: tuple[str, ...],
-    ) -> None:
-        self.diagnostic = diagnostic
-        self.configuration_id = configuration_id
-        self.attempted_configuration_ids = attempted_configuration_ids
-        super().__init__("interpretation_rejected")
+    """Every configured endpoint produced a runner-rejected candidate."""
 
 
 class InterpreterTool(StrEnum):
@@ -182,58 +153,39 @@ class InterpreterTurn:
 
 
 InterpreterCall = Callable[[InterpreterPrompt], Awaitable[InterpreterTurn]]
-InterpretationAdmission = Callable[[T], Awaitable[None]]
+InterpretationAdmission = Callable[[Candidate], Awaitable[Admitted]]
 
 
 @dataclass(frozen=True, slots=True)
 class InterpreterEndpoint:
-    """One configured model destination in fallback order."""
+    """One configured interpreter call in fallback order."""
 
     configuration_id: str
-    model: str
     call: InterpreterCall
 
     def __post_init__(self) -> None:
-        require_interpreter_endpoint_identity(
-            configuration_id=self.configuration_id,
-            model=self.model,
-        )
+        require_interpreter_configuration_id(self.configuration_id)
         if not callable(self.call):
             raise TypeError("call must be callable")
 
 
-def require_interpreter_endpoint_identity(
-    *,
-    configuration_id: object,
-    model: object,
-) -> None:
-    """Validate the provenance shared by prepared and live endpoints."""
+def require_interpreter_configuration_id(value: object, /) -> None:
+    """Admit an identifier before it reaches fallback events or logs."""
 
-    if type(configuration_id) is not str or _CONFIGURATION_ID.fullmatch(
-        configuration_id
-    ) is None:
+    if type(value) is not str or _CONFIGURATION_ID.fullmatch(value) is None:
         raise TypeError("configuration_id must be a bounded safe identifier")
-    if type(model) is not str:
-        raise TypeError("model must be bounded non-blank UTF-8 text")
-    try:
-        model_bytes = model.encode("utf-8")
-    except UnicodeEncodeError:
-        raise TypeError("model must be bounded non-blank UTF-8 text") from None
-    if not model.strip() or len(model_bytes) > MAX_INTERPRETER_MODEL_BYTES:
-        raise TypeError("model must be bounded non-blank UTF-8 text")
 
 
 @dataclass(frozen=True, slots=True)
-class InterpretationResult(Generic[T]):
-    """A typed interpretation plus safe endpoint-selection provenance."""
+class InterpretationResult(Generic[Admitted]):
+    """An admitted interpretation plus safe endpoint-selection provenance."""
 
-    value: T
+    admitted: Admitted
     configuration_id: str
-    model: str
     attempted_configuration_ids: tuple[str, ...]
 
 
-class InterpretationCapability(Protocol[T]):
+class InterpretationCapability(Protocol[Candidate]):
     """Supply one analysis-specific prompt and construct its typed value.
 
     A constructor's ``InterpreterProtocolError`` is protocol evidence that may
@@ -243,25 +195,19 @@ class InterpretationCapability(Protocol[T]):
     @property
     def interpreter_prompt_path(self) -> Path: ...
 
-    def construct_interpretation(self, value: object, /) -> T: ...
-
-
-class _ReportedInputProblem(ValueError):
-    def __init__(self, message: ModelGeneratedText) -> None:
-        self.message = message
-        super().__init__("reported_input_problem")
+    def construct_interpretation(self, value: object, /) -> Candidate: ...
 
 
 async def interpret(
     *,
     source_text: UserProvidedText,
-    capability: InterpretationCapability[T],
+    capability: InterpretationCapability[Candidate],
     endpoints: tuple[InterpreterEndpoint, ...],
     interpretation_timeout_seconds: float,
     report_endpoint_failure: Callable[[_events.InterpreterEndpointFailed], None],
-    admit_interpretation: InterpretationAdmission[T] | None = None,
-) -> InterpretationResult[T]:
-    """Return one typed interpretation using bounded repair and fallback.
+    admit_interpretation: InterpretationAdmission[Candidate, Admitted],
+) -> InterpretationResult[Admitted]:
+    """Return one admitted interpretation using bounded repair and fallback.
 
     Prompt files are reread for every operation. Endpoints are tried in order
     under one aggregate deadline, each with bounded protocol-repair turns.
@@ -271,12 +217,7 @@ async def interpret(
     logging-policy snapshot across related events.
     """
 
-    if type(source_text) is not str or not source_text:
-        raise TypeError("source_text must be non-empty text")
     _require_endpoints(endpoints)
-    if admit_interpretation is not None and not callable(admit_interpretation):
-        raise TypeError("admit_interpretation must be callable")
-    timeout = _require_timeout(interpretation_timeout_seconds)
     try:
         base_prompt = [
             {"role": "system", "content": _read_prompt(_SYSTEM_PROMPT_PATH)},
@@ -287,7 +228,7 @@ async def interpret(
             {"role": "user", "content": source_text},
         ]
         correction = _read_prompt(_CORRECTION_PROMPT_PATH)
-    except (OSError, UnicodeError, ValueError, TypeError):
+    except (OSError, UnicodeError, ValueError):
         # Prompt files are runtime dependencies. A broken hot reload is an
         # unavailable interpreter, not evidence that caller input was bad.
         raise InterpreterUnavailable(
@@ -295,9 +236,8 @@ async def interpret(
         ) from None
 
     attempted: list[str] = []
-    all_endpoints_exhausted_admission_repair = True
-    last_rejection: ProviderDiagnosticText | None = None
-    deadline = asyncio.timeout(timeout)
+    all_endpoints_rejected_candidate = True
+    deadline = asyncio.timeout(interpretation_timeout_seconds)
     try:
         # This is the caller-visible operation bound. Endpoint adapters retain
         # their tighter per-turn bounds, while repair and fallback must share
@@ -314,7 +254,7 @@ async def interpret(
                         # adapter cannot contaminate repair or fallback.
                         assistant = await endpoint.call(deepcopy(prompt))
                     except InterpreterTransportError as error:
-                        all_endpoints_exhausted_admission_repair = False
+                        all_endpoints_rejected_candidate = False
                         _report_endpoint_failure(
                             report_endpoint_failure,
                             endpoint.configuration_id,
@@ -323,7 +263,7 @@ async def interpret(
                         )
                         break
                     if type(assistant) is not InterpreterTurn:
-                        all_endpoints_exhausted_admission_repair = False
+                        all_endpoints_rejected_candidate = False
                         _report_endpoint_failure(
                             report_endpoint_failure,
                             endpoint.configuration_id,
@@ -337,42 +277,19 @@ async def interpret(
                         turn >= MAX_TURNS_PER_ENDPOINT and has_repair_context
                     )
                     try:
-                        value = _dispatch_turn(assistant, capability=capability)
-                        if admit_interpretation is not None:
-                            await admit_interpretation(value)
-                    except _ReportedInputProblem as problem:
-                        raise ReportedInputProblem(
-                            problem.message,
-                            configuration_id=endpoint.configuration_id,
-                            attempted_configuration_ids=tuple(attempted),
-                        ) from None
-                    except InterpretationCandidateRejected as rejection:
-                        last_rejection = rejection.diagnostic
-                        if repair_exhausted or not has_repair_context:
-                            if not repair_exhausted:
-                                all_endpoints_exhausted_admission_repair = False
-                            _report_endpoint_failure(
-                                report_endpoint_failure,
-                                endpoint.configuration_id,
-                                failure_kind="admission",
-                                failure_reason="rejected",
-                                failure_state=(
-                                    "repair_exhausted"
-                                    if repair_exhausted
-                                    else "repair_unavailable"
-                                ),
-                            )
-                            break
-                        _append_repair(
-                            prompt,
-                            assistant=assistant,
-                            tool_result=rejection.diagnostic,
-                            correction=correction,
+                        candidate = _dispatch_turn(assistant, capability=capability)
+                        admitted = await admit_interpretation(candidate)
+                    except InterpretationCandidateRejected:
+                        _report_endpoint_failure(
+                            report_endpoint_failure,
+                            endpoint.configuration_id,
+                            failure_kind="admission",
+                            failure_reason="rejected",
                         )
-                        continue
+                        break
                     except InterpreterProtocolError as error:
                         if repair_exhausted or not has_repair_context:
-                            all_endpoints_exhausted_admission_repair = False
+                            all_endpoints_rejected_candidate = False
                             _report_endpoint_failure(
                                 report_endpoint_failure,
                                 endpoint.configuration_id,
@@ -397,9 +314,8 @@ async def interpret(
                         continue
 
                     return InterpretationResult(
-                        value=value,
+                        admitted=admitted,
                         configuration_id=endpoint.configuration_id,
-                        model=endpoint.model,
                         attempted_configuration_ids=tuple(attempted),
                     )
     except TimeoutError:
@@ -423,15 +339,8 @@ async def interpret(
             attempted_configuration_ids=tuple(attempted),
         ) from None
 
-    if (
-        last_rejection is not None
-        and all_endpoints_exhausted_admission_repair
-    ):
-        raise InterpretationRejected(
-            last_rejection,
-            configuration_id=attempted[-1],
-            attempted_configuration_ids=tuple(attempted),
-        )
+    if all_endpoints_rejected_candidate:
+        raise InterpretationRejected()
     raise InterpreterUnavailable(
         InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
         attempted_configuration_ids=tuple(attempted),
@@ -465,14 +374,8 @@ def _append_repair(
     tool_result: str,
     correction: str,
 ) -> None:
-    """Continue one rejected assistant turn in its original conversation.
+    """Continue one repairable assistant turn in its original conversation."""
 
-    An empty retained ID tuple is a normal turn with no tool results to append.
-    Only ``None`` means the adapter could not retain a faithful continuation.
-    """
-
-    if assistant.tool_call_ids is None:
-        raise AssertionError("repair requires retained assistant context")
     prompt.append(assistant.assistant_message)
     prompt.extend(
         {
@@ -483,14 +386,6 @@ def _append_repair(
         for call_id in assistant.tool_call_ids
     )
     prompt.append({"role": "user", "content": correction})
-
-
-def _require_publishable_diagnostic(value: object, /) -> str:
-    """Apply the existing Attempt-message contract to provider evidence."""
-
-    if not is_failure_message(value):
-        raise TypeError("diagnostic must satisfy the Attempt failure contract") from None
-    return value
 
 
 def _require_failure_reason(reason: object, /) -> str:
@@ -505,19 +400,6 @@ def _require_failure_reason(reason: object, /) -> str:
     ):
         raise TypeError("reason must be a bounded safe identifier")
     return reason
-
-
-def _require_timeout(value: object) -> float:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value <= 0
-    ):
-        raise ValueError(
-            "interpretation_timeout_seconds must be positive and finite"
-        )
-    return float(value)
 
 
 def _require_endpoints(endpoints: tuple[InterpreterEndpoint, ...]) -> None:
@@ -550,8 +432,8 @@ def _read_prompt(path: Path) -> str:
 def _dispatch_turn(
     turn: InterpreterTurn,
     *,
-    capability: InterpretationCapability[T],
-) -> T:
+    capability: InterpretationCapability[Candidate],
+) -> Candidate:
     invocation = turn.invocation
     if type(invocation) is not InterpreterToolInvocation:
         raise InterpreterProtocolError("missing_tool_invocation")
@@ -568,8 +450,8 @@ def _dispatch(
     name: str,
     arguments: dict[str, object],
     *,
-    capability: InterpretationCapability[T],
-) -> T:
+    capability: InterpretationCapability[Candidate],
+) -> Candidate:
     match name:
         case InterpreterTool.SUBMIT_INTERPRETATION if set(arguments) == {"value"}:
             return capability.construct_interpretation(arguments["value"])
@@ -578,7 +460,7 @@ def _dispatch(
             if type(message) is not str:
                 raise InterpreterProtocolError("unexpected_tool_invocation")
             _validate_reported_problem(message)
-            raise _ReportedInputProblem(ModelGeneratedText(message))
+            raise ReportedInputProblem(ModelGeneratedText(message))
         case _:
             raise InterpreterProtocolError("unexpected_tool_invocation")
 

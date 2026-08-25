@@ -17,11 +17,6 @@ UserProvidedText = NewType("UserProvidedText", str)
 # model protocol response therefore remains distinct from reviewed product copy.
 ModelGeneratedText = NewType("ModelGeneratedText", str)
 
-# Provider code may produce a bounded diagnostic from admitted request facts.
-# It remains distinct from reviewed product copy and reaches a caller only
-# through an explicit failure-publication rule.
-ProviderDiagnosticText = NewType("ProviderDiagnosticText", str)
-
 # Server A authors problem details for its authenticated caller. They may quote
 # request facts and are suitable for bounded operator diagnostics, not for
 # automatic publication to another audience.

@@ -60,13 +60,6 @@ class ProductInputTests(unittest.TestCase):
         with self.assertRaises(InputRejected) as raised:
             parse_job_input(raw, offering)
         self.assertEqual(reason, raised.exception.reason)
-        self.assertEqual(
-            "The input could not be validated, so this Job did not run the analysis. "
-            "Check the molecular formula and the peak lists required for this "
-            "analysis. Because this Job is terminal, submit corrected input as a new "
-            "Job.",
-            str(raised.exception),
-        )
 
     def test_hf_input_is_canonicalized_and_sorted_for_nmrpeak(self) -> None:
         proton_peaks = [
