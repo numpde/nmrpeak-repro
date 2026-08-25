@@ -18,15 +18,16 @@ from nmrpeak_provider.chf_binding import (
 from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
+    CHF_RUNNER_CODEC,
+)
+from nmrpeak_provider.runner_protocol import (
     AttemptCorrelation,
-    ChfRunnerProtocolError,
+    RunnerProtocolError,
     GenerateFrame,
     ReadyFrame,
     RetireFrame,
     ValidateFrame,
     ValidatedFrame,
-    encode_chf_runner_frame,
-    receive_chf_runner_frame,
 )
 from nmrpeak_provider.chf_runner_session import (
     ChfInputRejected,
@@ -160,23 +161,23 @@ class ChfWorkerTests(unittest.TestCase):
                 RecordingRuntime()
             ) as harness:
                 receive_ready(harness.provider)
-                harness.provider.sendall(encode_chf_runner_frame(command))
+                harness.provider.sendall(CHF_RUNNER_CODEC.encode(command))
 
-            self.assertIsInstance(harness.failure, ChfRunnerProtocolError)
+            self.assertIsInstance(harness.failure, RunnerProtocolError)
 
     def test_retire_rejects_the_current_boot_while_a_request_is_pending(self) -> None:
         with WorkerHarness(RecordingRuntime()) as harness:
             receive_ready(harness.provider)
             harness.provider.sendall(
-                encode_chf_runner_frame(ValidateFrame(CORRELATION, MODEL_INPUT))
+                CHF_RUNNER_CODEC.encode(ValidateFrame(CORRELATION, MODEL_INPUT))
             )
             self.assertEqual(
-                receive_chf_runner_frame(harness.provider),
+                CHF_RUNNER_CODEC.receive(harness.provider),
                 ValidatedFrame(CORRELATION),
             )
-            harness.provider.sendall(encode_chf_runner_frame(RetireFrame(BOOT)))
+            harness.provider.sendall(CHF_RUNNER_CODEC.encode(RetireFrame(BOOT)))
 
-        self.assertIsInstance(harness.failure, ChfRunnerProtocolError)
+        self.assertIsInstance(harness.failure, RunnerProtocolError)
 
     def test_unexpected_runtime_failures_terminate_the_worker(self) -> None:
         validation_failure = RuntimeError("validation failed")
@@ -285,7 +286,7 @@ def validate(
 
 
 def receive_ready(connection: socket.socket) -> None:
-    received = receive_chf_runner_frame(connection)
+    received = CHF_RUNNER_CODEC.receive(connection)
     if received != READY:
         raise AssertionError("CHF worker did not publish its measured READY frame")
 

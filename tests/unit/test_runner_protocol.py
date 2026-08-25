@@ -1,4 +1,4 @@
-"""Prove the closed CHF schemas and pre-allocation framing boundary."""
+"""Prove shared runner framing through one concrete model-input codec."""
 
 from __future__ import annotations
 
@@ -13,9 +13,12 @@ from nmrpeak_provider.chf_binding import (
 from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
-    MAX_CHF_FRAME_PAYLOAD_BYTES,
+    CHF_RUNNER_CODEC,
+)
+from nmrpeak_provider.runner_protocol import (
+    MAX_RUNNER_FRAME_PAYLOAD_BYTES,
     AttemptCorrelation,
-    ChfRunnerProtocolError,
+    RunnerProtocolError,
     GenerateFrame,
     ReadyFrame,
     RejectedFrame,
@@ -23,11 +26,7 @@ from nmrpeak_provider.chf_runner_protocol import (
     RetireFrame,
     ValidateFrame,
     ValidatedFrame,
-    decode_chf_runner_frame,
-    decode_chf_runner_payload,
-    encode_chf_runner_frame,
-    parse_chf_frame_header,
-    receive_chf_runner_frame,
+    parse_frame_header,
 )
 
 
@@ -62,7 +61,7 @@ class BytesReceiver:
         return count
 
 
-class ChfRunnerProtocolTests(unittest.TestCase):
+class RunnerProtocolTests(unittest.TestCase):
     def test_every_protocol_frame_has_one_canonical_round_trip(self) -> None:
         frames = (
             ReadyFrame(
@@ -86,41 +85,41 @@ class ChfRunnerProtocolTests(unittest.TestCase):
 
         for frame in frames:
             with self.subTest(frame_type=type(frame).__name__):
-                encoded = encode_chf_runner_frame(frame)
-                self.assertEqual(len(encoded) - 4, parse_chf_frame_header(encoded[:4]))
-                self.assertEqual(frame, decode_chf_runner_frame(encoded))
+                encoded = CHF_RUNNER_CODEC.encode(frame)
+                self.assertEqual(len(encoded) - 4, parse_frame_header(encoded[:4]))
+                self.assertEqual(frame, CHF_RUNNER_CODEC.decode_frame(encoded))
 
     def test_length_prefix_rejects_oversize_partial_and_trailing_payloads(self) -> None:
-        with self.assertRaisesRegex(ChfRunnerProtocolError, "exceeds 131072"):
-            parse_chf_frame_header(pack(">I", MAX_CHF_FRAME_PAYLOAD_BYTES + 1))
+        with self.assertRaisesRegex(RunnerProtocolError, "exceeds 131072"):
+            parse_frame_header(pack(">I", MAX_RUNNER_FRAME_PAYLOAD_BYTES + 1))
         for raw in (
             b"\x00\x00\x00",
             pack(">I", 3) + b"{}",
             pack(">I", 2) + b"{}x",
         ):
             with self.subTest(raw=raw):
-                with self.assertRaises(ChfRunnerProtocolError):
-                    decode_chf_runner_frame(raw)
+                with self.assertRaises(RunnerProtocolError):
+                    CHF_RUNNER_CODEC.decode_frame(raw)
 
         oversized_result = ResultFrame(
             CORRELATION,
-            ["x" * MAX_CHF_FRAME_PAYLOAD_BYTES],
+            ["x" * MAX_RUNNER_FRAME_PAYLOAD_BYTES],
         )
-        with self.assertRaisesRegex(ChfRunnerProtocolError, "Cannot send"):
-            encode_chf_runner_frame(oversized_result)
+        with self.assertRaisesRegex(RunnerProtocolError, "Cannot send"):
+            CHF_RUNNER_CODEC.encode(oversized_result)
 
     def test_bounded_reader_checks_length_before_allocating_payload(self) -> None:
-        receiver = BytesReceiver(pack(">I", MAX_CHF_FRAME_PAYLOAD_BYTES + 1))
+        receiver = BytesReceiver(pack(">I", MAX_RUNNER_FRAME_PAYLOAD_BYTES + 1))
 
-        with self.assertRaisesRegex(ChfRunnerProtocolError, "declared payload"):
-            receive_chf_runner_frame(receiver)
+        with self.assertRaisesRegex(RunnerProtocolError, "declared payload"):
+            CHF_RUNNER_CODEC.receive(receiver)
         self.assertEqual([4], receiver.requested_sizes)
 
     def test_bounded_reader_reports_eof_inside_a_declared_payload(self) -> None:
         receiver = BytesReceiver(pack(">I", 5) + b"{}", chunk_size=4)
 
-        with self.assertRaisesRegex(ChfRunnerProtocolError, "closed during payload"):
-            receive_chf_runner_frame(receiver)
+        with self.assertRaisesRegex(RunnerProtocolError, "closed during payload"):
+            CHF_RUNNER_CODEC.receive(receiver)
 
     def test_canonical_json_exact_fields_and_correlation_are_mandatory(self) -> None:
         noncanonical = (
@@ -148,13 +147,13 @@ class ChfRunnerProtocolTests(unittest.TestCase):
         )
         for payload in (noncanonical, unknown_field, wrong_correlation):
             with self.subTest(payload=payload[:40]):
-                with self.assertRaises(ChfRunnerProtocolError):
-                    decode_chf_runner_payload(payload)
+                with self.assertRaises(RunnerProtocolError):
+                    CHF_RUNNER_CODEC.decode_payload(payload)
 
     def test_result_candidates_remain_untrusted_for_the_product_validator(self) -> None:
         frame = ResultFrame(CORRELATION, {"not": "a candidate array"})
 
-        decoded = decode_chf_runner_frame(encode_chf_runner_frame(frame))
+        decoded = CHF_RUNNER_CODEC.decode_frame(CHF_RUNNER_CODEC.encode(frame))
 
         self.assertEqual(frame, decoded)
 

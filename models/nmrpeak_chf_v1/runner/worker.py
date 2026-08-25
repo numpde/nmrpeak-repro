@@ -12,7 +12,10 @@ from nmrpeak_provider.canonical_json import JsonValue
 from nmrpeak_provider.chf_binding import ChfRunnerInput
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
-    ChfRunnerProtocolError,
+    CHF_RUNNER_CODEC,
+)
+from nmrpeak_provider.runner_protocol import (
+    RunnerProtocolError,
     GenerateFrame,
     ReadyFrame,
     RejectedFrame,
@@ -20,8 +23,6 @@ from nmrpeak_provider.chf_runner_protocol import (
     RetireFrame,
     ValidateFrame,
     ValidatedFrame,
-    encode_chf_runner_frame,
-    receive_chf_runner_frame,
 )
 from nmrpeak_provider.product_decode import CHF_DECODE_POLICY
 from nmrpeak_provider.product_result import (
@@ -58,45 +59,45 @@ def serve_loaded_chf_runtime(
 ) -> int:
     """Publish READY and serve one validated request at a time until RETIRE."""
 
-    connection.sendall(encode_chf_runner_frame(ready))
+    connection.sendall(CHF_RUNNER_CODEC.encode(ready))
     pending: ValidateFrame | None = None
     while True:
-        command = receive_chf_runner_frame(connection)
+        command = CHF_RUNNER_CODEC.receive(connection)
         if type(command) is ValidateFrame:
             if pending is not None:
-                raise ChfRunnerProtocolError(
+                raise RunnerProtocolError(
                     "Cannot validate CHF input: another request is already validated"
                 )
             try:
                 runtime.validate(command.model_input)
             except NmrpeakRuntimeInputRejected:
                 connection.sendall(
-                    encode_chf_runner_frame(RejectedFrame(command.correlation))
+                    CHF_RUNNER_CODEC.encode(RejectedFrame(command.correlation))
                 )
                 continue
             pending = command
             connection.sendall(
-                encode_chf_runner_frame(ValidatedFrame(command.correlation))
+                CHF_RUNNER_CODEC.encode(ValidatedFrame(command.correlation))
             )
             continue
         if type(command) is GenerateFrame:
             if pending is None or command.correlation != pending.correlation:
-                raise ChfRunnerProtocolError(
+                raise RunnerProtocolError(
                     "Cannot generate CHF candidates: no matching input is validated"
                 )
             candidates = runtime.generate(pending.model_input)
             connection.sendall(
-                encode_chf_runner_frame(ResultFrame(command.correlation, candidates))
+                CHF_RUNNER_CODEC.encode(ResultFrame(command.correlation, candidates))
             )
             pending = None
             continue
         if type(command) is RetireFrame:
             if pending is not None or command.boot_generation != ready.boot_generation:
-                raise ChfRunnerProtocolError(
+                raise RunnerProtocolError(
                     "Cannot retire CHF worker: boot is wrong or a request is pending"
                 )
             return 0
-        raise ChfRunnerProtocolError(
+        raise RunnerProtocolError(
             "Cannot serve CHF worker: provider sent a response-only frame"
         )
 

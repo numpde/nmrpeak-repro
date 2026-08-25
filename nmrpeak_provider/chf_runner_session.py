@@ -15,9 +15,10 @@ from typing import Protocol
 
 from .canonical_json import JsonValue
 from .chf_binding import ChfRunnerInput
-from .chf_runner_protocol import (
+from .chf_runner_protocol import CHF_RUNNER_CODEC
+from .runner_protocol import (
     AttemptCorrelation,
-    ChfRunnerProtocolError,
+    RunnerProtocolError,
     GenerateFrame,
     ReadyFrame,
     RejectedFrame,
@@ -25,8 +26,6 @@ from .chf_runner_protocol import (
     RetireFrame,
     ValidateFrame,
     ValidatedFrame,
-    encode_chf_runner_frame,
-    receive_chf_runner_frame,
 )
 from .owner_session_endpoint import open_owner_session_directory
 from .product_result import (
@@ -201,16 +200,16 @@ class ChfRunnerSession:
             raise TypeError("CHF runner admission requires owned deadlines")
         try:
             channel.settimeout(deadlines.ready_seconds)
-            frame = receive_chf_runner_frame(channel)
+            frame = CHF_RUNNER_CODEC.receive(channel)
             if type(frame) is not ReadyFrame:
-                raise ChfRunnerProtocolError(
+                raise RunnerProtocolError(
                     "Cannot admit CHF runner: the first frame is not READY"
                 )
             if not _ready_matches_provider_facts(frame, facts):
-                raise ChfRunnerProtocolError(
+                raise RunnerProtocolError(
                     "Cannot admit CHF runner: READY facts differ from the deployment"
                 )
-        except (OSError, ChfRunnerProtocolError) as error:
+        except (OSError, RunnerProtocolError) as error:
             admission_error = ChfRunnerAdmissionError(
                 "Cannot admit CHF runner boot from its READY exchange"
             )
@@ -362,9 +361,9 @@ class ChfRunnerSession:
         try:
             self._channel.settimeout(self._deadlines.retire_seconds)
             self._channel.sendall(
-                encode_chf_runner_frame(RetireFrame(self._boot_generation))
+                CHF_RUNNER_CODEC.encode(RetireFrame(self._boot_generation))
             )
-        except (OSError, ChfRunnerProtocolError, TypeError, ValueError) as error:
+        except (OSError, RunnerProtocolError, TypeError, ValueError) as error:
             retirement_error = ChfRunnerSessionRetired(
                 "Cannot determine whether idle CHF RETIRE was handed off; "
                 "the provider session is retired"
@@ -389,9 +388,9 @@ class ChfRunnerSession:
     ) -> object:
         try:
             self._channel.settimeout(timeout_seconds)
-            self._channel.sendall(encode_chf_runner_frame(request))
-            return receive_chf_runner_frame(self._channel)
-        except (OSError, ChfRunnerProtocolError, TypeError, ValueError) as error:
+            self._channel.sendall(CHF_RUNNER_CODEC.encode(request))
+            return CHF_RUNNER_CODEC.receive(self._channel)
+        except (OSError, RunnerProtocolError, TypeError, ValueError) as error:
             self._retire_with_error(
                 f"Cannot {operation}: the runner exchange failed",
                 cause=error,

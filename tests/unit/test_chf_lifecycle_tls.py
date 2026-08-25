@@ -28,7 +28,8 @@ from nmrpeak_provider.chf_lifecycle import (
     select_chf_completion,
     start_chf_attempt,
 )
-from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_CONTRACT_ID, ReadyFrame
+from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_CONTRACT_ID
+from nmrpeak_provider.runner_protocol import ReadyFrame
 from nmrpeak_provider.chf_runner_session import ChfRunnerDeadlines, ChfRunnerSession
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,

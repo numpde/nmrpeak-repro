@@ -50,6 +50,7 @@ COPY --chown=0:0 nmrpeak_provider/__init__.py \
     nmrpeak_provider/product_decode.py \
     nmrpeak_provider/product_input.py \
     nmrpeak_provider/product_result.py \
+    nmrpeak_provider/runner_protocol.py \
     nmrpeak_provider/
 COPY --chown=0:0 models/nmrpeak_chf_v1/runner/checkpoint_file.py \
     models/nmrpeak_chf_v1/runner/owner_session_supervisor.py \

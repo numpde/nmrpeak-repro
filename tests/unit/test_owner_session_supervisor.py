@@ -33,7 +33,7 @@ WAIT_SECONDS = 5
 
 class OwnerSessionSupervisorTests(unittest.TestCase):
     def test_chf_launcher_supplies_its_owned_socket_identity(self) -> None:
-        from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_SOCKET_PATH
+        from nmrpeak_provider.runner_protocol import RUNNER_SOCKET_PATH
 
         launcher = (
             Path(__file__).resolve().parents[2]
@@ -47,7 +47,7 @@ class OwnerSessionSupervisorTests(unittest.TestCase):
             runpy.run_path(str(launcher), run_name="__main__")
 
         self.assertEqual(raised.exception.code, 73)
-        main.assert_called_once_with(CHF_RUNNER_SOCKET_PATH)
+        main.assert_called_once_with(RUNNER_SOCKET_PATH)
 
     def test_terminal_worker_exit_outranks_simultaneous_owner_loss(self) -> None:
         module = _load_supervisor()

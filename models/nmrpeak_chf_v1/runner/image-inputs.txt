@@ -23,4 +23,5 @@ nmrpeak_provider/product.py
 nmrpeak_provider/product_decode.py
 nmrpeak_provider/product_input.py
 nmrpeak_provider/product_result.py
+nmrpeak_provider/runner_protocol.py
 repository_checks/nmrpeak_source.py

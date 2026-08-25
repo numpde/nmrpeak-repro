@@ -17,9 +17,11 @@ from nmrpeak_provider.chf_binding import (
 from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
+    CHF_RUNNER_CODEC,
+)
+from nmrpeak_provider.runner_protocol import (
     ReadyFrame,
     RetireFrame,
-    encode_chf_runner_frame,
 )
 from nmrpeak_provider.chf_runner_session import (
     ChfInputRejected,
@@ -91,7 +93,7 @@ class ChfRunnerSessionTests(unittest.TestCase):
                     try:
                         connection, _ = listener.accept()
                         with connection:
-                            connection.sendall(encode_chf_runner_frame(ready_frame()))
+                            connection.sendall(CHF_RUNNER_CODEC.encode(ready_frame()))
                             connection.recv(4096)
                     except BaseException as error:
                         failure.append(error)

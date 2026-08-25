@@ -7,9 +7,10 @@ from enum import StrEnum
 from struct import pack
 from threading import Condition, Event
 
-from nmrpeak_provider.chf_runner_protocol import (
+from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_CODEC
+from nmrpeak_provider.runner_protocol import (
     AttemptCorrelation,
-    ChfRunnerFrame,
+    RunnerFrame,
     GenerateFrame,
     ReadyFrame,
     RejectedFrame,
@@ -17,8 +18,6 @@ from nmrpeak_provider.chf_runner_protocol import (
     RetireFrame,
     ValidateFrame,
     ValidatedFrame,
-    decode_chf_runner_frame,
-    encode_chf_runner_frame,
 )
 
 
@@ -44,14 +43,14 @@ class FakeChfRunnerChannel:
         rejected_validations: int = 0,
         fault: FakeRunnerFault | None = None,
     ) -> None:
-        self.received_frames: list[ChfRunnerFrame] = []
+        self.received_frames: list[RunnerFrame] = []
         self.generate_received = Event()
         self._ready = ready
         self._candidates = list(candidates) if type(candidates) is tuple else candidates
         self._rejected_validations = rejected_validations
         self._fault = fault
         self._pending: AttemptCorrelation | None = None
-        self._buffer = bytearray(encode_chf_runner_frame(ready))
+        self._buffer = bytearray(CHF_RUNNER_CODEC.encode(ready))
         self._closed = False
         self._timeout: float | None = None
         self._condition = Condition()
@@ -66,7 +65,7 @@ class FakeChfRunnerChannel:
     def sendall(self, data: bytes) -> None:
         if self._closed:
             raise OSError("fake runner channel is closed")
-        frame = decode_chf_runner_frame(data)
+        frame = CHF_RUNNER_CODEC.decode_frame(data)
         self.received_frames.append(frame)
         if type(frame) is ValidateFrame:
             self._accept_validate(frame)
@@ -144,8 +143,8 @@ class FakeChfRunnerChannel:
         )
         self._queue(ResultFrame(correlation, self._candidates))
 
-    def _queue(self, frame: ChfRunnerFrame) -> None:
-        self._queue_raw(encode_chf_runner_frame(frame))
+    def _queue(self, frame: RunnerFrame) -> None:
+        self._queue_raw(CHF_RUNNER_CODEC.encode(frame))
 
     def _queue_raw(self, raw: bytes) -> None:
         with self._condition:
