@@ -1,7 +1,8 @@
 NMRPeak multi-runner NMR API provider
 =====================================
 
-Status: revised proposal; the NMR API provider lifecycle is not implemented
+Status: implemented; checkpoint-free validation passes, release materialization
+and real-checkpoint/runtime proof remain operator-gated
 Date: 2026-08-24
 
 
@@ -9,7 +10,7 @@ Purpose
 -------
 
 Package NMRPeak as a signed NMR API provider with two explicitly declared
-analysis implementations. The proposal is:
+analysis implementations:
 
 - `hf` serves `mol_from_1h_peaks` with mandatory molecular formula plus 1H NMR;
 - `chf` serves `mol_from_1h_13c_formula` with molecular formula plus 1H and
@@ -35,24 +36,25 @@ model selection, scientific reranking, or a public inbound service.
 Current facts
 -------------
 
-- This is a Git repository. Its initial deployment-sandbox commit is
-  `b7e8322`, and its NMRPeak gitlink selects
-  `d615e193ec84d124dc916eb10b675744d27a79cf`. The local submodule is currently
-  uninitialized; a gitlink alone is not a materialized build closure.
-- `compose.yaml` is an isolated inference proof, not a provider deployment. It
-  defines hardened networkless services and separate HF and CHF volumes, but it
-  still contains build-time interpolation, root extractors, mutable image tags,
-  and no NMR API lifecycle.
-- `docker/safe_extract.py` rejects traversal and non-regular ZIP members, but it
-  is not yet the release importer described here: duplicate member names can be
-  collapsed, an existing marker bypasses byte verification, and current
-  extraction does not establish content-addressed volume ownership.
-- `docker/infer_hf_example.py` and `docker/infer_chf_example.py` prove the two
-  generation call paths. They embed fixtures, start a model for every command,
-  and compute candidate annotations inside the untrusted runner boundary.
-- The CHF fixture preserves repeated 13C observations. No retained result
-  artifact in this checkout proves the outcome of an earlier real-checkpoint
-  run.
+- The NMRPeak gitlink selects
+  `d615e193ec84d124dc916eb10b675744d27a79cf`; the initialized submodule and its
+  exact admitted source closure are checked by the maintained repository lane.
+  Uni-Core and the BART configuration are pinned and admitted separately.
+- The signed provider lifecycle, fixed HF/CHF product, private runner protocols,
+  durable Attempt journal, provider-identity exclusion, immutable image-input
+  checks, and named deployment operations are implemented in the checked-in
+  code. Production Compose gives API network and credentials only to the
+  provider; both runners are networkless and consume separate read-only
+  checkpoint volumes.
+- Release preparation inventories the archive without loading checkpoints,
+  binds each selected ZIP member by SHA-256, and installs reviewed declarations
+  atomically without replacement. Checkpoint-volume import is a separate,
+  explicit engine mutation and is not part of the default proof lane.
+- The maintained checkpoint-free suite proves both analysis bindings and runner
+  protocols, signed provider behavior against a fake TLS API, journal recovery,
+  deployment rendering and cleanup decisions, and build/release admission with
+  inert fixtures. It does not prove a real NMRPeak checkpoint result or a live
+  public deployment.
 - `weights/` is ignored acquisition state and is excluded from the Docker build
   context. Its presence, size, or apparent completeness is not release evidence;
   the admitted archive member and committed release declaration are.
@@ -63,8 +65,9 @@ Current facts
   be audited independently before a release declaration is approved.
 
 All production identity claims begin from clean committed bytes, exact admitted
-paths, and immutable external identities. The facts above do not yet establish
-a reproducible or deployable provider.
+paths, and immutable external identities. A real deployment additionally
+requires the release, image, engine, runtime, credential, API, and licensing
+proofs listed below; repository tests are not substitutes for those proofs.
 
 
 Threat boundary
@@ -168,8 +171,8 @@ valid checked-in values; they do not select defaults, import arbitrary modules,
 or discover third-party plug-ins.
 
 
-Ownership and proposed tree
----------------------------
+Ownership and repository shape
+------------------------------
 
 The generic provider package owns only the released NMR API transport and
 lifecycle. Product code selects a closed set of implementations. Each model
@@ -177,87 +180,16 @@ binding owns scientific admission, private runner projection, result mapping,
 and failure policy. Compose owns the final service, mount, resource, and network
 topology.
 
-    Makefile
-    compose/
-      provider.yml
-      provider-deployment.yml
-      provider-localhost.yml
-      provider-check.yml
-      runner-check.yml
-    contracts/upstream/nmr_api_v1/
-      manifest.json
-      route_facts/
-      schemas/
-      signing_vectors.json
-    nmrpeak_provider/
-      canonical_json.py
-      provider_http.py
-      provider_process.py
-      job_feed.py
-      run_generation.py
-      attempt_identity.py
-      attempt_lifecycle.py
-      attempt_journal.py
-      runner_session.py
-    contracts/vectors/
-      run_generations.v1.json
-      attempt_keys.v1.json
-    products/default/
-      provider-deployment.toml
-      provider/
-        __init__.py
-    families/nmrpeak/
-      nmrpeak-closure.paths
-      nmrpeak-closure.sha256
-      Dockerfile.base
-      runtime/
-        checkpoint_identity.py
-        owner_session_supervisor.py
-      targets/cpu-x86_64/
-        Dockerfile.lock
-        requirements.lock
-    models/nmrpeak_hf_v1/
-      provider/
-        deployment.toml
-        provider.compose.yml
-        binding/
-          identity.py
-          input.py
-          processor.py
-          failure_policy.toml
-          hello.txt
-      runner_contracts/
-      runner/
-        Dockerfile
-        worker.py
-        serve.compose.yml
-      releases/
-        <release-name>.json
-    models/nmrpeak_chf_v1/
-      provider/
-        deployment.toml
-        provider.compose.yml
-        binding/
-          identity.py
-          input.py
-          processor.py
-          failure_policy.toml
-          hello.txt
-      runner_contracts/
-      runner/
-        Dockerfile
-        worker.py
-        serve.compose.yml
-      releases/
-        <release-name>.json
-    config/deployments/<deployment>/
-      provider.toml
-      deployment.toml
-      implementations/
-        hf.toml
-        chf.toml
-    repository_checks/
-    notes/
+    nmrpeak_provider/       signed transport, lifecycle, journal, and bindings
+    families/nmrpeak/       pinned shared source, dependencies, and runtime
+    models/nmrpeak_*_v1/    fixed runner images, protocols, and releases
+    contracts/              projected API release and identity vectors
+    deployment/             named deployment planning and owned-volume policy
+    compose/                production provider and teardown topology
+    containers/             immutable provider and lock-build inputs
+    repository_checks/      build, release, and deployment admission
+    config/                 reviewed examples and ignored named deployments
+    tests/                  checkpoint-free proof with inert local fakes
 
 The provider contract projection is copied from the immutable released
 contract, not imported from a mutable sibling checkout at runtime. A deliberate

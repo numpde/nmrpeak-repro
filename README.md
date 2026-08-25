@@ -160,5 +160,5 @@ ownership proofs and confirmations.
 
 [`notes/001_nmrpeak_multi_runner_deployment_20260824.txt`](notes/001_nmrpeak_multi_runner_deployment_20260824.txt)
 defines the lifecycle, trust, storage, failure, and proof boundaries. Checked-in
-code and the current Makefile remain authoritative when a proposal in the note
-has not yet been implemented.
+code and the current Makefile remain authoritative where the note describes a
+requirement whose implementation or runtime proof is still pending.
