@@ -45,7 +45,7 @@ class DeploymentTopologyTests(unittest.TestCase):
         changed["services"]["provider"]["volumes"][5]["source"] = "chf-session"
         mutations.append(changed)
         changed = compose_document()
-        changed["services"]["provider"]["restart"] = "unless-stopped"
+        changed["services"]["provider"]["restart"] = "on-failure:3"
         mutations.append(changed)
         changed = compose_document()
         changed["services"]["extra"] = {}
@@ -126,7 +126,7 @@ def compose_document() -> dict[str, object]:
         "platform": "linux/amd64",
         "pull_policy": "never",
         "read_only": True,
-        "restart": "on-failure:3",
+        "restart": "no",
         "security_opt": ["no-new-privileges:true"],
         "stop_grace_period": "10m0s",
         "tmpfs": [
@@ -198,7 +198,7 @@ def runner(lane: str, image: str, image_input: str, checkpoint: str) -> dict[str
         "platform": "linux/amd64",
         "pull_policy": "never",
         "read_only": True,
-        "restart": "on-failure:3",
+        "restart": "no",
         "security_opt": ["no-new-privileges:true"],
         "shm_size": "1073741824",
         "stop_grace_period": "20s",

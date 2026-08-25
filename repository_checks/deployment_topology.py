@@ -170,7 +170,7 @@ def _common_posture(
         "cap_drop": ["ALL"],
         "security_opt": ["no-new-privileges:true"],
         "pull_policy": "never",
-        "restart": "on-failure:3",
+        "restart": "no",
         "cpus": cpus,
         "mem_limit": str(memory),
         "memswap_limit": str(memory),

@@ -232,9 +232,9 @@ trust input. Runners remain networkless.
 
 The provider handles API unavailability in-process with bounded timeouts and
 backoff; it does not turn transport retries into a local work queue. Compose
-uses a finite on-failure restart budget for unexpected process exits and
-bounded rotating provider logs. Exhaustion leaves an inspectable stopped
-service for operator action instead of an infinite crash/log loop.
+does not restart the provider or either single-session runner automatically.
+Exhaustion leaves the three services stopped with the first failure available
+for operator inspection; recovery is an explicit deployment-up operation.
 
 Each implementation receives one private, per-deployment session volume
 containing only its socket directory. A service-level Compose `tmpfs:` mount is
