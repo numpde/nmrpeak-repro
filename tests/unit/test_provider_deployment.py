@@ -233,13 +233,13 @@ class ProviderDeploymentTests(unittest.TestCase):
                 set(preview["artifacts"]),
                 {"provider.toml", "frozen/manifest.json", "frozen/files"},
             )
-            self.assertIn(
-                plan.generation.frozen_generation_id,
-                renders[1]["FROZEN_GENERATION_PATH"],
+            self.assertEqual(
+                Path(renders[1]["FROZEN_GENERATION_PATH"]).parent.name,
+                plan.generation.frozen_generation_id.removeprefix("sha256:"),
             )
-            self.assertIn(
-                plan.runtime_config_id,
-                renders[1]["PROVIDER_CONFIG_PATH"],
+            self.assertEqual(
+                Path(renders[1]["PROVIDER_CONFIG_PATH"]).parent.name,
+                plan.runtime_config_id.removeprefix("sha256:"),
             )
             self.assertFalse((repository / "secrets").exists())
 
@@ -250,6 +250,14 @@ class ProviderDeploymentTests(unittest.TestCase):
             first = materialize_deployment_plan(repository, "production", plan)
             second = materialize_deployment_plan(repository, "production", plan)
             self.assertEqual(first, second)
+            self.assertEqual(
+                first[0].parent.name,
+                plan.runtime_config_id.removeprefix("sha256:"),
+            )
+            self.assertEqual(
+                first[1].parent.name,
+                plan.generation.frozen_generation_id.removeprefix("sha256:"),
+            )
             self.assertEqual(first[0].read_bytes(), plan.generation.provider_config)
             self.assertEqual(
                 (first[1] / "manifest.json").read_bytes(),
@@ -434,7 +442,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                     repository
                     / "secrets/deployments/production"
                     / "generations"
-                    / plan.generation.frozen_generation_id
+                    / plan.generation.frozen_generation_id.removeprefix("sha256:")
                     / "frozen/manifest.json"
                 ).is_file()
             )
@@ -958,9 +966,9 @@ class ProviderDeploymentTests(unittest.TestCase):
             generation = (
                 repository
                 / "secrets/deployments/production/generations"
-                / generation_id
+                / generation_id.removeprefix("sha256:")
             )
-            neighbor = generation.parent / ("sha256:" + "f" * 64)
+            neighbor = generation.parent / ("f" * 64)
             neighbor.mkdir(mode=0o700)
             provider_config = repository / "config/deployments/production/provider.toml"
             provider_config.write_bytes(

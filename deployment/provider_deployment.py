@@ -311,10 +311,16 @@ def render_deployment_plan(
         images,
         checkpoints,
         provider_config=(
-            state_root / "runtime-configs" / runtime_config_id / "provider.toml"
+            state_root
+            / "runtime-configs"
+            / _retained_identity_name(runtime_config_id)
+            / "provider.toml"
         ),
         frozen_generation=(
-            state_root / "generations" / generation.frozen_generation_id / "frozen"
+            state_root
+            / "generations"
+            / _retained_identity_name(generation.frozen_generation_id)
+            / "frozen"
         ),
         localhost_ca_certificate=localhost_ca,
     )
@@ -1324,7 +1330,8 @@ def _remove_retained_generation(
         raise DeploymentOperationRejected(
             "Retained generation directory must be operator-owned mode 0700"
         )
-    target = generations / frozen_generation
+    retained_name = _retained_identity_name(frozen_generation)
+    target = generations / retained_name
     frozen_root = target / "frozen"
     manifest = _read_regular_file(frozen_root / "manifest.json")
     try:
@@ -1344,7 +1351,7 @@ def _remove_retained_generation(
         }
     )
     _require_retained_tree(target, expected)
-    staged = generations / f".{frozen_generation}.{secrets.token_hex(16)}.removing"
+    staged = generations / f".{retained_name}.{secrets.token_hex(16)}.removing"
     renamed = False
     deleted = False
     try:
@@ -1896,11 +1903,12 @@ def _publish_retained_tree(
 ) -> Path:
     if re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
         raise DeploymentOperationRejected("Retained input identity is malformed")
-    destination = parent / identity
+    retained_name = _retained_identity_name(identity)
+    destination = parent / retained_name
     if destination.exists() or destination.is_symlink():
         _require_retained_tree(destination, files)
         return destination
-    stage = parent / f".{identity}.{secrets.token_hex(16)}.staging"
+    stage = parent / f".{retained_name}.{secrets.token_hex(16)}.staging"
     stage.mkdir(mode=0o700)
     try:
         for relative, content in files.items():
@@ -1939,6 +1947,10 @@ def _publish_retained_tree(
         raise
     _require_retained_tree(destination, files)
     return destination
+
+
+def _retained_identity_name(identity: str) -> str:
+    return identity.removeprefix("sha256:")
 
 
 def _require_retained_tree(path: Path, expected: dict[str, bytes]) -> None:
