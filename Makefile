@@ -40,22 +40,20 @@ release/write:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
 	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m repository_checks.chf_release write \
-			--runner "$(RUNNER)" --release "$(RELEASE)" --archive "$(ARCHIVE)"
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-release.sh" \
+		write "$(RUNNER)" "$(RELEASE)" "$(ARCHIVE)"
 
 release/check:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
 	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin DECLARATION)" = command\ line || { echo 'DECLARATION must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m repository_checks.chf_release check \
-			--runner "$(RUNNER)" --release "$(RELEASE)" --archive "$(ARCHIVE)" \
-			--declaration "$(DECLARATION)"
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-release.sh" \
+		check "$(RUNNER)" "$(RELEASE)" "$(ARCHIVE)" "$(DECLARATION)"
 
 checkpoint/import:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
+	@test "$(RUNNER)" = nmrpeak_chf_v1 || { echo 'checkpoint/import currently supports only nmrpeak_chf_v1' >&2; exit 2; }
 	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
