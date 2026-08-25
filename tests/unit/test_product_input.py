@@ -62,7 +62,7 @@ class ProductInputTests(unittest.TestCase):
         self.assertEqual(reason, raised.exception.reason)
         self.assertEqual(reason.value, str(raised.exception))
 
-    def test_hf_input_is_canonicalized_and_sorted_for_nmrpeak(self) -> None:
+    def test_hf_input_preserves_formula_and_sorts_peaks_for_nmrpeak(self) -> None:
         proton_peaks = [
             {
                 "shift_lo": "1.20",
@@ -87,7 +87,7 @@ class ProductInputTests(unittest.TestCase):
 
         self.assertEqual(
             HfModelInput(
-                formula="C17H16N2O3",
+                formula="O3H16C17N2",
                 proton_peaks=(
                     ProtonPeak(Decimal("4.95"), 2, "m", ()),
                     ProtonPeak(
@@ -167,106 +167,62 @@ class ProductInputTests(unittest.TestCase):
             offering=CHF,
         )
 
-    def test_formula_grammar_is_closed_without_narrowing_model_elements(self) -> None:
-        chlorinated = parse_job_input(
-            encoded(document(formula="O3ClH16C17N2")),
-            HF,
-        )
-        self.assertEqual(chlorinated.formula, "C17H16ClN2O3")
-        sodium_chloride = parse_job_input(
-            encoded(document(formula="NaCl")),
-            HF,
-        )
-        self.assertEqual(sodium_chloride.formula, "ClNa")
-        hydrogen_chloride = parse_job_input(
-            encoded(document(formula="ClH")),
-            HF,
-        )
-        self.assertEqual(hydrogen_chloride.formula, "HCl")
-
-        cases = (
-            ("C2C3H6", InputRejectionReason.INVALID_FORMULA),
-            ("C0H6", InputRejectionReason.INVALID_FORMULA),
-            ("C101", InputRejectionReason.INVALID_FORMULA),
-            ("C50H51", InputRejectionReason.INVALID_FORMULA),
-            ("13C2H6", InputRejectionReason.INVALID_FORMULA),
-            ("C2H6+", InputRejectionReason.INVALID_FORMULA),
-            ("C2(H6)", InputRejectionReason.INVALID_FORMULA),
-            ("C2H6.O", InputRejectionReason.INVALID_FORMULA),
-        )
-        for formula, reason in cases:
+    def test_formula_text_is_preserved_for_runner_tokenization(self) -> None:
+        for formula in (
+            "O3ClH16C17N2",
+            "NaCl",
+            "ClH",
+            "C2C3H6",
+            "C0H6",
+            "C101",
+            "C50H51",
+            "C2H6+",
+            "C2H6-2",
+        ):
             with self.subTest(formula=formula):
-                self.assert_rejected(encoded(document(formula=formula)), reason)
+                parsed = parse_job_input(encoded(document(formula=formula)), HF)
+                self.assertEqual(parsed.formula, formula)
 
-    def test_decimal_grammar_ranges_and_midpoint_are_closed(self) -> None:
-        invalid_shifts = ("+1.0", "01.0", "1e0", "-0", "1.000", "16.00")
-        for shift in invalid_shifts:
-            with self.subTest(shift=shift):
-                peak = {
-                    "shift_lo": shift,
-                    "shift_hi": shift,
-                    "integral": "1",
-                    "multiplicity": "s",
-                    "j_hz": [],
-                }
-                expected = (
-                    InputRejectionReason.DECIMAL_OUT_OF_RANGE
-                    if shift == "16.00"
-                    else InputRejectionReason.INVALID_STRUCTURE
-                )
+        for formula in ("13C2H6", "C2(H6)", "C2H6.O", ""):
+            with self.subTest(formula=formula):
                 self.assert_rejected(
-                    encoded(document(proton_peaks=[peak])),
-                    expected,
+                    encoded(document(formula=formula)),
+                    InputRejectionReason.INVALID_FORMULA,
                 )
 
-        midpoint_peak = {
-            "shift_lo": "1.00",
-            "shift_hi": "1.01",
-            "integral": "1",
-            "multiplicity": "s",
-            "j_hz": [],
-        }
-        self.assert_rejected(
-            encoded(document(proton_peaks=[midpoint_peak])),
-            InputRejectionReason.MIDPOINT_NOT_REPRESENTABLE,
-        )
-
-    def test_numeric_boundaries_are_explicit(self) -> None:
-        boundary_protons = [
-            {
-                "shift_lo": "-1",
-                "shift_hi": "-1",
-                "integral": "1",
-                "multiplicity": "s",
-                "j_hz": ["0.1", "299.9"],
-            },
-            {
-                "shift_lo": "15.99",
-                "shift_hi": "15.99",
-                "integral": "50",
-                "multiplicity": "AA'BB'",
-                "j_hz": [],
-            },
-        ]
+    def test_finite_decimal_values_survive_product_parsing(self) -> None:
         parsed = parse_job_input(
             encoded(
                 document(
-                    formula="C97HNO",
-                    proton_peaks=boundary_protons,
-                    carbon_peaks=[{"shift": "-6"}, {"shift": "249.9"}],
+                    formula="C2H6O+",
+                    proton_peaks=[
+                        {
+                            "shift_lo": "3.71",
+                            "shift_hi": "3.68",
+                            "integral": "1",
+                            "multiplicity": "s",
+                            "j_hz": ["0.0", "300.25", "1e1"],
+                        }
+                    ],
+                    carbon_peaks=[{"shift": "250"}, {"shift": "-7.25"}],
                 )
             ),
             CHF,
         )
-        self.assertEqual("C97HNO", parsed.formula)
 
-        for carbon_shift in ("250", "300.0"):
-            with self.subTest(carbon_shift=carbon_shift):
-                self.assert_rejected(
-                    encoded(document(carbon_peaks=[{"shift": carbon_shift}])),
-                    InputRejectionReason.DECIMAL_OUT_OF_RANGE,
-                    offering=CHF,
-                )
+        self.assertEqual(parsed.formula, "C2H6O+")
+        self.assertEqual(parsed.proton_peaks[0].centroid, Decimal("3.695"))
+        self.assertEqual(
+            parsed.proton_peaks[0].couplings_hz,
+            (Decimal("300.25"), Decimal("1e1"), Decimal("0.0")),
+        )
+        self.assertEqual(
+            parsed.carbon_peaks,
+            (
+                CarbonPeak(Decimal("250")),
+                CarbonPeak(Decimal("-7.25")),
+            ),
+        )
 
     def test_non_string_measurements_are_rejected(self) -> None:
         base_peak = {
@@ -279,6 +235,14 @@ class ProductInputTests(unittest.TestCase):
         cases = (
             ({**base_peak, "shift_lo": 1}, InputRejectionReason.INVALID_STRUCTURE),
             ({**base_peak, "shift_lo": True}, InputRejectionReason.INVALID_STRUCTURE),
+            (
+                {**base_peak, "shift_lo": "NaN"},
+                InputRejectionReason.INVALID_STRUCTURE,
+            ),
+            (
+                {**base_peak, "shift_lo": "Infinity"},
+                InputRejectionReason.INVALID_STRUCTURE,
+            ),
             ({**base_peak, "integral": 1}, InputRejectionReason.INVALID_STRUCTURE),
         )
         for peak, reason in cases:
@@ -288,7 +252,7 @@ class ProductInputTests(unittest.TestCase):
                     reason,
                 )
 
-    def test_integral_multiplicity_and_couplings_are_bounded(self) -> None:
+    def test_integral_and_multiplicity_follow_the_model_vocabulary(self) -> None:
         base_peak = {
             "shift_lo": "1.0",
             "shift_hi": "1.0",
@@ -303,14 +267,6 @@ class ProductInputTests(unittest.TestCase):
                 {**base_peak, "multiplicity": "S"},
                 InputRejectionReason.UNSUPPORTED_MULTIPLICITY,
             ),
-            (
-                {**base_peak, "j_hz": ["1.0"] * 9},
-                InputRejectionReason.TOO_MANY_COUPLINGS,
-            ),
-            (
-                {**base_peak, "j_hz": ["0.0"]},
-                InputRejectionReason.DECIMAL_OUT_OF_RANGE,
-            ),
         )
         for peak, reason in cases:
             with self.subTest(reason=reason):
@@ -319,34 +275,20 @@ class ProductInputTests(unittest.TestCase):
                     reason,
                 )
 
-    def test_peak_counts_are_bounded(self) -> None:
-        proton = {
+    def test_negative_coupling_is_rejected_before_nmrpeak_can_change_its_sign(
+        self,
+    ) -> None:
+        peak = {
             "shift_lo": "1.0",
             "shift_hi": "1.0",
             "integral": "1",
             "multiplicity": "s",
-            "j_hz": ["1.0"] * 8,
+            "j_hz": ["-7.1"],
         }
-        carbon = {"shift": "1.0"}
-        accepted = document(
-            proton_peaks=[proton] * 32,
-            carbon_peaks=[carbon] * 64,
-        )
-        parse_job_input(encoded(accepted), CHF)
 
         self.assert_rejected(
-            encoded(document(proton_peaks=[proton] * 33)),
-            InputRejectionReason.TOO_MANY_PEAKS,
-        )
-        self.assert_rejected(
-            encoded(
-                document(
-                    proton_peaks=[proton],
-                    carbon_peaks=[carbon] * 65,
-                )
-            ),
-            InputRejectionReason.TOO_MANY_PEAKS,
-            offering=CHF,
+            encoded(document(proton_peaks=[peak])),
+            InputRejectionReason.COUPLING_MUST_BE_NONNEGATIVE,
         )
 
     def test_empty_spectra_and_trailing_json_are_rejected(self) -> None:

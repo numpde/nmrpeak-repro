@@ -1,9 +1,9 @@
-"""Strict scientific input admitted by the fixed HF and CHF offerings."""
+"""Structured scientific input for the fixed HF and CHF offerings."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from enum import StrEnum
 import json
 import re
@@ -14,16 +14,8 @@ from .product import AnalysisOffering, NMRPEAK_PRODUCT
 
 INPUT_SCHEMA_ID = "nmrpeak.structure_generation.request.v1"
 MAX_JOB_INPUT_BYTES = 65_536
-MAX_PROTON_PEAKS = 32
-MAX_CARBON_PEAKS = 64
-MAX_COUPLINGS_PER_PEAK = 8
-MAX_FORMULA_ATOMS = 100
 
-_FORMULA_TOKEN = re.compile(r"([A-Z][a-z]?)([1-9][0-9]{0,2})?")
-_PROTON_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?")
-_CARBON_OR_COUPLING_DECIMAL = re.compile(
-    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9])?"
-)
+_FORMULA = re.compile(r"(?:(?:[A-Z][a-z]?|[+-])\d*)+")
 SUPPORTED_MULTIPLICITIES = frozenset(
     {
         "AA'BB'",
@@ -179,11 +171,8 @@ class InputRejectionReason(StrEnum):
     INVALID_STRUCTURE = "invalid_structure"
     WRONG_SPECTRA = "wrong_spectra"
     INVALID_FORMULA = "invalid_formula"
-    DECIMAL_OUT_OF_RANGE = "decimal_out_of_range"
-    MIDPOINT_NOT_REPRESENTABLE = "midpoint_not_representable"
     UNSUPPORTED_MULTIPLICITY = "unsupported_multiplicity"
-    TOO_MANY_PEAKS = "too_many_peaks"
-    TOO_MANY_COUPLINGS = "too_many_couplings"
+    COUPLING_MUST_BE_NONNEGATIVE = "coupling_must_be_nonnegative"
 
 
 class InputRejected(ValueError):
@@ -221,12 +210,12 @@ class NmrpeakModelInput:
 
 @dataclass(frozen=True, slots=True)
 class HfModelInput(NmrpeakModelInput):
-    """Validated formula and proton input for the HF model lane."""
+    """Parsed formula and proton input for the HF model lane."""
 
 
 @dataclass(frozen=True, slots=True)
 class ChfModelInput(NmrpeakModelInput):
-    """Validated formula, proton, and carbon input for the CHF model lane."""
+    """Parsed formula, proton, and carbon input for the CHF model lane."""
 
     carbon_peaks: tuple[CarbonPeak, ...]
 
@@ -329,36 +318,9 @@ def _array(value: object) -> list[object]:
 
 
 def _parse_formula(value: object) -> str:
-    if type(value) is not str or not value:
+    if type(value) is not str or _FORMULA.fullmatch(value) is None:
         _reject(InputRejectionReason.INVALID_FORMULA)
-    position = 0
-    composition: dict[str, int] = {}
-    while position < len(value):
-        match = _FORMULA_TOKEN.match(value, position)
-        if match is None:
-            _reject(InputRejectionReason.INVALID_FORMULA)
-        element, raw_count = match.groups()
-        if element in composition:
-            _reject(InputRejectionReason.INVALID_FORMULA)
-        count = int(raw_count) if raw_count is not None else 1
-        if count > MAX_FORMULA_ATOMS:
-            _reject(InputRejectionReason.INVALID_FORMULA)
-        composition[element] = count
-        position = match.end()
-    if sum(composition.values()) > MAX_FORMULA_ATOMS:
-        _reject(InputRejectionReason.INVALID_FORMULA)
-    if "C" in composition:
-        order = ["C"]
-        if "H" in composition:
-            order.append("H")
-        order.extend(sorted(set(composition) - {"C", "H"}))
-    else:
-        order = ["H"] if "H" in composition else []
-        order.extend(sorted(set(composition) - {"H"}))
-    return "".join(
-        element + (str(composition[element]) if composition[element] != 1 else "")
-        for element in order
-    )
+    return value
 
 
 def _parse_proton_spectrum(value: object) -> tuple[ProtonPeak, ...]:
@@ -366,8 +328,6 @@ def _parse_proton_spectrum(value: object) -> tuple[ProtonPeak, ...]:
     peaks = _array(spectrum["peaks"])
     if not peaks:
         _reject(InputRejectionReason.INVALID_STRUCTURE)
-    if len(peaks) > MAX_PROTON_PEAKS:
-        _reject(InputRejectionReason.TOO_MANY_PEAKS)
     parsed = tuple(_parse_proton_peak(peak) for peak in peaks)
     return tuple(sorted(parsed, key=lambda peak: peak.centroid, reverse=True))
 
@@ -377,16 +337,10 @@ def _parse_proton_peak(value: object) -> ProtonPeak:
         value,
         {"shift_lo", "shift_hi", "integral", "multiplicity", "j_hz"},
     )
-    first_shift = _decimal(
-        peak["shift_lo"], _PROTON_DECIMAL, Decimal("-1"), Decimal("16")
-    )
-    second_shift = _decimal(
-        peak["shift_hi"], _PROTON_DECIMAL, Decimal("-1"), Decimal("16")
-    )
+    first_shift = _decimal(peak["shift_lo"])
+    second_shift = _decimal(peak["shift_hi"])
     shift_lo, shift_hi = sorted((first_shift, second_shift))
     centroid = (shift_lo + shift_hi) / 2
-    if centroid != centroid.quantize(Decimal("0.01")):
-        _reject(InputRejectionReason.MIDPOINT_NOT_REPRESENTABLE)
 
     integral = peak["integral"]
     if (
@@ -400,17 +354,7 @@ def _parse_proton_peak(value: object) -> ProtonPeak:
         _reject(InputRejectionReason.UNSUPPORTED_MULTIPLICITY)
 
     raw_couplings = _array(peak["j_hz"])
-    if len(raw_couplings) > MAX_COUPLINGS_PER_PEAK:
-        _reject(InputRejectionReason.TOO_MANY_COUPLINGS)
-    couplings = tuple(
-        _decimal(
-            coupling,
-            _CARBON_OR_COUPLING_DECIMAL,
-            Decimal("0.1"),
-            Decimal("300"),
-        )
-        for coupling in raw_couplings
-    )
+    couplings = tuple(_parse_coupling(coupling) for coupling in raw_couplings)
     return ProtonPeak(
         centroid=centroid,
         integral=int(integral),
@@ -424,37 +368,33 @@ def _parse_carbon_spectrum(value: object) -> tuple[CarbonPeak, ...]:
     peaks = _array(spectrum["peaks"])
     if not peaks:
         _reject(InputRejectionReason.INVALID_STRUCTURE)
-    if len(peaks) > MAX_CARBON_PEAKS:
-        _reject(InputRejectionReason.TOO_MANY_PEAKS)
     parsed = tuple(_parse_carbon_peak(peak) for peak in peaks)
     return tuple(sorted(parsed, key=lambda peak: peak.shift, reverse=True))
 
 
 def _parse_carbon_peak(value: object) -> CarbonPeak:
     peak = _object_with_fields(value, {"shift"})
-    return CarbonPeak(
-        shift=_decimal(
-            peak["shift"],
-            _CARBON_OR_COUPLING_DECIMAL,
-            Decimal("-6"),
-            Decimal("250"),
-        )
-    )
+    return CarbonPeak(shift=_decimal(peak["shift"]))
+
+
+def _parse_coupling(value: object) -> Decimal:
+    coupling = _decimal(value)
+    if coupling < 0:
+        _reject(InputRejectionReason.COUPLING_MUST_BE_NONNEGATIVE)
+    return coupling
 
 
 def _decimal(
     value: object,
-    grammar: re.Pattern[str],
-    lower_bound: Decimal,
-    excluded_upper_bound: Decimal,
 ) -> Decimal:
-    if type(value) is not str or grammar.fullmatch(value) is None:
+    if type(value) is not str:
         _reject(InputRejectionReason.INVALID_STRUCTURE)
-    parsed = Decimal(value)
-    if parsed == 0 and value.startswith("-"):
+    try:
+        parsed = Decimal(value)
+    except DecimalException as error:
+        raise InputRejected(InputRejectionReason.INVALID_STRUCTURE) from error
+    if not parsed.is_finite():
         _reject(InputRejectionReason.INVALID_STRUCTURE)
-    if parsed < lower_bound or parsed >= excluded_upper_bound:
-        _reject(InputRejectionReason.DECIMAL_OUT_OF_RANGE)
     return parsed
 
 

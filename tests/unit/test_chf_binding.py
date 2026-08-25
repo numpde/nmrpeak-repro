@@ -27,8 +27,8 @@ class ChfBindingTests(unittest.TestCase):
                         "1H": {
                             "peaks": [
                                 {
-                                    "shift_lo": "1.20",
-                                    "shift_hi": "1.30",
+                                    "shift_lo": "3.71",
+                                    "shift_hi": "3.68",
                                     "integral": "3",
                                     "multiplicity": "t",
                                     "j_hz": ["1.0", "7.1"],
@@ -62,7 +62,7 @@ class ChfBindingTests(unittest.TestCase):
         runner_input = bind_chf_runner_input(admitted)
 
         self.assertEqual(
-            b'{"c_nmr_peaks":[{"delta (ppm)":"109.4"},{"delta (ppm)":"109.4"},{"delta (ppm)":"70"}],"h_nmr_peaks":[{"category":"m","centroid":"4.95","j_values":"_","nH":2},{"category":"t","centroid":"1.25","j_values":"7.1_1_","nH":3}],"molecular_formula":"C17H16N2O3"}',
+            b'{"c_nmr_peaks":[{"delta (ppm)":"109.4"},{"delta (ppm)":"109.4"},{"delta (ppm)":"70"}],"h_nmr_peaks":[{"category":"m","centroid":"4.95","j_values":"_","nH":2},{"category":"t","centroid":"3.695","j_values":"7.1_1_","nH":3}],"molecular_formula":"O3H16C17N2"}',
             runner_input.canonical_bytes(),
         )
         self.assertEqual(
@@ -81,12 +81,12 @@ class ChfBindingTests(unittest.TestCase):
                     },
                     {
                         "category": "t",
-                        "centroid": 1.25,
+                        "centroid": 3.695,
                         "j_values": "7.1_1_",
                         "nH": 3,
                     },
                 ],
-                "molecular_formula": "C17H16N2O3",
+                "molecular_formula": "O3H16C17N2",
             },
             materialize_chf_nmrpeak_document(runner_input),
         )
