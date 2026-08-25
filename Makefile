@@ -53,16 +53,13 @@ release/check:
 
 checkpoint/import:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
-	@test "$(RUNNER)" = nmrpeak_chf_v1 || { echo 'checkpoint/import currently supports only nmrpeak_chf_v1' >&2; exit 2; }
 	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m repository_checks.chf_checkpoint import \
-			--runner "$(RUNNER)" --release "$(RELEASE)" --archive "$(ARCHIVE)"
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-volume.sh" \
+		import "$(RUNNER)" "$(RELEASE)" "$(ARCHIVE)"
 
 checkpoint/recover:
 	@test "$(origin VOLUME)" = command\ line || { echo 'VOLUME must be set on the make command line' >&2; exit 2; }
 	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m repository_checks.chf_checkpoint recover \
-			--volume "$(VOLUME)" --confirm "$(CONFIRM)"
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-volume.sh" \
+		recover "$(VOLUME)" "$(CONFIRM)"

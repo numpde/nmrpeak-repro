@@ -17,7 +17,15 @@ from repository_checks.chf_checkpoint import (
     import_chf_checkpoint,
     recover_chf_checkpoint,
 )
-from repository_checks.chf_release import ARCHIVE_MEMBER, candidate_release_bytes
+from repository_checks.chf_release import (
+    ARCHIVE_MEMBER as CHF_ARCHIVE_MEMBER,
+    candidate_release_bytes as chf_candidate_release_bytes,
+)
+from repository_checks.hf_checkpoint import import_hf_checkpoint, recover_hf_checkpoint
+from repository_checks.hf_release import (
+    ARCHIVE_MEMBER as HF_ARCHIVE_MEMBER,
+    candidate_release_bytes as hf_candidate_release_bytes,
+)
 
 
 _SOURCE_REVISION = "1" * 40
@@ -107,6 +115,11 @@ class ChfCheckpointOperationTests(unittest.TestCase):
 
 
 class CheckpointOperationFixture:
+    def __init__(self, lane: str = "chf") -> None:
+        if lane not in {"chf", "hf"}:
+            raise ValueError("checkpoint fixture lane must be chf or hf")
+        self.lane = lane
+
     def __enter__(self) -> CheckpointOperationFixture:
         self.temporary = TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
@@ -126,16 +139,25 @@ class CheckpointOperationFixture:
             encoding="ascii",
         )
         self.archive = self.root / "weights.zip"
+        archive_member = (
+            CHF_ARCHIVE_MEMBER if self.lane == "chf" else HF_ARCHIVE_MEMBER
+        )
         with zipfile.ZipFile(self.archive, "w") as bundle:
-            bundle.writestr(ARCHIVE_MEMBER, _CHECKPOINT)
-        release = candidate_release_bytes(
+            bundle.writestr(archive_member, _CHECKPOINT)
+        candidate = (
+            chf_candidate_release_bytes
+            if self.lane == "chf"
+            else hf_candidate_release_bytes
+        )
+        self.release_name = f"{self.lane}-test-v1"
+        release = candidate(
             self.archive,
-            "chf-test-v1",
+            self.release_name,
             source_revision=_SOURCE_REVISION,
         )
-        releases = self.repository / "models/nmrpeak_chf_v1/releases"
+        releases = self.repository / f"models/nmrpeak_{self.lane}_v1/releases"
         releases.mkdir(parents=True)
-        (releases / "chf-test-v1.json").write_bytes(release)
+        (releases / f"{self.release_name}.json").write_bytes(release)
         subprocess.run(
             ("/usr/bin/git", "init", "-q", str(self.repository)),
             check=True,
@@ -180,16 +202,18 @@ class CheckpointOperationFixture:
         self.temporary.cleanup()
 
     def import_checkpoint(self, *, archive: Path | None = None):
-        return import_chf_checkpoint(
+        importer = import_chf_checkpoint if self.lane == "chf" else import_hf_checkpoint
+        return importer(
             self.repository,
             archive or self.archive,
-            "chf-test-v1",
+            self.release_name,
             docker_binary=self.docker,
             runtime_directory=self.runtime,
         )
 
     def recover(self, volume: str, confirmation: str) -> None:
-        recover_chf_checkpoint(
+        recovery = recover_chf_checkpoint if self.lane == "chf" else recover_hf_checkpoint
+        recovery(
             volume,
             confirmation,
             repository_root=self.repository,
