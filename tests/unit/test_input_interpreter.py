@@ -156,6 +156,32 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_FORMULA)
         self.assertEqual(str(raised.exception), "invalid_formula")
 
+    def test_non_json_candidate_preserves_the_encoder_failure(self) -> None:
+        invalid_value = VALUE | {"unexpected_number": 1.5}
+
+        async def call(_prompt: object) -> InterpreterTurn:
+            return turn(
+                InterpreterTool.SUBMIT_INTERPRETATION,
+                {"value": invalid_value},
+            )
+
+        with self.assertRaises(InterpreterUnavailable) as raised:
+            run_with_endpoint(call)
+
+        self.assertIsInstance(raised.exception.__cause__, ExceptionGroup)
+        assert isinstance(raised.exception.__cause__, ExceptionGroup)
+        protocol_failure = raised.exception.__cause__.exceptions[0]
+        self.assertIsInstance(protocol_failure, InterpreterProtocolError)
+        self.assertEqual(
+            str(protocol_failure),
+            "unsupported canonical JSON type: float",
+        )
+        self.assertIsInstance(protocol_failure.__cause__, TypeError)
+        self.assertEqual(
+            str(protocol_failure.__cause__),
+            "unsupported canonical JSON type: float",
+        )
+
     def test_invalid_freeform_utf8_retains_the_decoder_failure(self) -> None:
         async def call(_prompt: object) -> InterpreterTurn:
             raise AssertionError("Invalid source text must not reach an endpoint")

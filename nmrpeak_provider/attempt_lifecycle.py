@@ -990,7 +990,7 @@ def _read_failure(
 def _retain_input_rejection(
     journal: AttemptJournalStore,
     record: ActiveAttempt,
-    message: str = InputRejected.public_message,
+    message: str,
 ) -> InputFailurePending:
     prepared = prepare_execution_attempt_fail(
         execution_attempt_ref=record.execution_attempt_ref,

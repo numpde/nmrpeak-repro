@@ -47,7 +47,7 @@ class InterpreterProtocolError(ValueError):
     """An assistant turn did not satisfy the generic tool contract."""
 
     def __init__(self, reason: str) -> None:
-        self.reason = _require_failure_reason(reason)
+        self.reason = reason
         super().__init__(self.reason)
 
 

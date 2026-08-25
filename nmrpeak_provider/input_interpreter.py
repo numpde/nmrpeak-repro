@@ -158,9 +158,7 @@ class _InterpretationCapability:
         try:
             encoded = canonical_json_bytes(value)
         except (TypeError, ValueError, UnicodeError) as error:
-            raise InterpreterProtocolError(
-                "submitted_value_not_constructible"
-            ) from error
+            raise InterpreterProtocolError(str(error)) from error
         return parse_job_input(encoded, self.lane.offering)
 
 

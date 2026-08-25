@@ -1942,7 +1942,7 @@ def terminal_pending(operation: TerminalOperation) -> TerminalPending:
         else prepare_execution_attempt_fail(
             execution_attempt_ref=entered.execution_attempt_ref,
             failure_code="input_rejected",
-            failure_message=InputRejected.public_message,
+            failure_message=InputRejectionReason.INVALID_STRUCTURE.value,
         )
     )
     return retain_terminal_command(entered, prepared)

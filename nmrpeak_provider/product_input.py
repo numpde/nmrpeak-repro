@@ -189,12 +189,6 @@ class InputRejectionReason(StrEnum):
 class InputRejected(ValueError):
     """A Job document cannot enter one of this product's model lanes."""
 
-    public_message = (
-        "This analysis could not accept the supplied input, so the Job did not run. "
-        "Review the analysis's input requirements. Submit a new Job only if you can "
-        "provide input that meets them."
-    )
-
     def __init__(self, reason: InputRejectionReason) -> None:
         self.reason = reason
         super().__init__(reason.value)
