@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import stat
 import subprocess
@@ -11,14 +12,18 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 import deployment.provider_deployment as provider_deployment
 from deployment.local_image import LocalImage
 from deployment.provider_deployment import (
+    DeploymentPlan,
     DeploymentOperationRejected,
     deployment_plan_bytes,
     initialize_deployment,
     materialize_deployment_plan,
     render_deployment_plan,
+    start_deployment,
 )
 from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
 from repository_checks.chf_release import ARCHIVE_MEMBER as CHF_MEMBER
@@ -26,6 +31,7 @@ from repository_checks.chf_release import candidate_release_bytes as chf_release
 from repository_checks.hf_release import ARCHIVE_MEMBER as HF_MEMBER
 from repository_checks.hf_release import candidate_release_bytes as hf_release_bytes
 from tests.unit.test_deployment_topology import compose_document
+from tests.unit.test_provider_startup_inputs import credential_bytes
 
 
 ROOT = Path(__file__).parents[2]
@@ -215,26 +221,7 @@ class ProviderDeploymentTests(unittest.TestCase):
 
     def test_materialization_is_exact_idempotent_and_rejects_drift(self) -> None:
         with render_repository() as repository:
-            with (
-                patch.object(
-                    provider_deployment,
-                    "_image_input_ids",
-                    return_value=INPUTS,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_local_images",
-                    return_value=IMAGES,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_render_compose",
-                    side_effect=lambda _, deployment, environment, __: (
-                        compose_for_environment(deployment, environment)
-                    ),
-                ),
-            ):
-                plan = render_deployment_plan(repository, "production")
+            plan = test_plan(repository)
 
             first = materialize_deployment_plan(repository, "production", plan)
             second = materialize_deployment_plan(repository, "production", plan)
@@ -269,6 +256,168 @@ class ProviderDeploymentTests(unittest.TestCase):
                 "bytes have drifted",
             ):
                 materialize_deployment_plan(repository, "production", plan)
+
+    def test_start_admits_every_input_before_compose_and_readiness_proof(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+
+            events: list[str] = []
+            with (
+                patch.object(
+                    provider_deployment,
+                    "render_deployment_plan",
+                    return_value=plan,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_admit_installed_credential",
+                    side_effect=lambda *_: events.append("credential"),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "verify_hf_checkpoint",
+                    side_effect=lambda *_args, **_kwargs: events.append("hf"),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "verify_chf_checkpoint",
+                    side_effect=lambda *_args, **_kwargs: events.append("chf"),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "ensure_provider_state_volumes",
+                    side_effect=lambda *_: events.append("provider_volumes"),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_containers",
+                    side_effect=({}, ready_services(plan)),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_run_compose_plan",
+                    side_effect=lambda *_: events.append("compose_up"),
+                ),
+            ):
+                self.assertEqual(
+                    start_deployment(repository, "production"),
+                    plan,
+                )
+
+            self.assertEqual(
+                events,
+                ["credential", "hf", "chf", "provider_volumes", "compose_up"],
+            )
+            self.assertTrue(
+                (
+                    repository
+                    / "secrets/deployments/production"
+                    / "generations"
+                    / plan.generation.frozen_generation_id
+                    / "frozen/manifest.json"
+                ).is_file()
+            )
+
+    def test_startup_credential_must_match_provider_and_private_posture(self) -> None:
+        with TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            credential = state / "signing.private.json"
+            credential.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
+            credential.chmod(0o600)
+            provider_deployment._admit_installed_credential(
+                state,
+                "provider:nmrpeak",
+            )
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "another provider",
+            ):
+                provider_deployment._admit_installed_credential(
+                    state,
+                    "provider:other",
+                )
+            credential.chmod(0o644)
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "mode 0600",
+            ):
+                provider_deployment._admit_installed_credential(
+                    state,
+                    "provider:nmrpeak",
+                )
+
+    def test_compose_up_consumes_the_exact_normalized_plan(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+            captured: dict[str, object] = {}
+
+            def docker_command(
+                _docker: Path,
+                arguments: tuple[str, ...],
+                *,
+                timeout: int,
+            ):
+                compose_path = Path(arguments[arguments.index("--file") + 1])
+                captured["compose"] = parse_canonical_json_bytes(
+                    compose_path.read_bytes()
+                )
+                captured["arguments"] = arguments
+                captured["timeout"] = timeout
+                return subprocess.CompletedProcess((), 0, b"", b"")
+
+            with patch.object(
+                provider_deployment,
+                "_docker_command",
+                side_effect=docker_command,
+            ):
+                provider_deployment._run_compose_plan(
+                    Path("/usr/bin/docker"),
+                    repository,
+                    "production",
+                    plan,
+                )
+
+        self.assertEqual(captured["compose"], plan.compose)
+        arguments = captured["arguments"]
+        self.assertIn("--no-build", arguments)
+        self.assertEqual(
+            arguments[arguments.index("--pull") : arguments.index("--pull") + 2],
+            ("--pull", "never"),
+        )
+        self.assertEqual(captured["timeout"], 720)
+
+    def test_project_inspection_rejects_a_foreign_checkout(self) -> None:
+        container_id = "a" * 64
+        inspection = [
+            {
+                "Id": container_id,
+                "Config": {
+                    "Labels": {
+                        "com.docker.compose.project": "nmrpeak-production",
+                        "com.docker.compose.service": "provider",
+                        "com.docker.compose.oneoff": "False",
+                        "com.docker.compose.project.working_dir": "/foreign",
+                    }
+                },
+            }
+        ]
+        outputs = (
+            subprocess.CompletedProcess((), 0, (container_id + "\n").encode(), b""),
+            subprocess.CompletedProcess((), 0, json.dumps(inspection).encode(), b""),
+        )
+        with patch.object(
+            provider_deployment,
+            "_docker_command",
+            side_effect=outputs,
+        ), self.assertRaisesRegex(
+            DeploymentOperationRejected,
+            "foreign or ambiguous",
+        ):
+            provider_deployment._inspect_project_containers(
+                Path("/usr/bin/docker"),
+                Path("/repository"),
+                "production",
+            )
 
 
 class committed_repository:
@@ -438,6 +587,42 @@ def compose_for_environment(
     provider_mounts[1]["source"] = environment["PROVIDER_CREDENTIAL_PATH"]
     provider_mounts[2]["source"] = environment["FROZEN_GENERATION_PATH"]
     return document
+
+
+def test_plan(repository: Path) -> DeploymentPlan:
+    with (
+        patch.object(
+            provider_deployment,
+            "_image_input_ids",
+            return_value=INPUTS,
+        ),
+        patch.object(
+            provider_deployment,
+            "_local_images",
+            return_value=IMAGES,
+        ),
+        patch.object(
+            provider_deployment,
+            "_render_compose",
+            side_effect=lambda _, deployment, environment, __: (
+                compose_for_environment(deployment, environment)
+            ),
+        ),
+    ):
+        return render_deployment_plan(repository, "production")
+
+
+def ready_services(plan: DeploymentPlan) -> dict[str, dict[str, object]]:
+    return {
+        service: {
+            "Image": plan.compose["services"][service]["image"],
+            "State": {
+                "Status": "running",
+                **({"Health": {"Status": "healthy"}} if service == "provider" else {}),
+            },
+        }
+        for service in ("provider", "hf-runner", "chf-runner")
+    }
 
 
 if __name__ == "__main__":

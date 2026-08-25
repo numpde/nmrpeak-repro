@@ -25,6 +25,8 @@ from deployment.local_image import (
     resolve_local_image,
 )
 from deployment.provider_volumes import (
+    ProviderVolumeOperationRejected,
+    ensure_provider_state_volumes,
     provider_identity_lock_volume_name,
     provider_journal_volume_name,
 )
@@ -34,13 +36,23 @@ from nmrpeak_provider.canonical_json import (
 )
 from nmrpeak_provider.frozen_generation import frozen_generation_id
 from nmrpeak_provider.provider_config import decode_provider_runtime_config
-from repository_checks.chf_checkpoint import checkpoint_volume_name as chf_volume_name
+from nmrpeak_provider.provider_credential import (
+    PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES,
+    parse_provider_signing_credential,
+)
+from repository_checks.chf_checkpoint import (
+    checkpoint_volume_name as chf_volume_name,
+    verify_chf_checkpoint,
+)
 from repository_checks.deployment_topology import (
     DeploymentCheckpoints,
     DeploymentImages,
     project_deployment_topology,
 )
-from repository_checks.hf_checkpoint import checkpoint_volume_name as hf_volume_name
+from repository_checks.hf_checkpoint import (
+    checkpoint_volume_name as hf_volume_name,
+    verify_hf_checkpoint,
+)
 from repository_checks.named_deployment import (
     RenderedGeneration,
     admit_deployment_releases,
@@ -49,6 +61,7 @@ from repository_checks.named_deployment import (
 )
 from repository_checks.nmrpeak_image_inputs import materialize_image_context
 from repository_checks.nmrpeak_source import read_nmrpeak_source_revision
+from repository_checks.checkpoint import CheckpointOperationRejected
 
 
 _DEPLOYMENT_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -93,6 +106,8 @@ class DeploymentPlan:
 
     compose: dict[str, object]
     generation: RenderedGeneration
+    releases: DeploymentReleases
+    provider_ref: str
     runtime_config_id: str
 
 
@@ -272,7 +287,13 @@ def render_deployment_plan(
         raise DeploymentOperationRejected(
             "Final retained paths changed the effective deployment topology"
         )
-    return DeploymentPlan(compose, generation, runtime_config_id)
+    return DeploymentPlan(
+        compose,
+        generation,
+        releases,
+        selection.provider_ref,
+        runtime_config_id,
+    )
 
 
 def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
@@ -321,6 +342,48 @@ def materialize_deployment_plan(
             "Deployment repository must be one resolved directory"
         )
     _require_deployment_name(deployment)
+    _validate_deployment_plan(plan)
+    state_root = _ensure_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        runtime_config, frozen_generation = _materialize_locked(state_root, plan)
+    return runtime_config / "provider.toml", frozen_generation / "frozen"
+
+
+def start_deployment(
+    repository: Path,
+    deployment: str,
+    *,
+    docker: Path = _DOCKER,
+) -> DeploymentPlan:
+    """Start one exact plan and prove all three durable services are ready."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    state_root = _ensure_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        plan = render_deployment_plan(root, deployment, docker=docker)
+        _validate_deployment_plan(plan)
+        _materialize_locked(state_root, plan)
+        _admit_installed_credential(state_root, plan.provider_ref)
+        verify_hf_checkpoint(root, plan.releases.hf, docker_binary=docker)
+        verify_chf_checkpoint(root, plan.releases.chf, docker_binary=docker)
+        ensure_provider_state_volumes(
+            docker,
+            root,
+            deployment,
+            plan.provider_ref,
+        )
+        _inspect_project_containers(docker, root, deployment)
+        _run_compose_plan(docker, root, deployment, plan)
+        _require_ready_project(docker, root, deployment, plan)
+        return plan
+
+
+def _validate_deployment_plan(plan: DeploymentPlan) -> None:
     if type(plan) is not DeploymentPlan:
         raise TypeError("Deployment materialization requires one resolved plan")
     if _runtime_config_id(plan.generation.provider_config) != plan.runtime_config_id:
@@ -333,28 +396,243 @@ def materialize_deployment_plan(
         raise DeploymentOperationRejected(
             "Deployment frozen generation identity does not match its manifest"
         )
-    state_root = _ensure_deployment_state_root(root, deployment)
-    with _locked_deployment_state(state_root):
-        runtime_root = _ensure_private_directory(state_root / "runtime-configs")
-        generation_root = _ensure_private_directory(state_root / "generations")
-        runtime_config = _publish_retained_tree(
-            runtime_root,
-            plan.runtime_config_id,
-            {"provider.toml": plan.generation.provider_config},
+
+
+def _materialize_locked(
+    state_root: Path,
+    plan: DeploymentPlan,
+) -> tuple[Path, Path]:
+    runtime_root = _ensure_private_directory(state_root / "runtime-configs")
+    generation_root = _ensure_private_directory(state_root / "generations")
+    runtime_config = _publish_retained_tree(
+        runtime_root,
+        plan.runtime_config_id,
+        {"provider.toml": plan.generation.provider_config},
+    )
+    frozen_files = {"frozen/manifest.json": plan.generation.manifest}
+    frozen_files.update(
+        {
+            f"frozen/{frozen_file.path}": frozen_file.content
+            for frozen_file in plan.generation.files
+        }
+    )
+    frozen_generation = _publish_retained_tree(
+        generation_root,
+        plan.generation.frozen_generation_id,
+        frozen_files,
+    )
+    return runtime_config, frozen_generation
+
+
+def _admit_installed_credential(state_root: Path, provider_ref: str) -> None:
+    path = state_root / "signing.private.json"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            "Provider signing credential is not installed"
+        ) from error
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES
+        ):
+            raise DeploymentOperationRejected(
+                "Provider signing credential must be operator-owned mode 0600"
+            )
+        raw = os.read(descriptor, PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES + 1)
+        if len(raw) != metadata.st_size:
+            raise DeploymentOperationRejected(
+                "Provider signing credential changed while it was read"
+            )
+    finally:
+        os.close(descriptor)
+    try:
+        credential = parse_provider_signing_credential(raw)
+    except ValueError as error:
+        raise DeploymentOperationRejected(
+            "Provider signing credential is invalid"
+        ) from error
+    if credential.provider_ref != provider_ref:
+        raise DeploymentOperationRejected(
+            "Provider signing credential belongs to another provider"
         )
-        frozen_files = {"frozen/manifest.json": plan.generation.manifest}
-        frozen_files.update(
-            {
-                f"frozen/{frozen_file.path}": frozen_file.content
-                for frozen_file in plan.generation.files
-            }
+
+
+def _run_compose_plan(
+    docker: Path,
+    repository: Path,
+    deployment: str,
+    plan: DeploymentPlan,
+) -> None:
+    try:
+        with TemporaryDirectory() as temporary:
+            compose_path = Path(temporary) / "compose.json"
+            compose_path.write_bytes(canonical_json_bytes(plan.compose))
+            _docker_command(
+                docker,
+                (
+                    "compose",
+                    "--env-file",
+                    "/dev/null",
+                    "--project-directory",
+                    str(repository),
+                    "--project-name",
+                    f"nmrpeak-{deployment}",
+                    "--file",
+                    str(compose_path),
+                    "up",
+                    "--detach",
+                    "--wait",
+                    "--wait-timeout",
+                    "660",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                ),
+                timeout=720,
+            )
+    except DeploymentOperationRejected as error:
+        raise DeploymentOperationRejected(
+            "Docker Compose startup was rejected; runtime state may be partial"
+        ) from error
+
+
+def _inspect_project_containers(
+    docker: Path,
+    repository: Path,
+    deployment: str,
+) -> dict[str, dict[str, object]]:
+    project = f"nmrpeak-{deployment}"
+    inventory = _docker_command(
+        docker,
+        (
+            "ps",
+            "--all",
+            "--no-trunc",
+            "--quiet",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ),
+        timeout=60,
+    ).stdout.decode("ascii", errors="strict").splitlines()
+    if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in inventory):
+        raise DeploymentOperationRejected(
+            "Docker returned malformed provider project container identities"
         )
-        frozen_generation = _publish_retained_tree(
-            generation_root,
-            plan.generation.frozen_generation_id,
-            frozen_files,
+    if not inventory:
+        return {}
+    document = _json_output(
+        _docker_command(
+            docker,
+            ("inspect", *inventory),
+            timeout=60,
+        ).stdout,
+        "Docker provider project inspection",
+    )
+    if type(document) is not list or len(document) != len(inventory):
+        raise DeploymentOperationRejected(
+            "Docker provider project inspection has an invalid shape"
         )
-    return runtime_config / "provider.toml", frozen_generation / "frozen"
+    services: dict[str, dict[str, object]] = {}
+    for record in document:
+        if type(record) is not dict:
+            raise DeploymentOperationRejected(
+                "Docker provider project inspection has an invalid record"
+            )
+        config = record.get("Config")
+        labels = config.get("Labels") if type(config) is dict else None
+        service = labels.get("com.docker.compose.service") if type(labels) is dict else None
+        if (
+            record.get("Id") not in inventory
+            or type(service) is not str
+            or service not in {"provider", "hf-runner", "chf-runner"}
+            or service in services
+            or labels.get("com.docker.compose.project") != project
+            or labels.get("com.docker.compose.oneoff") != "False"
+            or labels.get("com.docker.compose.project.working_dir") != str(repository)
+        ):
+            raise DeploymentOperationRejected(
+                "Provider project contains a foreign or ambiguous container"
+            )
+        services[service] = record
+    return services
+
+
+def _require_ready_project(
+    docker: Path,
+    repository: Path,
+    deployment: str,
+    plan: DeploymentPlan,
+) -> None:
+    services = _inspect_project_containers(docker, repository, deployment)
+    expected_services = plan.compose["services"]
+    if set(services) != {"provider", "hf-runner", "chf-runner"}:
+        raise DeploymentOperationRejected(
+            "Provider startup did not leave exactly three durable services"
+        )
+    for service, record in services.items():
+        expected = expected_services[service]
+        state = record.get("State")
+        if (
+            type(expected) is not dict
+            or record.get("Image") != expected.get("image")
+            or type(state) is not dict
+            or state.get("Status") != "running"
+        ):
+            raise DeploymentOperationRejected(
+                f"Provider startup did not prove the selected {service} image running"
+            )
+        if service == "provider":
+            health = state.get("Health")
+            if type(health) is not dict or health.get("Status") != "healthy":
+                raise DeploymentOperationRejected(
+                    "Provider startup did not prove provider readiness"
+                )
+
+
+def _docker_command(
+    docker: Path,
+    arguments: tuple[str, ...],
+    *,
+    timeout: int,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        result = subprocess.run(
+            (str(docker), "--context", "default", *arguments),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": "/tmp",
+                "DOCKER_CONTEXT": "default",
+            },
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise DeploymentOperationRejected(
+            "Docker provider deployment operation did not complete"
+        ) from error
+    if (
+        result.returncode != 0
+        or len(result.stdout) > 1_048_576
+        or len(result.stderr) > 1_048_576
+    ):
+        raise DeploymentOperationRejected(
+            "Docker provider deployment operation was rejected"
+        )
+    return result
+
+
+def _json_output(raw: bytes, operation: str) -> object:
+    try:
+        return json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise DeploymentOperationRejected(f"{operation} returned invalid JSON") from error
 
 
 def _require_deployment_name(deployment: str) -> None:
@@ -850,7 +1128,7 @@ def _fsync_directory(path: Path) -> None:
 
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Operate one named NMRPeak deployment.")
-    parser.add_argument("operation", choices=("config", "init"))
+    parser.add_argument("operation", choices=("config", "init", "up"))
     parser.add_argument("deployment")
     options = parser.parse_args(arguments)
     repository = Path(__file__).resolve().parents[1]
@@ -858,13 +1136,21 @@ def main(arguments: list[str] | None = None) -> int:
         if options.operation == "init":
             initialized = initialize_deployment(repository, options.deployment)
             print(f"Initialized deployment {options.deployment}: {initialized}")
-        else:
+        elif options.operation == "config":
             plan = render_deployment_plan(repository, options.deployment)
             print(deployment_plan_bytes(plan).decode("utf-8"))
+        else:
+            plan = start_deployment(repository, options.deployment)
+            print(
+                "Provider deployment ready: "
+                f"{options.deployment} {plan.generation.frozen_generation_id}"
+            )
     except (
+        CheckpointOperationRejected,
         DeploymentOperationRejected,
         LocalImageRejected,
         OSError,
+        ProviderVolumeOperationRejected,
         ValueError,
     ) as error:
         print(
