@@ -1,0 +1,23 @@
+[project]
+name = "nmrpeak-family-runtime"
+version = "0"
+requires-python = "==3.10.*"
+dependencies = [
+    # Exact direct dependencies for the pinned generation path and for modules
+    # NMRPeak imports before the worker reaches that path.
+    "lmdb==1.4.1",
+    "matplotlib==3.7.2",
+    "numpy==1.24.4",
+    "pandas==1.5.2",
+    "rdkit==2024.9.6",
+    "scikit-learn==1.3.0",
+    "scipy==1.11.1",
+    "smirk==0.1.0",
+    "tqdm==4.66.1",
+    "transformers==4.55.4",
+]
+
+[dependency-groups]
+cpu-x86_64 = [
+    "torch @ https://download.pytorch.org/whl/cpu/torch-2.3.0%2Bcpu-cp310-cp310-linux_x86_64.whl#sha256=e3c220702d82c7596924150e0499fbbffcf62a88a59adc860fa357cd8dc1c302",
+]

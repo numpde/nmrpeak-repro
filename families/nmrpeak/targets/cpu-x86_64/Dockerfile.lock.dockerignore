@@ -1,0 +1,6 @@
+*
+!containers/
+containers/*
+!containers/runner-lock/
+containers/runner-lock/*
+!containers/runner-lock/seed-and-compile.sh

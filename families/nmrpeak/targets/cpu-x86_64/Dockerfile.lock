@@ -1,0 +1,7 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+FROM ghcr.io/astral-sh/uv@sha256:440fd6477af86a2f1b38080c539f1672cd22acb1b1a47e321dba5158ab08864d AS uv
+FROM docker.io/library/python:3.10.19-slim-bookworm@sha256:7de0b3589a2b35452fab55d753aa773d59afcbb88220ab118d6604a398cd65e1
+COPY --from=uv /uv /usr/local/bin/uv
+COPY --chmod=0555 containers/runner-lock/seed-and-compile.sh /usr/local/bin/nmrpeak-lock-compile
+
+ENTRYPOINT ["nmrpeak-lock-compile", "--default-index", "https://pypi.org/simple", "--python-version", "3.10.19", "--python-platform", "x86_64-manylinux_2_28", "--only-binary", ":all:", "--no-cache", "--no-python-downloads", "--emit-index-url", "--generate-hashes"]
