@@ -116,11 +116,10 @@ class ProviderIdentityLockTests(unittest.TestCase):
             link = root / "lock"
             os.symlink(target, link)
             for path in (root / "missing", link):
-                with self.subTest(path=path), self.assertRaisesRegex(
-                    ValueError,
-                    "unavailable",
-                ):
-                    ProviderIdentityLock.acquire(path, PROVIDER_REF)
+                with self.subTest(path=path):
+                    with self.assertRaisesRegex(ValueError, "unavailable") as raised:
+                        ProviderIdentityLock.acquire(path, PROVIDER_REF)
+                    self.assertIsInstance(raised.exception.__cause__, OSError)
 
 
 def credential_bytes(private_key: Ed25519PrivateKey) -> bytes:

@@ -317,10 +317,10 @@ def _load_files(root: Path, value: JsonValue) -> tuple[FrozenFile, ...]:
             raise ValueError("Frozen generation file digest is invalid")
         try:
             content = _read_retained_file(root, path, _MAX_NAMED_FILE_BYTES)
-        except OSError:
+        except OSError as error:
             raise ValueError(
                 "Frozen generation named file path is not a retained regular path"
-            ) from None
+            ) from error
         if len(content) != length or "sha256:" + sha256(content).hexdigest() != digest:
             raise ValueError("Frozen generation named file does not match its manifest")
         paths.add(path)

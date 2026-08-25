@@ -55,8 +55,8 @@ def parse_provider_signing_credential(raw: bytes) -> ProviderSigningCredential:
         raise ValueError("Provider signing credential must end with one newline")
     try:
         document = parse_canonical_json_bytes(raw[:-1])
-    except (TypeError, ValueError):
-        raise ValueError("Provider signing credential is not canonical JSON") from None
+    except (TypeError, ValueError) as error:
+        raise ValueError("Provider signing credential is not canonical JSON") from error
     if type(document) is not dict or set(document) != _FIELDS:
         raise ValueError("Provider signing credential has an invalid shape")
     profile = document["profile"]
@@ -73,8 +73,8 @@ def parse_provider_signing_credential(raw: bytes) -> ProviderSigningCredential:
         raise ValueError("Provider signing credential identity is invalid")
     try:
         validate_provider_credential_ref(credential_ref)
-    except (TypeError, ValueError):
-        raise ValueError("Provider signing credential identity is invalid") from None
+    except (TypeError, ValueError) as error:
+        raise ValueError("Provider signing credential identity is invalid") from error
     encoded_public_key = document["public_key_spki_der_b64"]
     private_key_text = document["private_key_pkcs8_pem"]
     if type(encoded_public_key) is not str or type(private_key_text) is not str:
@@ -88,8 +88,8 @@ def parse_provider_signing_credential(raw: bytes) -> ProviderSigningCredential:
             private_key_text.encode("ascii"),
             password=None,
         )
-    except (TypeError, UnicodeError, UnsupportedAlgorithm, ValueError):
-        raise ValueError("Provider signing credential key material is invalid") from None
+    except (TypeError, UnicodeError, UnsupportedAlgorithm, ValueError) as error:
+        raise ValueError("Provider signing credential key material is invalid") from error
     if not isinstance(public_key, Ed25519PublicKey) or not isinstance(
         private_key,
         Ed25519PrivateKey,

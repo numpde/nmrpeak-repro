@@ -682,6 +682,25 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 path.write_bytes(b"#" * (1024 * 1024))
                 assert_rejected()
 
+    async def test_invalid_toml_preserves_the_parser_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "10-only.toml").write_bytes(b"invalid = [")
+            async with httpx.AsyncClient() as client:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "invalid interpreter endpoint configuration",
+                ) as raised:
+                    _load_and_bind_endpoints(
+                        directory,
+                        http_client=client,
+                        request_timeout_seconds=4,
+                        turn_timeout_seconds=10,
+                    )
+
+        self.assertIsNotNone(raised.exception.__cause__)
+        self.assertEqual(type(raised.exception.__cause__).__name__, "TOMLDecodeError")
+
     async def test_maps_directory_snapshot_limits_to_honest_diagnostics(self) -> None:
         cases = (
             (

@@ -95,8 +95,8 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
         raise ValueError("Provider runtime config must be bounded bytes")
     try:
         document = tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeError, tomllib.TOMLDecodeError):
-        raise ValueError("Provider runtime config is not valid TOML") from None
+    except (UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise ValueError("Provider runtime config is not valid TOML") from error
     _fields(
         "top level",
         document,

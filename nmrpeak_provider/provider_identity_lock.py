@@ -34,8 +34,8 @@ class ProviderIdentityLock:
                 Path(path),
                 os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
             )
-        except OSError:
-            raise ValueError("Provider identity lock file is unavailable") from None
+        except OSError as error:
+            raise ValueError("Provider identity lock file is unavailable") from error
         try:
             status = os.fstat(descriptor)
             if (
@@ -52,10 +52,10 @@ class ProviderIdentityLock:
                 raise ValueError("Provider identity lock names another provider")
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
+            except BlockingIOError as error:
                 raise ProviderIdentityLockBusy(
                     "Another deployment already holds this provider identity"
-                ) from None
+                ) from error
             return cls(descriptor)
         except BaseException:
             os.close(descriptor)

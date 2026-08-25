@@ -122,6 +122,13 @@ class ProviderConfigTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises((TypeError, ValueError)):
                 decode_provider_runtime_config(raw)
 
+    def test_invalid_toml_preserves_the_parser_failure(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not valid TOML") as raised:
+            decode_provider_runtime_config(b"invalid = [")
+
+        self.assertIsNotNone(raised.exception.__cause__)
+        self.assertEqual(type(raised.exception.__cause__).__name__, "TOMLDecodeError")
+
     def test_container_paths_are_fixed_code_owned_mount_contracts(self) -> None:
         self.assertEqual(FROZEN_ROOT.as_posix(), "/run/nmrpeak-provider/frozen")
         self.assertEqual(

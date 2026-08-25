@@ -362,7 +362,7 @@ def _snapshot_endpoint_configs(directory: Path) -> tuple[bytes, ...]:
             maximum_file_bytes=MAX_INTERPRETER_CONFIG_BYTES,
         )
     except LocalInputSnapshotError as error:
-        _raise_config_snapshot_error(error.reason)
+        _raise_config_snapshot_error(error)
 
 
 def _bind_endpoint(
@@ -380,18 +380,19 @@ def _bind_endpoint(
     return InterpreterEndpoint(spec.configuration_id, call)
 
 
-def _raise_config_snapshot_error(reason: LocalInputFailureReason) -> Never:
+def _raise_config_snapshot_error(error: LocalInputSnapshotError) -> Never:
+    reason = error.reason
     if reason is LocalInputFailureReason.TOO_MANY_SELECTED_FILES:
         raise ValueError(
             f"at most {MAX_INTERPRETER_ENDPOINTS} interpreter endpoints are supported"
-        ) from None
+        ) from error
     if reason is LocalInputFailureReason.TOO_MANY_DIRECTORY_ENTRIES:
         raise ValueError(
             "interpreter configuration directory has too many entries"
-        ) from None
+        ) from error
     if reason is LocalInputFailureReason.INVALID_SELECTED_FILE:
-        raise ValueError("invalid interpreter endpoint configuration") from None
-    raise ValueError("interpreter configuration directory is unreadable") from None
+        raise ValueError("invalid interpreter endpoint configuration") from error
+    raise ValueError("interpreter configuration directory is unreadable") from error
 
 
 def _parse_config(raw: bytes) -> OpenAIChatEndpointSpec:
@@ -404,15 +405,15 @@ def _parse_config(raw: bytes) -> OpenAIChatEndpointSpec:
             model=cast(str, document["model"]),
             reasoning_effort=cast(str | None, document.get("reasoning_effort")),
         )
-    except TypeError:
-        raise ValueError("invalid interpreter endpoint identity") from None
+    except TypeError as error:
+        raise ValueError("invalid interpreter endpoint identity") from error
 
 
 def _parse_config_document(raw: bytes) -> dict[str, object]:
     try:
         document = tomllib.loads(raw.decode("utf-8", errors="strict"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
-        raise ValueError("invalid interpreter endpoint configuration") from None
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ValueError("invalid interpreter endpoint configuration") from error
     fields = set(document)
     if (
         not _REQUIRED_CONFIG_FIELDS.issubset(fields)
@@ -432,8 +433,8 @@ def _require_model(value: object) -> None:
         raise TypeError("model must be bounded non-blank UTF-8 text")
     try:
         encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
-        raise TypeError("model must be bounded non-blank UTF-8 text") from None
+    except UnicodeEncodeError as error:
+        raise TypeError("model must be bounded non-blank UTF-8 text") from error
     if not value.strip() or len(encoded) > _MAX_MODEL_BYTES:
         raise TypeError("model must be bounded non-blank UTF-8 text")
 
@@ -461,8 +462,8 @@ def _chat_completions_url(value: object) -> str:
     try:
         parsed = urlsplit(value)
         port = parsed.port
-    except ValueError:
-        raise ValueError("invalid interpreter base URL") from None
+    except ValueError as error:
+        raise ValueError("invalid interpreter base URL") from error
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
@@ -479,8 +480,8 @@ def _chat_completions_url(value: object) -> str:
         # Validate with the transport that will send the request so URL syntax
         # accepted here cannot fail as an uncategorized error after admission.
         return str(httpx.URL(canonical + "/chat/completions"))
-    except httpx.InvalidURL:
-        raise ValueError("invalid interpreter base URL") from None
+    except httpx.InvalidURL as error:
+        raise ValueError("invalid interpreter base URL") from error
 
 
 def _parse_completion(body: bytes) -> InterpreterTurn:
