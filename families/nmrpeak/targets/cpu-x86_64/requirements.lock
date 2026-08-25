@@ -1192,7 +1192,7 @@ tokenizers==0.21.4 \
     --hash=sha256:f23186c40395fc390d27f519679a58023f368a0aad234af145e0f39ad1212732 \
     --hash=sha256:fa23f85fbc9a02ec5c6978da172cdcbac23498c3ca9f3645c5c68740ac007880
     # via transformers
-torch @ https://download.pytorch.org/whl/cpu/torch-2.3.0%2Bcpu-cp310-cp310-linux_x86_64.whl \
+torch @ https://download.pytorch.org/whl/cpu/torch-2.3.0%2Bcpu-cp310-cp310-linux_x86_64.whl#sha256=e3c220702d82c7596924150e0499fbbffcf62a88a59adc860fa357cd8dc1c302 \
     --hash=sha256:e3c220702d82c7596924150e0499fbbffcf62a88a59adc860fa357cd8dc1c302
     # via nmrpeak-family-runtime (pyproject.toml:cpu-x86-64)
 tqdm==4.66.1 \

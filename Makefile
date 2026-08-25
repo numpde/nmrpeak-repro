@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover release/check release/write test test/contract test/repository test/unit
+.PHONY: check/source checkpoint/import checkpoint/recover release/check release/write runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
 
 test: test/unit test/contract test/repository
 
@@ -23,6 +23,10 @@ test/repository:
 check/source:
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m repository_checks.nmrpeak_source "$(REPOSITORY_ROOT)"
+
+runner/lock/stage runner/lock/check runner/lock/apply:
+	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$(TARGET)"
 
 release/write:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
