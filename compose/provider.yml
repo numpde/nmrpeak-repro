@@ -6,7 +6,7 @@ services:
     pull_policy: never
     platform: "${IMAGE_PLATFORM:?set IMAGE_PLATFORM through make}"
     restart: "on-failure:3"
-    stop_grace_period: 35s
+    stop_grace_period: 600s
     user: "65532:65532"
     init: true
     read_only: true

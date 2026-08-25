@@ -181,7 +181,7 @@ def _provider_posture(service: dict[str, object]) -> None:
         raise DeploymentTopologyRejected("Only the provider may receive API egress")
     if service.get("command") is not None or service.get("entrypoint") is not None:
         raise DeploymentTopologyRejected("Provider image entrypoint must remain fixed")
-    if service.get("stop_grace_period") != "35s":
+    if service.get("stop_grace_period") != "10m0s":
         raise DeploymentTopologyRejected("Provider stop budget has drifted")
     if service.get("logging") != {
         "driver": "json-file",

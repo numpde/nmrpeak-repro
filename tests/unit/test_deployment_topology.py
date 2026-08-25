@@ -98,7 +98,7 @@ def compose_document() -> dict[str, object]:
         "read_only": True,
         "restart": "on-failure:3",
         "security_opt": ["no-new-privileges:true"],
-        "stop_grace_period": "35s",
+        "stop_grace_period": "10m0s",
         "tmpfs": [
             "/tmp:size=16m,mode=1777,noexec,nosuid,nodev,uid=65532,gid=65532",
             "/run/nmrpeak-provider:size=64k,mode=0700,noexec,nosuid,nodev,uid=65532,gid=65532",
