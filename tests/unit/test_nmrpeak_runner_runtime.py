@@ -40,10 +40,15 @@ class NmrpeakRunnerRuntimeTests(unittest.TestCase):
             model,
             HF_DECODE_POLICY,
         )
-        with self.assertRaises(NmrpeakRuntimeInputRejected):
+        with self.assertRaises(NmrpeakRuntimeInputRejected) as raised:
             NmrpeakRuntime(stack, lambda document: document).validate(
                 {"molecular_formula": "Xx"}
             )
+        self.assertEqual(
+            str(raised.exception),
+            "The loaded model dictionary does not contain every token produced for "
+            "this input.",
+        )
         self.assertFalse(hasattr(dictionary, "tokens"))
         self.assertEqual(model.generate_calls, [])
 

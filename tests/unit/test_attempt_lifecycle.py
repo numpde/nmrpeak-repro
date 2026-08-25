@@ -192,7 +192,7 @@ class ReportingInterpreter:
 
 class RejectedInterpreter:
     def validate_freeform_input(self, **_values: object) -> object:
-        raise InterpretationRejected()
+        raise InterpretationRejected("The interpreter candidate was rejected.")
 
 
 class NonStoppingSession:
@@ -686,7 +686,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         terminal_body = json.loads(outcome.record.terminal_request_body)
         self.assertEqual(
             terminal_body["failure_message"],
-            InputRejected.public_message,
+            "The interpreter candidate was rejected.",
         )
         self.assertNotIn("submit_interpretation", terminal_body["failure_message"])
 
@@ -717,6 +717,11 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertEqual(journal.records(), (outcome.record,))
         self.assertIs(type(outcome), InputFailurePending)
         self.assertEqual(len(channel.received_frames), 1)
+        terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(
+            terminal_body["failure_message"],
+            "The fake runner rejected this input.",
+        )
 
     def test_uncertain_preparing_progress_does_not_reach_the_runner(self) -> None:
         canonical_input = valid_chf_input()

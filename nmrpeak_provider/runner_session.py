@@ -76,6 +76,8 @@ class RunnerDeadlines:
 class RunnerInputRejected:
     """The runner deterministically rejected a fully parsed model input."""
 
+    message: str
+
 
 @dataclass(frozen=True, slots=True)
 class ValidatedRunnerRequest:
@@ -284,7 +286,7 @@ class RunnerSession(Generic[ModelInput]):
                         f"Cannot accept {self._codec.lane_name} rejection: the session was retired"
                     )
                 self._state = _SessionState.IDLE
-            return RunnerInputRejected()
+            return RunnerInputRejected(response.diagnostic)
         self._retire_with_error(
             f"Cannot validate {self._codec.lane_name} runner input: "
             "response type or correlation is wrong"

@@ -98,7 +98,7 @@ class InputInterpreter:
                 model_input=runner_input,
             )
             if type(outcome) is RunnerInputRejected:
-                raise InterpretationCandidateRejected()
+                raise InterpretationCandidateRejected(outcome.message)
             return outcome
 
         def report_endpoint_failure(event: InterpreterEndpointFailed) -> None:

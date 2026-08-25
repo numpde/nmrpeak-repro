@@ -80,7 +80,7 @@ class CapturingSession:
         self.model_inputs.append(model_input)
         if self.reject_first:
             self.reject_first = False
-            return RunnerInputRejected()
+            return RunnerInputRejected("The loaded runner rejected this input.")
         return ValidatedRunnerRequest(self, object())
 
 
@@ -161,8 +161,12 @@ class InputInterpreterTests(unittest.TestCase):
             prompts.append(prompt)
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
-        with self.assertRaises(InterpretationRejected):
+        with self.assertRaises(InterpretationRejected) as raised:
             run_with_endpoint(call, session=CapturingSession(reject_first=True))
+        self.assertEqual(
+            raised.exception.message,
+            "The loaded runner rejected this input.",
+        )
         self.assertEqual(len(prompts), 1)
 
     def test_runner_rejection_falls_back_with_a_fresh_prompt(self) -> None:

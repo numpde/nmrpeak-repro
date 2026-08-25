@@ -244,7 +244,10 @@ class RunnerSessionTests(unittest.TestCase):
         channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame(), rejected_validations=1)
         session = RunnerSession.admit(channel, FACTS, DEADLINES, CHF_RUNNER_CODEC)
 
-        self.assertIsInstance(validate(session), RunnerInputRejected)
+        rejection = validate(session)
+        self.assertIsInstance(rejection, RunnerInputRejected)
+        assert isinstance(rejection, RunnerInputRejected)
+        self.assertEqual(rejection.message, "The fake runner rejected this input.")
         accepted = validate(session)
         self.assertIsInstance(accepted, ValidatedRunnerRequest)
         assert isinstance(accepted, ValidatedRunnerRequest)

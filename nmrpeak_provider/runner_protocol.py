@@ -13,6 +13,7 @@ from .canonical_json import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
 )
+from .failure_message import is_failure_message
 
 
 RUNNER_PROTOCOL_VERSION = 1
@@ -159,13 +160,13 @@ class RejectedFrame:
     """A deterministic, reusable rejection of a fully parsed model input."""
 
     correlation: AttemptCorrelation
-    reason: str = "input_rejected"
+    diagnostic: str
 
     def __post_init__(self) -> None:
         _require_correlation(self.correlation)
-        if self.reason != "input_rejected":
+        if not is_failure_message(self.diagnostic):
             raise RunnerProtocolError(
-                "Cannot bind NMRPeak runner REJECTED frame: reason is not supported"
+                "Cannot bind NMRPeak runner REJECTED frame: diagnostic is invalid"
             )
 
 
@@ -337,7 +338,8 @@ def _frame_document(
     if type(frame) is RejectedFrame:
         return {
             **_correlated_document("REJECTED", frame.correlation),
-            "reason": frame.reason,
+            "reason": "input_rejected",
+            "diagnostic": frame.diagnostic,
         }
     if type(frame) is ResultFrame:
         return {
@@ -389,12 +391,15 @@ def _parse_validate(
 
 
 def _parse_rejected(document: dict[str, JsonValue]) -> RejectedFrame:
-    correlation = _parse_correlated(document, {"v", "type", "reason"})
+    correlation = _parse_correlated(
+        document,
+        {"v", "type", "reason", "diagnostic"},
+    )
     if document["reason"] != "input_rejected":
         raise RunnerProtocolError(
             "Cannot receive NMRPeak runner REJECTED frame: reason is not supported"
         )
-    return RejectedFrame(correlation)
+    return RejectedFrame(correlation, document["diagnostic"])
 
 
 def _parse_result(document: dict[str, JsonValue]) -> ResultFrame:

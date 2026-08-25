@@ -59,9 +59,11 @@ def serve_loaded_nmrpeak_runtime(
                 )
             try:
                 runtime.validate(command.model_input)
-            except NmrpeakRuntimeInputRejected:
+            except NmrpeakRuntimeInputRejected as rejection:
                 connection.sendall(
-                    codec.encode(RejectedFrame(command.correlation))
+                    codec.encode(
+                        RejectedFrame(command.correlation, str(rejection))
+                    )
                 )
                 continue
             pending = command

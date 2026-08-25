@@ -53,8 +53,15 @@ class NmrpeakRuntime:
 
     def validate(self, model_input: object) -> None:
         tokens = self._tokenize(model_input)
-        if not tokens or len(tokens) > MAXIMUM_TOKENIZED_INPUT_LENGTH:
-            raise NmrpeakRuntimeInputRejected()
+        if not tokens:
+            raise NmrpeakRuntimeInputRejected(
+                "The loaded tokenizer produced no model input tokens."
+            )
+        if len(tokens) > MAXIMUM_TOKENIZED_INPUT_LENGTH:
+            raise NmrpeakRuntimeInputRejected(
+                f"The loaded tokenizer produced {len(tokens)} model input tokens; "
+                f"the model accepts at most {MAXIMUM_TOKENIZED_INPUT_LENGTH}."
+            )
 
     def generate(self, model_input: object) -> JsonValue:
         return self._stack.generate(self._tokenize(model_input))
@@ -82,7 +89,10 @@ class LoadedNmrpeakStack:
         tokens = self._tokenizer.tokenize_item(document)
         model_tokens = tuple(str(token) for token in tokens)
         if any(token not in self._dictionary for token in model_tokens):
-            raise NmrpeakRuntimeInputRejected()
+            raise NmrpeakRuntimeInputRejected(
+                "The loaded model dictionary does not contain every token produced "
+                "for this input."
+            )
         return model_tokens
 
     def generate(self, tokens: tuple[str, ...]) -> JsonValue:

@@ -653,7 +653,7 @@ def prepare_execution(
             model_input=lane.bind_runner_input(model_input),
         )
         if type(validated) is RunnerInputRejected:
-            return _retain_input_rejection(journal, record)
+            return _retain_input_rejection(journal, record, validated.message)
     else:
         try:
             validated = interpreter.validate_freeform_input(
@@ -667,8 +667,8 @@ def prepare_execution(
             return _retain_input_rejection(journal, record, str(rejection))
         except ReportedInputProblem as problem:
             return _retain_input_rejection(journal, record, problem.message)
-        except InterpretationRejected:
-            return _retain_input_rejection(journal, record)
+        except InterpretationRejected as rejection:
+            return _retain_input_rejection(journal, record, rejection.message)
         except InterpreterUnavailable:
             return InputInterpretationUnavailable()
     return PreparedForExecution(record, validated)

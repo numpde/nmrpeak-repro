@@ -100,9 +100,17 @@ class ReportedInputProblem(ValueError):
 class InterpretationCandidateRejected(ValueError):
     """An analysis-specific admission boundary rejected one candidate."""
 
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
 
 class InterpretationRejected(ValueError):
     """Every configured endpoint produced a runner-rejected candidate."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
 
 
 class InterpreterTool(StrEnum):
@@ -237,6 +245,7 @@ async def interpret(
 
     attempted: list[str] = []
     all_endpoints_rejected_candidate = True
+    last_rejection: str | None = None
     deadline = asyncio.timeout(interpretation_timeout_seconds)
     try:
         # This is the caller-visible operation bound. Endpoint adapters retain
@@ -279,12 +288,13 @@ async def interpret(
                     try:
                         candidate = _dispatch_turn(assistant, capability=capability)
                         admitted = await admit_interpretation(candidate)
-                    except InterpretationCandidateRejected:
+                    except InterpretationCandidateRejected as rejection:
+                        last_rejection = rejection.message
                         _report_endpoint_failure(
                             report_endpoint_failure,
                             endpoint.configuration_id,
                             failure_kind="admission",
-                            failure_reason="rejected",
+                            failure_reason=rejection.message,
                         )
                         break
                     except InterpreterProtocolError as error:
@@ -340,7 +350,11 @@ async def interpret(
         ) from None
 
     if all_endpoints_rejected_candidate:
-        raise InterpretationRejected()
+        if last_rejection is None:
+            raise AssertionError(
+                "Interpreter rejection outcome has no runner diagnostic"
+            )
+        raise InterpretationRejected(last_rejection)
     raise InterpreterUnavailable(
         InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
         attempted_configuration_ids=tuple(attempted),

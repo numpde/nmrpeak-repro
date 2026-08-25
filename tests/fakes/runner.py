@@ -110,7 +110,9 @@ class FakeRunnerChannel:
             raise OSError("fake runner already has a validated request")
         if self._rejected_validations:
             self._rejected_validations -= 1
-            self._queue(RejectedFrame(frame.correlation))
+            self._queue(
+                RejectedFrame(frame.correlation, "The fake runner rejected this input.")
+            )
             return
         self._pending = frame.correlation
         if self._fault is FakeRunnerFault.MALFORMED_VALIDATION:
@@ -137,7 +139,9 @@ class FakeRunnerChannel:
             return
         self._pending = None
         if self._fault is FakeRunnerFault.REJECT_GENERATION:
-            self._queue(RejectedFrame(frame.correlation))
+            self._queue(
+                RejectedFrame(frame.correlation, "The fake runner rejected this input.")
+            )
             return
         correlation = (
             _different_correlation(frame.correlation)

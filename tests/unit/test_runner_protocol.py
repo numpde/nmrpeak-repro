@@ -78,7 +78,7 @@ class RunnerProtocolTests(unittest.TestCase):
             ValidateFrame(CORRELATION, MODEL_INPUT),
             ValidatedFrame(CORRELATION),
             GenerateFrame(CORRELATION),
-            RejectedFrame(CORRELATION),
+            RejectedFrame(CORRELATION, "The loaded runner rejected this input."),
             ResultFrame(CORRELATION, ["CCO", "OCC"]),
             RetireFrame(BOOT),
         )
@@ -149,6 +149,13 @@ class RunnerProtocolTests(unittest.TestCase):
             with self.subTest(payload=payload[:40]):
                 with self.assertRaises(RunnerProtocolError):
                     CHF_RUNNER_CODEC.decode_payload(payload)
+
+    def test_rejection_requires_one_publishable_diagnostic(self) -> None:
+        for diagnostic in ("", "contains\0nul", "x" * 1_025):
+            with self.subTest(diagnostic=diagnostic[:20]), self.assertRaises(
+                RunnerProtocolError
+            ):
+                RejectedFrame(CORRELATION, diagnostic)
 
     def test_result_candidates_remain_untrusted_for_the_product_validator(self) -> None:
         frame = ResultFrame(CORRELATION, {"not": "a candidate array"})

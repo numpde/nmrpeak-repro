@@ -146,7 +146,13 @@ class ChfWorkerTests(unittest.TestCase):
         runtime = RecordingRuntime(rejections=1, candidates=["CCO"])
         with WorkerHarness(runtime) as harness:
             session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
-            self.assertIsInstance(validate(session), RunnerInputRejected)
+            rejection = validate(session)
+            self.assertIsInstance(rejection, RunnerInputRejected)
+            assert isinstance(rejection, RunnerInputRejected)
+            self.assertEqual(
+                rejection.message,
+                "The test runtime rejected this model input.",
+            )
             validated = validate(session)
             self.assertIsInstance(validated, ValidatedRunnerRequest)
             assert isinstance(validated, ValidatedRunnerRequest)
@@ -229,7 +235,9 @@ class RecordingRuntime:
             raise self.validation_failure
         if self.rejections:
             self.rejections -= 1
-            raise NmrpeakRuntimeInputRejected()
+            raise NmrpeakRuntimeInputRejected(
+                "The test runtime rejected this model input."
+            )
 
     def generate(self, model_input: ChfRunnerInput) -> JsonValue:
         self.generated.append(model_input)
