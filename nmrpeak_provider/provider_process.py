@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import math
 from threading import Event, Thread
 import time
+from typing import Callable
 
 from .attempt_inventory import (
     AttemptInventoryReadFailed,
@@ -151,6 +152,7 @@ def run_provider_process(
     hello: _PreparedProviderRequest,
     policy: ProviderProcessPolicy,
     stop: Event,
+    on_ready: Callable[[], None],
 ) -> None:
     """Recover startup state, then serve exactly two sibling lane owners."""
 
@@ -167,6 +169,8 @@ def run_provider_process(
         raise TypeError("NMRPeak process requires one prepared hello snapshot")
     if not isinstance(stop, Event):
         raise TypeError("NMRPeak process requires one stop event")
+    if not callable(on_ready):
+        raise TypeError("NMRPeak process requires one readiness publisher")
 
     owners = (
         _LaneOwner(runtime.hf, hf_session),
@@ -241,8 +245,12 @@ def run_provider_process(
                     )
             raise
         started = True
-
-        hello_error: BaseException | None = None
+        coordination_error: BaseException | None = None
+        try:
+            on_ready()
+        except BaseException as error:
+            coordination_error = error
+            stop.set()
         while not stop.is_set():
             until_hello = max(0.0, next_hello_at - time.monotonic())
             if finished.wait(min(policy.feed_interval_seconds, until_hello)):
@@ -257,7 +265,7 @@ def run_provider_process(
                         provider_ref=provider_ref,
                     )
                 except BaseException as error:
-                    hello_error = error
+                    coordination_error = error
                     stop.set()
                     break
                 next_hello_at = time.monotonic() + policy.hello_interval_seconds
@@ -275,11 +283,11 @@ def run_provider_process(
                     cancellation_errors.append(error)
             _join_threads(threads, policy.forced_join_seconds)
         live = tuple(thread for thread in threads if thread.is_alive())
-        if hello_error is not None:
+        if coordination_error is not None:
             if live:
                 raise ProviderShutdownFailed(
                     "NMRPeak lane threads did not stop after session cancellation"
-                ) from hello_error
+                ) from coordination_error
             if cancellation_errors:
                 raise ProviderShutdownFailed(
                     "NMRPeak forced shutdown could not confirm every session closure"
@@ -287,10 +295,10 @@ def run_provider_process(
             for work in works:
                 if work.error is not None:
                     lane = work.owner.generation.lane.offering.implementation_ref
-                    hello_error.add_note(
-                        f"The {lane} lane also failed during hello-triggered shutdown."
+                    coordination_error.add_note(
+                        f"The {lane} lane also failed during coordinated shutdown."
                     )
-            raise hello_error
+            raise coordination_error
         for work in works:
             if work.error is not None:
                 lane = work.owner.generation.lane.offering.implementation_ref

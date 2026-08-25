@@ -197,6 +197,11 @@ class ProviderProcessTests(unittest.TestCase):
         terminal = completion_pending(runtime.chf.generation)
         stop = Event()
         api = ConcurrentProviderApi(stop=stop, terminal=terminal)
+        readiness_operations: list[ProviderOperation] = []
+
+        def publish_readiness() -> None:
+            readiness_operations.extend(request.operation for request in api.requests)
+
         hf_session, hf_channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
 
@@ -212,6 +217,7 @@ class ProviderProcessTests(unittest.TestCase):
                     hello=hello_request(),
                     policy=process_policy(),
                     stop=stop,
+                    on_ready=publish_readiness,
                 )
                 self.assertEqual(journal.records(), ())
 
@@ -225,6 +231,10 @@ class ProviderProcessTests(unittest.TestCase):
                 ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
                 ProviderOperation.PROVIDER_HELLO,
             ],
+        )
+        self.assertEqual(
+            readiness_operations[:first_feed],
+            operations[:first_feed],
         )
         self.assertEqual(
             operations.count(ProviderOperation.JOBS_LIST),
@@ -255,6 +265,7 @@ class ProviderProcessTests(unittest.TestCase):
                         hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
+                        on_ready=lambda: None,
                     )
 
         self.assertIs(type(raised.exception.__cause__), RuntimeError)
@@ -281,6 +292,7 @@ class ProviderProcessTests(unittest.TestCase):
                     hello=hello_request(),
                     policy=process_policy(),
                     stop=stop,
+                    on_ready=lambda: None,
                 )
 
         self.assertEqual(api.requests, [])
@@ -296,6 +308,11 @@ class ProviderProcessTests(unittest.TestCase):
         chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
         original_start = Thread.start
         starts = 0
+        readiness_published = False
+
+        def publish_readiness() -> None:
+            nonlocal readiness_published
+            readiness_published = True
 
         def fail_second_start(thread: Thread) -> None:
             nonlocal starts
@@ -322,6 +339,41 @@ class ProviderProcessTests(unittest.TestCase):
                         hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
+                        on_ready=publish_readiness,
+                    )
+
+        self.assertTrue(stop.is_set())
+        self.assertFalse(readiness_published)
+        self.assertFalse(
+            any(thread.name.startswith("nmrpeak-") for thread in threads())
+        )
+        self.assertTrue(hf_channel.closed)
+        self.assertTrue(chf_channel.closed)
+
+    def test_readiness_publication_failure_stops_and_joins_both_lanes(self) -> None:
+        runtime = generation_runtime()
+        stop = Event()
+        api = ConcurrentProviderApi(stop=stop)
+        api.feed_barrier.abort()
+        hf_session, hf_channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
+        chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
+
+        def fail_readiness() -> None:
+            raise RuntimeError("readiness failed")
+
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=2) as journal:
+                with self.assertRaisesRegex(RuntimeError, "readiness failed"):
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(),
+                        stop=stop,
+                        on_ready=fail_readiness,
                     )
 
         self.assertTrue(stop.is_set())
@@ -349,6 +401,7 @@ class ProviderProcessTests(unittest.TestCase):
                         hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
+                        on_ready=lambda: None,
                     )
         self.assertEqual(api.requests, [])
         self.assertTrue(hf_channel.closed)
@@ -373,6 +426,7 @@ class ProviderProcessTests(unittest.TestCase):
                         hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
+                        on_ready=lambda: None,
                     )
         self.assertEqual(type(raised.exception.__cause__).__name__, "ProviderProtocolFailed")
 
@@ -397,6 +451,7 @@ class ProviderProcessTests(unittest.TestCase):
                         hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
+                        on_ready=lambda: None,
                     )
 
         self.assertEqual(type(raised.exception.__cause__).__name__, "ProviderLaneUnavailable")
@@ -427,6 +482,7 @@ class ProviderProcessTests(unittest.TestCase):
                     hello=hello_request(),
                     policy=process_policy(hello_interval_seconds=0.005),
                     stop=stop,
+                    on_ready=lambda: None,
                 )
 
         self.assertEqual(api.hello_count, 2)
@@ -455,6 +511,7 @@ class ProviderProcessTests(unittest.TestCase):
                         hello=hello_request(),
                         policy=process_policy(hello_interval_seconds=0.005),
                         stop=stop,
+                        on_ready=lambda: None,
                     )
 
         self.assertEqual(api.hello_count, 2)
@@ -494,6 +551,7 @@ class ProviderProcessTests(unittest.TestCase):
                             hello=hello_request(),
                             policy=policy,
                             stop=stop,
+                            on_ready=lambda: None,
                         )
         finally:
             release.set()

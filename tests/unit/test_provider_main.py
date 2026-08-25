@@ -98,9 +98,25 @@ class ProviderMainTests(unittest.TestCase):
 
         def enter_process(**_kwargs: object) -> None:
             events.append("provider_process_entered")
+            _kwargs["on_ready"]()
             raise RuntimeError("provider failed")
 
+        class FakeReadiness:
+            def publish(self) -> None:
+                events.append("readiness_published")
+
+            def close(self) -> None:
+                events.append("readiness_closed")
+
+        def begin_readiness() -> FakeReadiness:
+            events.append("readiness_begun")
+            return FakeReadiness()
+
         with (
+            patch(
+                "nmrpeak_provider.provider_main.ProviderReadiness.begin",
+                side_effect=begin_readiness,
+            ),
             patch(
                 "nmrpeak_provider.provider_main._read_regular_file",
                 side_effect=(CONFIG, credential_raw),
@@ -148,6 +164,7 @@ class ProviderMainTests(unittest.TestCase):
         self.assertEqual(
             events,
             [
+                "readiness_begun",
                 "generation_loaded",
                 "lock_acquired",
                 "lock_entered",
@@ -156,10 +173,12 @@ class ProviderMainTests(unittest.TestCase):
                 "chf_opened",
                 "journal_opened",
                 "provider_process_entered",
+                "readiness_published",
                 "journal_closed",
                 "hf_retired",
                 "chf_retired",
                 "lock_closed",
+                "readiness_closed",
             ],
         )
 

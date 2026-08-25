@@ -27,6 +27,7 @@ from .provider_credential import (
 )
 from .provider_identity_lock import ProviderIdentityLock
 from .provider_process import run_provider_process
+from .provider_readiness import ProviderReadiness
 from .provider_requests import HelloOffering, prepare_provider_hello
 from .runner_session import RunnerSession, open_runner_session
 
@@ -43,6 +44,14 @@ _HELLO_FILES = ("hello/hf.txt", "hello/chf.txt")
 def run_provider(config_path: Path = CONFIG_PATH) -> None:
     """Admit every local input, then serve until signal or fatal failure."""
 
+    readiness = ProviderReadiness.begin()
+    try:
+        _run_provider(config_path, readiness)
+    finally:
+        readiness.close()
+
+
+def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
     configured = decode_provider_runtime_config(
         _read_regular_file(config_path, _CONFIG_MAX_BYTES)
     )
@@ -104,6 +113,7 @@ def run_provider(config_path: Path = CONFIG_PATH) -> None:
                     hello=hello,
                     policy=configured.process,
                     stop=stop,
+                    on_ready=readiness.publish,
                 )
             except BaseException as error:
                 primary_error = error
