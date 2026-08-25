@@ -23,6 +23,7 @@ CREDENTIAL_PATH = Path("/run/secrets/nmrpeak-provider/signing.private.json")
 FROZEN_ROOT = Path("/run/nmrpeak-provider/frozen")
 IDENTITY_LOCK_PATH = Path("/run/nmrpeak-provider-lock/provider.lock")
 JOURNAL_PATH = Path("/var/lib/nmrpeak-provider/journal")
+JOURNAL_MAXIMUM_RECORDS = 10_000
 HF_SOCKET_PATH = "/run/nmrpeak-provider/hf/session.sock"
 CHF_SOCKET_PATH = "/run/nmrpeak-provider/chf/session.sock"
 
@@ -110,8 +111,14 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
     )
     maximum_records = journal["maximum_records"]
     reserve = journal["filesystem_reserve_bytes"]
-    if type(maximum_records) is not int or maximum_records < 1:
-        raise ValueError("Provider runtime journal record bound must be positive")
+    if (
+        type(maximum_records) is not int
+        or maximum_records < 1
+        or maximum_records > JOURNAL_MAXIMUM_RECORDS
+    ):
+        raise ValueError(
+            "Provider runtime journal record bound must be between 1 and 10000"
+        )
     if type(reserve) is not int or reserve < 0:
         raise ValueError("Provider runtime journal reserve cannot be negative")
     process = _table(

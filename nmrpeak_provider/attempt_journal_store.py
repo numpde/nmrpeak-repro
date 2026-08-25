@@ -50,6 +50,7 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         *,
         maximum_records: int,
         filesystem_reserve_bytes: int = 0,
+        read_only: bool = False,
     ) -> None:
         if not isinstance(root, Path) or not root.is_absolute():
             raise TypeError("Attempt journal root must be an absolute Path")
@@ -57,9 +58,12 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             raise ValueError("Attempt journal maximum record count must be positive")
         if type(filesystem_reserve_bytes) is not int or filesystem_reserve_bytes < 0:
             raise ValueError("Attempt journal filesystem reserve cannot be negative")
+        if type(read_only) is not bool:
+            raise TypeError("Attempt journal read-only choice must be boolean")
         self._root = root
         self._maximum_records = maximum_records
         self._filesystem_reserve_bytes = filesystem_reserve_bytes
+        self._read_only = read_only
         self._lock = Lock()
         self._directory_fd = -1
         self._poisoned = False
@@ -93,6 +97,7 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             raise TypeError("Attempt journal admission requires pending start facts")
         with self._lock:
             self._require_usable()
+            self._require_writable()
             names = self._record_names()
             target = journal_record_name(record)
             if target in names:
@@ -119,6 +124,7 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             raise ValueError("Attempt journal replacement changed the Attempt key")
         with self._lock:
             self._require_usable()
+            self._require_writable()
             self._require_current(expected_name, expected)
             self._require_recovery_space(
                 self._record_names(),
@@ -133,6 +139,7 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         target = journal_record_name(expected)
         with self._lock:
             self._require_usable()
+            self._require_writable()
             self._require_current(target, expected)
             try:
                 os.unlink(target, dir_fd=self._directory_fd)
@@ -195,15 +202,19 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         for name in staging_names:
             descriptor = self._open_record(name)
             os.close(descriptor)
-        for name in staging_names:
-            os.unlink(name, dir_fd=self._directory_fd)
-        return bool(staging_names)
+        if not self._read_only:
+            for name in staging_names:
+                os.unlink(name, dir_fd=self._directory_fd)
+            return bool(staging_names)
+        return False
 
     def _record_names(self) -> set[str]:
         names: set[str] = set()
         for name in os.listdir(self._directory_fd):
             if _RECORD_NAME.fullmatch(name) is None:
                 if _STAGING_NAME.fullmatch(name) is not None:
+                    if self._read_only:
+                        continue
                     raise AttemptJournalStateRejected(
                         "Attempt journal contains unrecovered staging state"
                     )
@@ -368,6 +379,12 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
                 "Attempt journal store is unusable after an uncertain mutation"
             )
         self._validate_directory(os.fstat(self._directory_fd))
+
+    def _require_writable(self) -> None:
+        if self._read_only:
+            raise AttemptJournalStateRejected(
+                "Attempt journal store was opened for read-only inspection"
+            )
 
     @staticmethod
     def _validate_directory(status: os.stat_result) -> None:

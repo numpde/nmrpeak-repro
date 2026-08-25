@@ -73,6 +73,7 @@ class ProviderConfigTests(unittest.TestCase):
             CONFIG + b"unknown = true\n",
             CONFIG.replace(b"maximum_records = 2\n", b""),
             CONFIG.replace(b"maximum_records = 2", b"maximum_records = 0"),
+            CONFIG.replace(b"maximum_records = 2", b"maximum_records = 10001"),
             CONFIG.replace(b'topology = "web"', b'topology = "other"'),
             CONFIG.replace(
                 b"feed_interval_seconds = 5",

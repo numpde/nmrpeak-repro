@@ -13,6 +13,7 @@ nmrpeak_provider/frozen_generation.py
 nmrpeak_provider/generation_runtime.py
 nmrpeak_provider/hf_binding.py
 nmrpeak_provider/hf_runner_protocol.py
+nmrpeak_provider/journal_inventory.py
 nmrpeak_provider/lifecycle_lane.py
 nmrpeak_provider/nmrpeak_binding.py
 nmrpeak_provider/owner_session_endpoint.py
