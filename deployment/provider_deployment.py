@@ -921,12 +921,35 @@ def _held_provider_identity_lock(
     provider_ref: str,
     provider_image: LocalImage,
 ):
+    with TemporaryDirectory() as temporary:
+        container_id_path = Path(temporary) / "holder.cid"
+        with _run_held_provider_identity_lock(
+            docker,
+            lock_volume,
+            provider_ref,
+            provider_image,
+            container_id_path,
+        ):
+            yield
+
+
+@contextmanager
+def _run_held_provider_identity_lock(
+    docker: Path,
+    lock_volume: str,
+    provider_ref: str,
+    provider_image: LocalImage,
+    container_id_path: Path,
+):
     arguments = (
         str(docker),
         "--context",
         "default",
         "run",
         "--rm",
+        "--interactive",
+        "--cidfile",
+        str(container_id_path),
         "--pull",
         "never",
         "--network",
@@ -992,12 +1015,7 @@ def _held_provider_identity_lock(
         primary_error = error
     finally:
         try:
-            process.stdin.close()
-            returncode = process.wait(timeout=30)
-            if returncode != 0:
-                raise DeploymentOperationRejected(
-                    "Provider identity-lock holder did not stop cleanly"
-                )
+            _stop_identity_lock_holder(process, docker, container_id_path)
         except BaseException as error:
             cleanup_error = error
     if cleanup_error is not None:
@@ -1008,6 +1026,151 @@ def _held_provider_identity_lock(
         raise cleanup_error
     if primary_error is not None:
         raise primary_error
+
+
+def _stop_identity_lock_holder(
+    process: subprocess.Popen[bytes],
+    docker: Path,
+    container_id_path: Path,
+) -> None:
+    assert process.stdin is not None
+    process.stdin.close()
+    try:
+        returncode = process.wait(timeout=30)
+    except subprocess.TimeoutExpired as timeout_error:
+        container_error: BaseException | None = None
+        client_error: BaseException | None = None
+        try:
+            container_id = _read_holder_container_id(container_id_path)
+            _remove_identity_lock_holder_container(docker, container_id)
+        except BaseException as error:
+            container_error = error
+        try:
+            _reap_docker_client(process)
+        except BaseException as error:
+            client_error = error
+        if container_error is not None and client_error is not None:
+            raise DeploymentOperationRejected(
+                "Provider identity-lock holder container cleanup and client reap failed"
+            ) from container_error
+        if container_error is not None:
+            raise container_error
+        if client_error is not None:
+            raise client_error
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder required forced container removal"
+        ) from timeout_error
+    container_id = _read_holder_container_id(container_id_path)
+    if _holder_container_exists(docker, container_id):
+        _remove_identity_lock_holder_container(docker, container_id)
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder remained after its Docker client exited"
+        )
+    if returncode != 0:
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder did not stop cleanly"
+        )
+
+
+def _read_holder_container_id(path: Path) -> str:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder container identity is unavailable"
+        ) from error
+    try:
+        status = os.fstat(descriptor)
+        raw = os.read(descriptor, 65)
+    finally:
+        os.close(descriptor)
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_uid != os.geteuid()
+        or re.fullmatch(rb"[0-9a-f]{64}\n?", raw) is None
+    ):
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder container identity is invalid"
+        )
+    return raw.decode("ascii").strip()
+
+
+def _holder_container_exists(docker: Path, container_id: str) -> bool:
+    lines = _docker_command(
+        docker,
+        (
+            "container",
+            "ls",
+            "--all",
+            "--no-trunc",
+            "--quiet",
+            "--filter",
+            f"id={container_id}",
+        ),
+        timeout=30,
+    ).stdout.decode("ascii", errors="strict").splitlines()
+    if lines not in ([], [container_id]):
+        raise DeploymentOperationRejected(
+            "Docker returned an ambiguous identity-lock holder inventory"
+        )
+    return bool(lines)
+
+
+def _remove_identity_lock_holder_container(
+    docker: Path,
+    container_id: str,
+) -> None:
+    stop_error: BaseException | None = None
+    if _holder_container_exists(docker, container_id):
+        try:
+            stopped = _docker_command(
+                docker,
+                ("container", "stop", "--time", "5", container_id),
+                timeout=15,
+            ).stdout.decode("ascii", errors="strict").strip()
+            if stopped != container_id:
+                raise DeploymentOperationRejected(
+                    "Docker did not confirm the identity-lock holder stop"
+                )
+        except BaseException as error:
+            stop_error = error
+    if _holder_container_exists(docker, container_id):
+        removed = _docker_command(
+            docker,
+            ("container", "rm", "--force", container_id),
+            timeout=15,
+        ).stdout.decode("ascii", errors="strict").strip()
+        if removed != container_id:
+            raise DeploymentOperationRejected(
+                "Docker did not confirm the identity-lock holder removal"
+            )
+    if _holder_container_exists(docker, container_id):
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder container remains after cleanup"
+        )
+    if stop_error is not None:
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder required forced removal after stop failed"
+        ) from stop_error
+
+
+def _reap_docker_client(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired as error:
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder Docker client could not be reaped"
+        ) from error
 
 
 def _journal_generation_ids(

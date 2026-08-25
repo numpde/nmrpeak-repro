@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from io import BytesIO
 import json
 from pathlib import Path
 import stat
@@ -933,6 +934,166 @@ class ProviderDeploymentTests(unittest.TestCase):
             ):
                 retire_provider_journal(repository, "production", "wrong")
         inspect.assert_not_called()
+
+    def test_identity_lock_holder_keeps_stdin_and_has_exact_authority(self) -> None:
+        class Holder:
+            def __init__(self) -> None:
+                self.stdin = BytesIO()
+                self.stdout = BytesIO(b"READY\n")
+
+            def poll(self) -> None:
+                return None
+
+            def wait(self, *, timeout: int) -> int:
+                return 0
+
+        holder = Holder()
+        image = LocalImage("sha256:" + "1" * 64, "sha256:" + "2" * 64)
+        with TemporaryDirectory() as temporary:
+            container_id_path = Path(temporary) / "holder.cid"
+            container_id_path.write_text("a" * 64 + "\n", encoding="ascii")
+            with (
+                patch.object(
+                    provider_deployment.subprocess,
+                    "Popen",
+                    return_value=holder,
+                ) as popen,
+                patch.object(
+                    provider_deployment.select,
+                    "select",
+                    return_value=([holder.stdout], [], []),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_holder_container_exists",
+                    return_value=False,
+                ),
+                provider_deployment._run_held_provider_identity_lock(
+                    Path("/usr/bin/docker"),
+                    "nmrpeak-provider-lock-test",
+                    "provider:nmrpeak",
+                    image,
+                    container_id_path,
+                ),
+            ):
+                pass
+
+        arguments = popen.call_args.args[0]
+        self.assertIn("--interactive", arguments)
+        self.assertEqual(
+            arguments[arguments.index("--cidfile") + 1],
+            str(container_id_path),
+        )
+        self.assertEqual(arguments[arguments.index("--network") + 1], "none")
+        self.assertIn(
+            "type=volume,src=nmrpeak-provider-lock-test,"
+            "dst=/run/nmrpeak-provider-lock,readonly",
+            arguments,
+        )
+        self.assertNotIn("credential", " ".join(arguments))
+        self.assertNotIn("checkpoint", " ".join(arguments))
+        self.assertTrue(holder.stdin.closed)
+
+    def test_wedged_identity_lock_holder_removes_container_then_reaps(self) -> None:
+        class WedgedHolder:
+            def __init__(self) -> None:
+                self.stdin = BytesIO()
+
+            def wait(self, *, timeout: int) -> int:
+                raise subprocess.TimeoutExpired("docker run", timeout)
+
+        holder = WedgedHolder()
+        with TemporaryDirectory() as temporary:
+            container_id_path = Path(temporary) / "holder.cid"
+            container_id_path.write_text("b" * 64 + "\n", encoding="ascii")
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_remove_identity_lock_holder_container",
+                ) as remove,
+                patch.object(provider_deployment, "_reap_docker_client") as reap,
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "forced container removal",
+                ),
+            ):
+                provider_deployment._stop_identity_lock_holder(
+                    holder,
+                    Path("/usr/bin/docker"),
+                    container_id_path,
+                )
+
+        self.assertTrue(holder.stdin.closed)
+        remove.assert_called_once_with(Path("/usr/bin/docker"), "b" * 64)
+        reap.assert_called_once_with(holder)
+
+    def test_forced_holder_cleanup_stops_removes_and_proves_absence(self) -> None:
+        container_id = "c" * 64
+        commands: list[tuple[str, ...]] = []
+
+        def docker_command(
+            _docker: Path,
+            arguments: tuple[str, ...],
+            *,
+            timeout: int,
+        ) -> subprocess.CompletedProcess[bytes]:
+            commands.append(arguments)
+            self.assertEqual(timeout, 15)
+            return subprocess.CompletedProcess(
+                (),
+                0,
+                container_id.encode("ascii") + b"\n",
+                b"",
+            )
+
+        with (
+            patch.object(
+                provider_deployment,
+                "_holder_container_exists",
+                side_effect=(True, True, False),
+            ),
+            patch.object(
+                provider_deployment,
+                "_docker_command",
+                side_effect=docker_command,
+            ),
+        ):
+            provider_deployment._remove_identity_lock_holder_container(
+                Path("/usr/bin/docker"),
+                container_id,
+            )
+
+        self.assertEqual(
+            commands,
+            [
+                ("container", "stop", "--time", "5", container_id),
+                ("container", "rm", "--force", container_id),
+            ],
+        )
+
+    def test_missing_holder_identity_still_reaps_the_docker_client(self) -> None:
+        class WedgedHolder:
+            def __init__(self) -> None:
+                self.stdin = BytesIO()
+
+            def wait(self, *, timeout: int) -> int:
+                raise subprocess.TimeoutExpired("docker run", timeout)
+
+        holder = WedgedHolder()
+        with TemporaryDirectory() as temporary, patch.object(
+            provider_deployment,
+            "_reap_docker_client",
+        ) as reap, self.assertRaisesRegex(
+            DeploymentOperationRejected,
+            "identity is unavailable",
+        ):
+            provider_deployment._stop_identity_lock_holder(
+                holder,
+                Path("/usr/bin/docker"),
+                Path(temporary) / "missing.cid",
+            )
+
+        reap.assert_called_once_with(holder)
 
     def test_journal_retirement_removes_only_after_empty_complete_inventory(
         self,
