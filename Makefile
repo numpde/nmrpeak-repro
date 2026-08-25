@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/init provider/deployment/status provider/deployment/up provider/image/build release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
+.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/init provider/deployment/status provider/deployment/up provider/image/build release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
 
 test: test/unit test/contract test/repository
 
@@ -59,6 +59,22 @@ provider/deployment/status provider/deployment/down:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment "$(@F)" "$$DEPLOYMENT_INPUT"
+
+provider/credential/install: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/credential/install: private export NMR_API_V1_DIR_INPUT := $(value NMR_API_V1_DIR)
+provider/credential/install: private export REPLACE_INPUT := $(value REPLACE)
+provider/credential/install:
+	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin NMR_API_V1_DIR)" = command\ line || { echo 'NMR_API_V1_DIR must be set on the make command line' >&2; exit 2; }
+	@test "$(origin REPLACE)" = undefined -o "$(origin REPLACE)" = command\ line || { echo 'REPLACE must be set on the make command line' >&2; exit 2; }
+	@replace_flag=''; \
+	if test -n "$$REPLACE_INPUT"; then \
+		test "$$REPLACE_INPUT" = 1 || { echo 'REPLACE must be 1 when supplied' >&2; exit 2; }; \
+		replace_flag=--replace; \
+	fi; \
+	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment credential-install \
+		"$$DEPLOYMENT_INPUT" --nmr-api-v1 "$$NMR_API_V1_DIR_INPUT" $$replace_flag
 
 release/write:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }

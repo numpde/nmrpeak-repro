@@ -38,6 +38,7 @@ from nmrpeak_provider.frozen_generation import frozen_generation_id
 from nmrpeak_provider.provider_config import decode_provider_runtime_config
 from nmrpeak_provider.provider_credential import (
     PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES,
+    ProviderSigningCredential,
     parse_provider_signing_credential,
 )
 from repository_checks.chf_checkpoint import (
@@ -437,6 +438,67 @@ def deployment_status_bytes(
     )
 
 
+def install_provider_credential(
+    repository: Path,
+    deployment: str,
+    nmr_api_v1: Path,
+    *,
+    replace: bool = False,
+    docker: Path = _DOCKER,
+) -> Path:
+    """Install the one API-issued credential matching a named deployment."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    config_root = root / "config/deployments" / deployment
+    try:
+        if config_root.resolve(strict=True) != config_root or not config_root.is_dir():
+            raise DeploymentOperationRejected(
+                f"Deployment is not initialized: {deployment}"
+            )
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            f"Deployment is not initialized: {deployment}"
+        ) from error
+    provider_ref = load_named_deployment(
+        config_root / "deployment.toml"
+    ).provider_ref
+    credential_bytes, _ = _select_api_credential(
+        nmr_api_v1,
+        provider_ref,
+    )
+    state_root = _ensure_deployment_state_root(root, deployment)
+    destination = state_root / "signing.private.json"
+    with _locked_deployment_state(state_root):
+        if destination.exists() or destination.is_symlink():
+            installed_bytes, installed = _read_owned_private_credential(
+                destination,
+                "Installed provider signing credential",
+            )
+            if installed.provider_ref != provider_ref:
+                raise DeploymentOperationRejected(
+                    "Installed provider signing credential belongs to another provider"
+                )
+            if installed_bytes == credential_bytes:
+                return destination
+            if not replace:
+                raise DeploymentOperationRejected(
+                    "Deployment already has a different provider signing credential; "
+                    "set REPLACE=1 to replace it"
+                )
+            _require_stopped_project(docker, root, deployment)
+        _publish_private_credential(
+            destination,
+            credential_bytes,
+            replace=destination.exists(),
+        )
+    return destination
+
+
 def stop_deployment(
     repository: Path,
     deployment: str,
@@ -507,11 +569,25 @@ def _materialize_locked(
 
 def _admit_installed_credential(state_root: Path, provider_ref: str) -> None:
     path = state_root / "signing.private.json"
+    _, credential = _read_owned_private_credential(
+        path,
+        "Provider signing credential",
+    )
+    if credential.provider_ref != provider_ref:
+        raise DeploymentOperationRejected(
+            "Provider signing credential belongs to another provider"
+        )
+
+
+def _read_owned_private_credential(
+    path: Path,
+    operation: str,
+) -> tuple[bytes, ProviderSigningCredential]:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     except OSError as error:
         raise DeploymentOperationRejected(
-            "Provider signing credential is not installed"
+            f"{operation} is unavailable"
         ) from error
     try:
         metadata = os.fstat(descriptor)
@@ -522,12 +598,12 @@ def _admit_installed_credential(state_root: Path, provider_ref: str) -> None:
             or metadata.st_size > PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES
         ):
             raise DeploymentOperationRejected(
-                "Provider signing credential must be operator-owned mode 0600"
+                f"{operation} must be operator-owned mode 0600"
             )
         raw = os.read(descriptor, PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES + 1)
         if len(raw) != metadata.st_size:
             raise DeploymentOperationRejected(
-                "Provider signing credential changed while it was read"
+                f"{operation} changed while it was read"
             )
     finally:
         os.close(descriptor)
@@ -535,12 +611,121 @@ def _admit_installed_credential(state_root: Path, provider_ref: str) -> None:
         credential = parse_provider_signing_credential(raw)
     except ValueError as error:
         raise DeploymentOperationRejected(
-            "Provider signing credential is invalid"
+            f"{operation} is invalid"
         ) from error
-    if credential.provider_ref != provider_ref:
+    return raw, credential
+
+
+def _select_api_credential(
+    nmr_api_v1: Path,
+    provider_ref: str,
+) -> tuple[bytes, ProviderSigningCredential]:
+    try:
+        api_root = nmr_api_v1.resolve(strict=True)
+    except OSError as error:
         raise DeploymentOperationRejected(
-            "Provider signing credential belongs to another provider"
+            "NMR API checkout is unavailable"
+        ) from error
+    if api_root != nmr_api_v1 or not api_root.is_dir():
+        raise DeploymentOperationRejected(
+            "NMR API checkout must be one resolved non-symlink directory"
         )
+    provider_id = provider_ref.removeprefix("provider:")
+    credential_root = api_root / "secrets"
+    candidates = sorted(
+        credential_root.glob(f"*/providers/{provider_id}/signing.private.json")
+    )
+    admitted: list[tuple[bytes, ProviderSigningCredential]] = []
+    for candidate in candidates:
+        relative = candidate.relative_to(credential_root)
+        if len(relative.parts) != 4 or candidate.resolve(strict=True) != candidate:
+            raise DeploymentOperationRejected(
+                "API-issued provider signing credential path is invalid"
+            )
+        raw, credential = _read_owned_private_credential(
+            candidate,
+            "API-issued provider signing credential",
+        )
+        if (
+            credential.profile != relative.parts[0]
+            or credential.provider_ref != provider_ref
+        ):
+            raise DeploymentOperationRejected(
+                "API-issued provider signing credential identity does not match its path"
+            )
+        admitted.append((raw, credential))
+    if len(admitted) != 1:
+        raise DeploymentOperationRejected(
+            "NMR API checkout must contain exactly one matching provider credential"
+        )
+    return admitted[0]
+
+
+def _require_stopped_project(
+    docker: Path,
+    repository: Path,
+    deployment: str,
+) -> None:
+    services = _inspect_project_containers(docker, repository, deployment)
+    for record in services.values():
+        state = record.get("State")
+        if type(state) is not dict or state.get("Running") is not False:
+            raise DeploymentOperationRejected(
+                "Provider credential replacement requires a proved-stopped deployment"
+            )
+
+
+def _publish_private_credential(
+    destination: Path,
+    content: bytes,
+    *,
+    replace: bool,
+) -> None:
+    parent_fd = os.open(
+        destination.parent,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    stage = f".{destination.name}.{secrets.token_hex(16)}.staging"
+    published = False
+    try:
+        _write_new_file(parent_fd, stage, content)
+        if replace:
+            os.rename(
+                stage,
+                destination.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            published = True
+        else:
+            try:
+                os.link(
+                    stage,
+                    destination.name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as error:
+                raise DeploymentOperationRejected(
+                    "Provider signing credential appeared during installation"
+                ) from error
+            published = True
+            os.unlink(stage, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except (DeploymentOperationRejected, OSError) as error:
+        try:
+            os.unlink(stage, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        if published:
+            raise DeploymentOperationRejected(
+                "Provider credential publication did not complete durably; "
+                "installed state may have changed"
+            ) from error
+        raise
+    finally:
+        os.close(parent_fd)
 
 
 def _run_compose_plan(
@@ -1430,12 +1615,29 @@ def _fsync_directory(path: Path) -> None:
 
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Operate one named NMRPeak deployment.")
-    parser.add_argument("operation", choices=("config", "down", "init", "status", "up"))
+    parser.add_argument(
+        "operation",
+        choices=("config", "credential-install", "down", "init", "status", "up"),
+    )
     parser.add_argument("deployment")
+    parser.add_argument("--nmr-api-v1", type=Path)
+    parser.add_argument("--replace", action="store_true")
     options = parser.parse_args(arguments)
     repository = Path(__file__).resolve().parents[1]
     try:
-        if options.operation == "init":
+        if options.operation == "credential-install":
+            if options.nmr_api_v1 is None:
+                parser.error("credential-install requires --nmr-api-v1")
+            installed = install_provider_credential(
+                repository,
+                options.deployment,
+                options.nmr_api_v1,
+                replace=options.replace,
+            )
+            print(f"Installed provider credential: {installed}")
+        elif options.nmr_api_v1 is not None or options.replace:
+            parser.error("credential options require credential-install")
+        elif options.operation == "init":
             initialized = initialize_deployment(repository, options.deployment)
             print(f"Initialized deployment {options.deployment}: {initialized}")
         elif options.operation == "config":

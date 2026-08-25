@@ -22,18 +22,25 @@ from deployment.provider_deployment import (
     deployment_status_bytes,
     deployment_plan_bytes,
     initialize_deployment,
+    install_provider_credential,
     materialize_deployment_plan,
     render_deployment_plan,
     start_deployment,
     stop_deployment,
 )
-from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
+from nmrpeak_provider.canonical_json import (
+    canonical_json_bytes,
+    parse_canonical_json_bytes,
+)
 from repository_checks.chf_release import ARCHIVE_MEMBER as CHF_MEMBER
 from repository_checks.chf_release import candidate_release_bytes as chf_release_bytes
 from repository_checks.hf_release import ARCHIVE_MEMBER as HF_MEMBER
 from repository_checks.hf_release import candidate_release_bytes as hf_release_bytes
 from tests.unit.test_deployment_topology import compose_document
-from tests.unit.test_provider_startup_inputs import credential_bytes
+from tests.unit.test_provider_startup_inputs import (
+    credential_bytes,
+    credential_document,
+)
 
 
 ROOT = Path(__file__).parents[2]
@@ -347,6 +354,111 @@ class ProviderDeploymentTests(unittest.TestCase):
                     state,
                     "provider:nmrpeak",
                 )
+
+    def test_credential_install_is_idempotent_and_replaces_only_while_stopped(
+        self,
+    ) -> None:
+        with render_repository() as repository, TemporaryDirectory() as temporary:
+            api_root = Path(temporary).resolve()
+            source = write_api_credential(
+                api_root,
+                credential_bytes(Ed25519PrivateKey.generate()),
+            )
+            destination = install_provider_credential(
+                repository,
+                "production",
+                api_root,
+            )
+            original_inode = destination.stat().st_ino
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+            self.assertEqual(
+                install_provider_credential(repository, "production", api_root),
+                destination,
+            )
+            self.assertEqual(destination.stat().st_ino, original_inode)
+
+            replacement = credential_bytes(Ed25519PrivateKey.generate())
+            source.write_bytes(replacement)
+            source.chmod(0o600)
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "REPLACE=1",
+            ):
+                install_provider_credential(repository, "production", api_root)
+            self.assertNotEqual(destination.read_bytes(), replacement)
+
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_containers",
+                    return_value={
+                        "provider": {"State": {"Running": True}},
+                    },
+                ),
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "proved-stopped",
+                ),
+            ):
+                install_provider_credential(
+                    repository,
+                    "production",
+                    api_root,
+                    replace=True,
+                )
+            self.assertNotEqual(destination.read_bytes(), replacement)
+
+            with patch.object(
+                provider_deployment,
+                "_inspect_project_containers",
+                return_value={
+                    "provider": {"State": {"Running": False}},
+                },
+            ):
+                install_provider_credential(
+                    repository,
+                    "production",
+                    api_root,
+                    replace=True,
+                )
+            self.assertEqual(destination.read_bytes(), replacement)
+
+    def test_credential_install_rejects_ambiguous_or_symlinked_api_artifacts(
+        self,
+    ) -> None:
+        with render_repository() as repository, TemporaryDirectory() as temporary:
+            api_root = Path(temporary).resolve()
+            run_document = credential_document(Ed25519PrivateKey.generate())
+            write_api_credential(
+                api_root,
+                canonical_json_bytes(run_document) + b"\n",
+            )
+            dev_document = {**run_document, "profile": "dev"}
+            write_api_credential(
+                api_root,
+                canonical_json_bytes(dev_document) + b"\n",
+                profile="dev",
+            )
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "exactly one matching",
+            ):
+                install_provider_credential(repository, "production", api_root)
+
+        with render_repository() as repository, TemporaryDirectory() as temporary:
+            api_root = Path(temporary).resolve()
+            outside = api_root / "outside.json"
+            outside.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
+            outside.chmod(0o600)
+            candidate = api_root / "secrets/run/providers/nmrpeak/signing.private.json"
+            candidate.parent.mkdir(parents=True)
+            candidate.symlink_to(outside)
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "path is invalid",
+            ):
+                install_provider_credential(repository, "production", api_root)
 
     def test_compose_up_consumes_the_exact_normalized_plan(self) -> None:
         with render_repository() as repository:
@@ -746,6 +858,19 @@ class render_repository:
 
     def __exit__(self, *exc_info: object) -> None:
         self.temporary.cleanup()
+
+
+def write_api_credential(
+    api_root: Path,
+    content: bytes,
+    *,
+    profile: str = "run",
+) -> Path:
+    path = api_root / f"secrets/{profile}/providers/nmrpeak/signing.private.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    path.chmod(0o600)
+    return path
 
 
 def selection() -> str:
