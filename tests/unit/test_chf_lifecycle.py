@@ -59,16 +59,19 @@ from nmrpeak_provider.chf_lifecycle import (
     select_chf_completion,
     start_chf_attempt,
 )
-from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_CONTRACT_ID
+from nmrpeak_provider.chf_runner_protocol import (
+    CHF_RUNNER_CODEC,
+    CHF_RUNNER_CONTRACT_ID,
+)
 from nmrpeak_provider.runner_protocol import (
     ReadyFrame,
     ValidateFrame,
 )
-from nmrpeak_provider.chf_runner_session import (
-    ChfRunnerDeadlines,
-    ChfRunnerSession,
-    GeneratedChfCandidates,
-    ValidatedChfRequest,
+from nmrpeak_provider.runner_session import (
+    RunnerDeadlines,
+    RunnerSession,
+    GeneratedRunnerCandidates,
+    ValidatedRunnerRequest,
 )
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
@@ -106,7 +109,7 @@ from nmrpeak_provider.run_generation import (
     RunGenerationIdentity,
     run_generation_fingerprint,
 )
-from tests.fakes.chf_runner import FakeChfRunnerChannel, FakeRunnerFault
+from tests.fakes.runner import FakeRunnerChannel, FakeRunnerFault
 
 
 FROZEN_GENERATION_ID = "sha256:" + "4" * 64
@@ -474,11 +477,12 @@ class ChfLifecycleTests(unittest.TestCase):
         canonical_input = valid_chf_input()
         active = active_attempt(canonical_input)
         api = CapturingApi(success_response(progress_receipt()))
-        channel = FakeChfRunnerChannel(ready_frame())
-        session = ChfRunnerSession.admit(
+        channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame())
+        session = RunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            CHF_RUNNER_CODEC,
         )
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
@@ -540,11 +544,12 @@ class ChfLifecycleTests(unittest.TestCase):
         canonical_input = valid_chf_input()
         active = active_attempt(canonical_input)
         api = CapturingApi(success_response(progress_receipt()))
-        channel = FakeChfRunnerChannel(ready_frame(), rejected_validations=1)
-        session = ChfRunnerSession.admit(
+        channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame(), rejected_validations=1)
+        session = RunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            CHF_RUNNER_CODEC,
         )
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
@@ -878,11 +883,12 @@ class ChfLifecycleTests(unittest.TestCase):
 
     def test_generated_candidates_become_one_durable_completion(self) -> None:
         entered = entered_attempt(valid_chf_input())
-        channel = FakeChfRunnerChannel(ready_frame())
-        session = ChfRunnerSession.admit(
+        channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame())
+        session = RunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            CHF_RUNNER_CODEC,
         )
         generated = ChfCandidatesGenerated(
             entered,
@@ -911,11 +917,12 @@ class ChfLifecycleTests(unittest.TestCase):
 
     def test_invalid_runner_candidates_retire_boot_without_caller_failure(self) -> None:
         entered = entered_attempt(valid_chf_input())
-        channel = FakeChfRunnerChannel(ready_frame(), candidates=())
-        session = ChfRunnerSession.admit(
+        channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame(), candidates=())
+        session = RunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            CHF_RUNNER_CODEC,
         )
         generated = ChfCandidatesGenerated(
             entered,
@@ -944,10 +951,11 @@ class ChfLifecycleTests(unittest.TestCase):
             execution_attempt_ref="execution_attempt:sha256:" + "b" * 64,
             local_phase=LocalExecutionPhase.EXECUTION_ENTERED,
         )
-        session = ChfRunnerSession.admit(
-            FakeChfRunnerChannel(ready_frame()),
+        session = RunnerSession.admit(
+            FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame()),
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            CHF_RUNNER_CODEC,
         )
         generated = ChfCandidatesGenerated(
             selected_record,
@@ -1330,12 +1338,13 @@ def validated_execution(
     active: ActiveAttempt,
     *,
     fault: FakeRunnerFault | None = None,
-) -> tuple[ChfRunnerSession, FakeChfRunnerChannel, ChfPreparedForExecution]:
-    channel = FakeChfRunnerChannel(ready_frame(), fault=fault)
-    session = ChfRunnerSession.admit(
+) -> tuple[RunnerSession, FakeRunnerChannel, ChfPreparedForExecution]:
+    channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame(), fault=fault)
+    session = RunnerSession.admit(
         channel,
         RUNNER_FACTS,
-        ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+        RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+        CHF_RUNNER_CODEC,
     )
     request = session.validate(
         execution_attempt_ref=active.execution_attempt_ref,
@@ -1346,15 +1355,15 @@ def validated_execution(
             (ChfRunnerCarbonPeak("70.4"),),
         ),
     )
-    if type(request) is not ValidatedChfRequest:
+    if type(request) is not ValidatedRunnerRequest:
         raise AssertionError("test runner unexpectedly rejected validation")
     return session, channel, ChfPreparedForExecution(active, request)
 
 
 def generated_candidates(
-    session: ChfRunnerSession,
+    session: RunnerSession,
     active: ActiveAttempt,
-) -> GeneratedChfCandidates:
+) -> GeneratedRunnerCandidates:
     request = session.validate(
         execution_attempt_ref=active.execution_attempt_ref,
         provider_attempt_key=active.provider_attempt_key,
@@ -1364,7 +1373,7 @@ def generated_candidates(
             (ChfRunnerCarbonPeak("70.4"),),
         ),
     )
-    if type(request) is not ValidatedChfRequest:
+    if type(request) is not ValidatedRunnerRequest:
         raise AssertionError("test runner unexpectedly rejected validation")
     return session.generate(request)
 

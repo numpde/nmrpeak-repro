@@ -1,4 +1,4 @@
-"""A checkpoint-free CHF runner that speaks the production frame codec."""
+"""A checkpoint-free runner that speaks one concrete production frame codec."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from enum import StrEnum
 from struct import pack
 from threading import Condition, Event
 
-from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_CODEC
 from nmrpeak_provider.runner_protocol import (
     AttemptCorrelation,
     RunnerFrame,
@@ -16,6 +15,8 @@ from nmrpeak_provider.runner_protocol import (
     RejectedFrame,
     ResultFrame,
     RetireFrame,
+    RunnerFrameCodec,
+    RunnerModelInput,
     ValidateFrame,
     ValidatedFrame,
 )
@@ -32,11 +33,12 @@ class FakeRunnerFault(StrEnum):
     RETIRE_SEND_UNCERTAIN = "retire_send_uncertain"
 
 
-class FakeChfRunnerChannel:
+class FakeRunnerChannel:
     """Serve one READY boot and fixed candidates over a socket-shaped byte seam."""
 
     def __init__(
         self,
+        codec: RunnerFrameCodec[RunnerModelInput],
         ready: ReadyFrame,
         *,
         candidates: object = ("CCO", "OCC"),
@@ -46,11 +48,12 @@ class FakeChfRunnerChannel:
         self.received_frames: list[RunnerFrame] = []
         self.generate_received = Event()
         self._ready = ready
+        self._codec = codec
         self._candidates = list(candidates) if type(candidates) is tuple else candidates
         self._rejected_validations = rejected_validations
         self._fault = fault
         self._pending: AttemptCorrelation | None = None
-        self._buffer = bytearray(CHF_RUNNER_CODEC.encode(ready))
+        self._buffer = bytearray(codec.encode(ready))
         self._closed = False
         self._timeout: float | None = None
         self._condition = Condition()
@@ -65,7 +68,7 @@ class FakeChfRunnerChannel:
     def sendall(self, data: bytes) -> None:
         if self._closed:
             raise OSError("fake runner channel is closed")
-        frame = CHF_RUNNER_CODEC.decode_frame(data)
+        frame = self._codec.decode_frame(data)
         self.received_frames.append(frame)
         if type(frame) is ValidateFrame:
             self._accept_validate(frame)
@@ -144,7 +147,7 @@ class FakeChfRunnerChannel:
         self._queue(ResultFrame(correlation, self._candidates))
 
     def _queue(self, frame: RunnerFrame) -> None:
-        self._queue_raw(CHF_RUNNER_CODEC.encode(frame))
+        self._queue_raw(self._codec.encode(frame))
 
     def _queue_raw(self, raw: bytes) -> None:
         with self._condition:

@@ -30,12 +30,12 @@ from nmrpeak_provider.runner_protocol import (
     ValidateFrame,
     ValidatedFrame,
 )
-from nmrpeak_provider.chf_runner_session import (
-    ChfInputRejected,
-    ChfRunnerDeadlines,
-    ChfRunnerSession,
-    ChfRunnerSessionRetired,
-    ValidatedChfRequest,
+from nmrpeak_provider.runner_session import (
+    RunnerInputRejected,
+    RunnerDeadlines,
+    RunnerSession,
+    RunnerSessionRetired,
+    ValidatedRunnerRequest,
 )
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
@@ -79,7 +79,7 @@ MODEL_INPUT = ChfRunnerInput(
     (ChfRunnerCarbonPeak("70.4"),),
 )
 CORRELATION = AttemptCorrelation(BOOT, "request:" + "6" * 32, ATTEMPT_REF, ATTEMPT_KEY)
-DEADLINES = ChfRunnerDeadlines(1, 1, 1, 1, 1)
+DEADLINES = RunnerDeadlines(1, 1, 1, 1, 1)
 
 
 class ChfWorkerTests(unittest.TestCase):
@@ -130,10 +130,10 @@ class ChfWorkerTests(unittest.TestCase):
     def test_loaded_worker_completes_the_provider_session_and_retires(self) -> None:
         runtime = RecordingRuntime(candidates=["CCO", "OCC"])
         with WorkerHarness(runtime) as harness:
-            session = ChfRunnerSession.admit(harness.provider, FACTS, DEADLINES)
+            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
             validated = validate(session)
-            self.assertIsInstance(validated, ValidatedChfRequest)
-            assert isinstance(validated, ValidatedChfRequest)
+            self.assertIsInstance(validated, ValidatedRunnerRequest)
+            assert isinstance(validated, ValidatedRunnerRequest)
             generated = session.generate(validated)
             session.retire()
 
@@ -145,11 +145,11 @@ class ChfWorkerTests(unittest.TestCase):
     def test_deterministic_rejection_keeps_the_loaded_boot_reusable(self) -> None:
         runtime = RecordingRuntime(rejections=1, candidates=["CCO"])
         with WorkerHarness(runtime) as harness:
-            session = ChfRunnerSession.admit(harness.provider, FACTS, DEADLINES)
-            self.assertIsInstance(validate(session), ChfInputRejected)
+            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
+            self.assertIsInstance(validate(session), RunnerInputRejected)
             validated = validate(session)
-            self.assertIsInstance(validated, ValidatedChfRequest)
-            assert isinstance(validated, ValidatedChfRequest)
+            self.assertIsInstance(validated, ValidatedRunnerRequest)
+            assert isinstance(validated, ValidatedRunnerRequest)
             self.assertEqual(session.generate(validated).value, ["CCO"])
             session.retire()
 
@@ -190,8 +190,8 @@ class ChfWorkerTests(unittest.TestCase):
         with WorkerHarness(
             RecordingRuntime(validation_failure=validation_failure)
         ) as harness:
-            session = ChfRunnerSession.admit(harness.provider, FACTS, DEADLINES)
-            with self.assertRaises(ChfRunnerSessionRetired):
+            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
+            with self.assertRaises(RunnerSessionRetired):
                 validate(session)
         self.assertIs(harness.failure, validation_failure)
 
@@ -199,10 +199,10 @@ class ChfWorkerTests(unittest.TestCase):
         with WorkerHarness(
             RecordingRuntime(generation_failure=generation_failure)
         ) as harness:
-            session = ChfRunnerSession.admit(harness.provider, FACTS, DEADLINES)
+            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
             validated = validate(session)
-            assert isinstance(validated, ValidatedChfRequest)
-            with self.assertRaises(ChfRunnerSessionRetired):
+            assert isinstance(validated, ValidatedRunnerRequest)
+            with self.assertRaises(RunnerSessionRetired):
                 session.generate(validated)
         self.assertIs(harness.failure, generation_failure)
 
@@ -283,8 +283,8 @@ class WorkerHarness:
 
 
 def validate(
-    session: ChfRunnerSession,
-) -> ValidatedChfRequest | ChfInputRejected:
+    session: RunnerSession,
+) -> ValidatedRunnerRequest | RunnerInputRejected:
     return session.validate(
         execution_attempt_ref=ATTEMPT_REF,
         provider_attempt_key=ATTEMPT_KEY,

@@ -1,4 +1,4 @@
-"""Own one admitted CHF runner boot and its single in-flight request."""
+"""Own one admitted NMRPeak runner boot and its single in-flight request."""
 
 from __future__ import annotations
 
@@ -11,11 +11,9 @@ import socket
 import stat
 from threading import Lock
 import time
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar
 
 from .canonical_json import JsonValue
-from .chf_binding import ChfRunnerInput
-from .chf_runner_protocol import CHF_RUNNER_CODEC
 from .runner_protocol import (
     AttemptCorrelation,
     RunnerProtocolError,
@@ -24,15 +22,16 @@ from .runner_protocol import (
     RejectedFrame,
     ResultFrame,
     RetireFrame,
+    RunnerFrameCodec,
+    RunnerModelInput,
     ValidateFrame,
     ValidatedFrame,
 )
 from .owner_session_endpoint import open_owner_session_directory
-from .product_result import (
-    CHF_RESULT_IDENTITY,
-    NMRPEAK_SOURCE_CLOSURE_REF,
-    ProviderResultFacts,
-)
+from .product_result import NMRPEAK_SOURCE_CLOSURE_REF, ProviderResultFacts
+
+
+ModelInput = TypeVar("ModelInput", bound=RunnerModelInput)
 
 
 class _RunnerChannel(Protocol):
@@ -43,16 +42,16 @@ class _RunnerChannel(Protocol):
     def close(self) -> None: ...
 
 
-class ChfRunnerAdmissionError(RuntimeError):
-    """A connected runner did not establish the admitted CHF boot."""
+class RunnerAdmissionError(RuntimeError):
+    """A connected runner did not establish its provider-admitted boot."""
 
 
-class ChfRunnerSessionRetired(RuntimeError):
-    """The CHF boot is unusable and its channel has been closed."""
+class RunnerSessionRetired(RuntimeError):
+    """The runner boot is unusable and its channel has been closed."""
 
 
 @dataclass(frozen=True, slots=True)
-class ChfRunnerDeadlines:
+class RunnerDeadlines:
     """Bounded waits for each private runner exchange phase."""
 
     connect_seconds: float
@@ -70,16 +69,16 @@ class ChfRunnerDeadlines:
             self.retire_seconds,
         ):
             if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
-                raise ValueError("CHF runner deadlines must be positive finite seconds")
+                raise ValueError("NMRPeak runner deadlines must be positive finite seconds")
 
 
 @dataclass(frozen=True, slots=True)
-class ChfInputRejected:
+class RunnerInputRejected:
     """The runner deterministically rejected a fully parsed model input."""
 
 
 @dataclass(frozen=True, slots=True)
-class ValidatedChfRequest:
+class ValidatedRunnerRequest:
     """Capability to authorize generation for one validated runner request."""
 
     _owner: object = field(repr=False)
@@ -87,7 +86,7 @@ class ValidatedChfRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class GeneratedChfCandidates:
+class GeneratedRunnerCandidates:
     """Untrusted output bound to the session request that generated it."""
 
     value: JsonValue
@@ -103,15 +102,17 @@ class _SessionState(StrEnum):
     RETIRED = "retired"
 
 
-def open_chf_runner_session(
+def open_runner_session(
     socket_path: str,
     facts: ProviderResultFacts,
-    deadlines: ChfRunnerDeadlines,
-) -> ChfRunnerSession:
-    """Attach to one private CHF endpoint, then admit its READY exchange."""
+    deadlines: RunnerDeadlines,
+    codec: RunnerFrameCodec[ModelInput],
+) -> RunnerSession[ModelInput]:
+    """Attach to one private endpoint, then admit its concrete READY exchange."""
 
-    if type(deadlines) is not ChfRunnerDeadlines:
-        raise TypeError("CHF runner attachment requires owned deadlines")
+    if type(deadlines) is not RunnerDeadlines:
+        raise TypeError("NMRPeak runner attachment requires owned deadlines")
+    lane = codec.lane_name
     connect_deadline = time.monotonic() + deadlines.connect_seconds
     parent_fd, socket_name = open_owner_session_directory(socket_path)
     try:
@@ -127,15 +128,15 @@ def open_chf_runner_session(
                 time.sleep(min(0.01, remaining))
                 continue
             if not stat.S_ISSOCK(endpoint.st_mode):
-                raise ChfRunnerAdmissionError(
-                    "Cannot connect to CHF runner: endpoint is not a Unix socket"
+                raise RunnerAdmissionError(
+                    f"Cannot connect to {lane} runner: endpoint is not a Unix socket"
                 )
             if (
                 endpoint.st_uid != os.geteuid()
                 or stat.S_IMODE(endpoint.st_mode) != 0o600
             ):
-                raise ChfRunnerAdmissionError(
-                    "Cannot connect to CHF runner: endpoint is not owner-only"
+                raise RunnerAdmissionError(
+                    f"Cannot connect to {lane} runner: endpoint is not owner-only"
                 )
 
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -145,19 +146,19 @@ def open_chf_runner_session(
             except (FileNotFoundError, ConnectionRefusedError):
                 close_error = _close_channel(connection)
                 if close_error is not None:
-                    raise ChfRunnerAdmissionError(
-                        "Cannot retry CHF runner connection after socket cleanup failed"
+                    raise RunnerAdmissionError(
+                        f"Cannot retry {lane} runner connection after socket cleanup failed"
                     ) from close_error
                 time.sleep(min(0.01, _remaining_connect_seconds(connect_deadline)))
                 continue
             except BaseException as error:
                 close_error = _close_channel(connection)
                 if close_error is not None:
-                    error.add_note("The failed CHF connection also failed to close.")
+                    error.add_note(f"The failed {lane} connection also failed to close.")
                 raise
 
             try:
-                return ChfRunnerSession.admit(connection, facts, deadlines)
+                return RunnerSession.admit(connection, facts, deadlines, codec)
             except BaseException:
                 _close_channel(connection)
                 raise
@@ -165,22 +166,24 @@ def open_chf_runner_session(
         os.close(parent_fd)
 
 
-class ChfRunnerSession:
+class RunnerSession(Generic[ModelInput]):
     """Serialize one provider owner session against one admitted runner boot."""
 
     def __init__(
         self,
         channel: _RunnerChannel,
         facts: ProviderResultFacts,
-        deadlines: ChfRunnerDeadlines,
+        deadlines: RunnerDeadlines,
+        codec: RunnerFrameCodec[ModelInput],
         boot_generation: str,
     ) -> None:
         self._channel = channel
         self._facts = facts
         self._deadlines = deadlines
+        self._codec = codec
         self._boot_generation = boot_generation
         self._state = _SessionState.IDLE
-        self._pending: ValidatedChfRequest | None = None
+        self._pending: ValidatedRunnerRequest | None = None
         self._lock = Lock()
 
     @classmethod
@@ -188,30 +191,30 @@ class ChfRunnerSession:
         cls,
         channel: _RunnerChannel,
         facts: ProviderResultFacts,
-        deadlines: ChfRunnerDeadlines,
-    ) -> ChfRunnerSession:
+        deadlines: RunnerDeadlines,
+        codec: RunnerFrameCodec[ModelInput],
+    ) -> RunnerSession[ModelInput]:
         """Receive READY and compare every echo with provider-admitted facts."""
 
         if type(facts) is not ProviderResultFacts:
-            raise TypeError("CHF runner admission requires provider-owned result facts")
-        if facts.identity is not CHF_RESULT_IDENTITY:
-            raise AssertionError("CHF runner admission requires the CHF lane identity")
-        if type(deadlines) is not ChfRunnerDeadlines:
-            raise TypeError("CHF runner admission requires owned deadlines")
+            raise TypeError("NMRPeak runner admission requires provider-owned result facts")
+        if type(deadlines) is not RunnerDeadlines:
+            raise TypeError("NMRPeak runner admission requires owned deadlines")
+        lane = codec.lane_name
         try:
             channel.settimeout(deadlines.ready_seconds)
-            frame = CHF_RUNNER_CODEC.receive(channel)
+            frame = codec.receive(channel)
             if type(frame) is not ReadyFrame:
                 raise RunnerProtocolError(
-                    "Cannot admit CHF runner: the first frame is not READY"
+                    f"Cannot admit {lane} runner: the first frame is not READY"
                 )
             if not _ready_matches_provider_facts(frame, facts):
                 raise RunnerProtocolError(
-                    "Cannot admit CHF runner: READY facts differ from the deployment"
+                    f"Cannot admit {lane} runner: READY facts differ from the deployment"
                 )
         except (OSError, RunnerProtocolError) as error:
-            admission_error = ChfRunnerAdmissionError(
-                "Cannot admit CHF runner boot from its READY exchange"
+            admission_error = RunnerAdmissionError(
+                f"Cannot admit {lane} runner boot from its READY exchange"
             )
             close_error = _close_channel(channel)
             if close_error is not None:
@@ -219,7 +222,7 @@ class ChfRunnerSession:
                     "The rejected runner channel also failed to close."
                 )
             raise admission_error from error
-        return cls(channel, facts, deadlines, frame.boot_generation)
+        return cls(channel, facts, deadlines, codec, frame.boot_generation)
 
     @property
     def result_facts(self) -> ProviderResultFacts:
@@ -232,8 +235,8 @@ class ChfRunnerSession:
         *,
         execution_attempt_ref: str,
         provider_attempt_key: str,
-        model_input: ChfRunnerInput,
-    ) -> ValidatedChfRequest | ChfInputRejected:
+        model_input: ModelInput,
+    ) -> ValidatedRunnerRequest | RunnerInputRejected:
         """Ask the runner to tokenize one input without executing the model."""
 
         correlation = AttemptCorrelation(
@@ -249,20 +252,20 @@ class ChfRunnerSession:
                 self._state = _SessionState.VALIDATING
         if wrong_state:
             self._retire_with_error(
-                "Cannot validate CHF runner input: the session is not idle"
+                f"Cannot validate {self._codec.lane_name} runner input: the session is not idle"
             )
 
         response = self._exchange(
             frame,
             self._deadlines.validate_seconds,
-            "validate CHF runner input",
+            f"validate {self._codec.lane_name} runner input",
         )
         if type(response) is ValidatedFrame and response.correlation == correlation:
-            request = ValidatedChfRequest(self, correlation)
+            request = ValidatedRunnerRequest(self, correlation)
             with self._lock:
                 if self._state is not _SessionState.VALIDATING:
-                    raise ChfRunnerSessionRetired(
-                        "Cannot accept CHF validation: the session was retired"
+                    raise RunnerSessionRetired(
+                        f"Cannot accept {self._codec.lane_name} validation: the session was retired"
                     )
                 self._pending = request
                 self._state = _SessionState.VALIDATED
@@ -270,16 +273,17 @@ class ChfRunnerSession:
         if type(response) is RejectedFrame and response.correlation == correlation:
             with self._lock:
                 if self._state is not _SessionState.VALIDATING:
-                    raise ChfRunnerSessionRetired(
-                        "Cannot accept CHF rejection: the session was retired"
+                    raise RunnerSessionRetired(
+                        f"Cannot accept {self._codec.lane_name} rejection: the session was retired"
                     )
                 self._state = _SessionState.IDLE
-            return ChfInputRejected()
+            return RunnerInputRejected()
         self._retire_with_error(
-            "Cannot validate CHF runner input: response type or correlation is wrong"
+            f"Cannot validate {self._codec.lane_name} runner input: "
+            "response type or correlation is wrong"
         )
 
-    def generate(self, request: ValidatedChfRequest) -> GeneratedChfCandidates:
+    def generate(self, request: ValidatedRunnerRequest) -> GeneratedRunnerCandidates:
         """Authorize model execution for the exact validated request."""
 
         with self._lock:
@@ -292,30 +296,32 @@ class ChfRunnerSession:
                 self._state = _SessionState.GENERATING
         if wrong_request:
             self._retire_with_error(
-                "Cannot generate CHF candidates: validated request is not current"
+                f"Cannot generate {self._codec.lane_name} candidates: "
+                "validated request is not current"
             )
 
         response = self._exchange(
             GenerateFrame(request._correlation),
             self._deadlines.generate_seconds,
-            "generate CHF candidates",
+            f"generate {self._codec.lane_name} candidates",
         )
         if type(response) is ResultFrame and response.correlation == request._correlation:
             with self._lock:
                 if self._state is not _SessionState.GENERATING:
-                    raise ChfRunnerSessionRetired(
-                        "Cannot accept CHF result: the session was retired"
+                    raise RunnerSessionRetired(
+                        f"Cannot accept {self._codec.lane_name} result: the session was retired"
                     )
                 self._pending = None
                 self._state = _SessionState.IDLE
-            return GeneratedChfCandidates(response.candidates, self, request._correlation)
+            return GeneratedRunnerCandidates(response.candidates, self, request._correlation)
         self._retire_with_error(
-            "Cannot generate CHF candidates: response type or correlation is wrong"
+            f"Cannot generate {self._codec.lane_name} candidates: "
+            "response type or correlation is wrong"
         )
 
     def candidates_for_attempt(
         self,
-        generated: GeneratedChfCandidates,
+        generated: GeneratedRunnerCandidates,
         *,
         execution_attempt_ref: str,
         provider_attempt_key: str,
@@ -323,13 +329,14 @@ class ChfRunnerSession:
         """Bind generated output to the retained Attempt facts that may consume it."""
 
         if (
-            type(generated) is not GeneratedChfCandidates
+            type(generated) is not GeneratedRunnerCandidates
             or generated._owner is not self
             or generated._correlation.attempt_ref != execution_attempt_ref
             or generated._correlation.provider_attempt_key != provider_attempt_key
         ):
             raise ValueError(
-                "CHF generated candidates do not belong to this retained Attempt"
+                f"{self._codec.lane_name} generated candidates do not belong "
+                "to this retained Attempt"
             )
         return generated.value
 
@@ -343,8 +350,9 @@ class ChfRunnerSession:
             self._pending = None
         close_error = _close_channel(self._channel)
         if close_error is not None:
-            raise ChfRunnerSessionRetired(
-                "CHF cancellation retired the session, but channel closure failed"
+            raise RunnerSessionRetired(
+                f"{self._codec.lane_name} cancellation retired the session, "
+                "but channel closure failed"
             ) from close_error
 
     def retire(self) -> None:
@@ -356,16 +364,17 @@ class ChfRunnerSession:
                 self._state = _SessionState.RETIRED
         if wrong_state:
             self._retire_with_error(
-                "Cannot gracefully retire CHF runner boot: the session is not idle"
+                f"Cannot gracefully retire {self._codec.lane_name} runner boot: "
+                "the session is not idle"
             )
         try:
             self._channel.settimeout(self._deadlines.retire_seconds)
             self._channel.sendall(
-                CHF_RUNNER_CODEC.encode(RetireFrame(self._boot_generation))
+                self._codec.encode(RetireFrame(self._boot_generation))
             )
         except (OSError, RunnerProtocolError, TypeError, ValueError) as error:
-            retirement_error = ChfRunnerSessionRetired(
-                "Cannot determine whether idle CHF RETIRE was handed off; "
+            retirement_error = RunnerSessionRetired(
+                f"Cannot determine whether idle {self._codec.lane_name} RETIRE was handed off; "
                 "the provider session is retired"
             )
             close_error = _close_channel(self._channel)
@@ -376,8 +385,9 @@ class ChfRunnerSession:
             raise retirement_error from error
         close_error = _close_channel(self._channel)
         if close_error is not None:
-            raise ChfRunnerSessionRetired(
-                "CHF RETIRE was handed off, but provider channel closure failed"
+            raise RunnerSessionRetired(
+                f"{self._codec.lane_name} RETIRE was handed off, "
+                "but provider channel closure failed"
             ) from close_error
 
     def _exchange(
@@ -388,8 +398,8 @@ class ChfRunnerSession:
     ) -> object:
         try:
             self._channel.settimeout(timeout_seconds)
-            self._channel.sendall(CHF_RUNNER_CODEC.encode(request))
-            return CHF_RUNNER_CODEC.receive(self._channel)
+            self._channel.sendall(self._codec.encode(request))
+            return self._codec.receive(self._channel)
         except (OSError, RunnerProtocolError, TypeError, ValueError) as error:
             self._retire_with_error(
                 f"Cannot {operation}: the runner exchange failed",
@@ -405,7 +415,7 @@ class ChfRunnerSession:
         with self._lock:
             self._state = _SessionState.RETIRED
             self._pending = None
-        error = ChfRunnerSessionRetired(message)
+        error = RunnerSessionRetired(message)
         close_error = _close_channel(self._channel)
         if close_error is not None:
             error.add_note("The retired runner channel also failed to close.")
@@ -433,8 +443,8 @@ def _ready_matches_provider_facts(
 def _remaining_connect_seconds(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise ChfRunnerAdmissionError(
-            "Cannot connect to CHF runner before the connect deadline"
+        raise RunnerAdmissionError(
+            "Cannot connect to NMRPeak runner before the connect deadline"
         )
     return remaining
 

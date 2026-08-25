@@ -30,12 +30,12 @@ from .attempt_journal import (
 )
 from .attempt_journal_store import AttemptJournalStore
 from .chf_binding import bind_chf_runner_input
-from .chf_runner_session import (
-    ChfInputRejected,
-    ChfRunnerSession,
-    ChfRunnerSessionRetired,
-    GeneratedChfCandidates,
-    ValidatedChfRequest,
+from .runner_session import (
+    RunnerInputRejected,
+    RunnerSession,
+    RunnerSessionRetired,
+    GeneratedRunnerCandidates,
+    ValidatedRunnerRequest,
 )
 from .product import CHF_OFFERING
 from .provider_api import ProviderApiClient
@@ -176,7 +176,7 @@ class ChfPreparedForExecution:
     """A PRE_EXECUTION Attempt and its session-owned validation capability."""
 
     record: ActiveAttempt
-    request: ValidatedChfRequest = field(repr=False)
+    request: ValidatedRunnerRequest = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,8 +231,8 @@ class ChfCandidatesGenerated:
     """Candidates completed while Server A still admitted local execution."""
 
     record: ActiveAttempt
-    candidates: GeneratedChfCandidates = field(repr=False)
-    session: ChfRunnerSession = field(repr=False)
+    candidates: GeneratedRunnerCandidates = field(repr=False)
+    session: RunnerSession = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,10 +334,10 @@ class _GenerationWork:
     """One worker's result slot and completion signal, owned by its coordinator."""
 
     done: Event = field(default_factory=Event)
-    candidates: GeneratedChfCandidates | None = None
+    candidates: GeneratedRunnerCandidates | None = None
     error: BaseException | None = None
 
-    def run(self, session: ChfRunnerSession, request: ValidatedChfRequest) -> None:
+    def run(self, session: RunnerSession, request: ValidatedRunnerRequest) -> None:
         """Signal every thread exit and preserve it for coordinator re-raise."""
 
         try:
@@ -451,7 +451,7 @@ def prepare_chf_execution(
     *,
     api: ProviderApiClient,
     journal: AttemptJournalStore,
-    session: ChfRunnerSession,
+    session: RunnerSession,
     record: ActiveAttempt,
     canonical_input: bytes,
 ) -> ChfPreExecutionOutcome:
@@ -489,7 +489,7 @@ def prepare_chf_execution(
         provider_attempt_key=record.provider_attempt_key,
         model_input=runner_input,
     )
-    if type(validated) is ChfInputRejected:
+    if type(validated) is RunnerInputRejected:
         return _retain_chf_input_rejection(journal, record)
     return ChfPreparedForExecution(record, validated)
 
@@ -523,7 +523,7 @@ def execute_prepared_chf(
     *,
     api: ProviderApiClient,
     journal: AttemptJournalStore,
-    session: ChfRunnerSession,
+    session: RunnerSession,
     prepared: ChfPreparedForExecution,
     observation: ChfObservationPolicy,
 ) -> ChfExecutionOutcome:
@@ -556,7 +556,7 @@ def execute_prepared_chf(
     except BaseException as error:
         try:
             session.cancel()
-        except ChfRunnerSessionRetired:
+        except RunnerSessionRetired:
             error.add_note(
                 "The validated CHF session also failed to stop before generation."
             )
@@ -633,7 +633,7 @@ def select_chf_completion(
     except RunnerResultRejected as error:
         try:
             generated.session.cancel()
-        except ChfRunnerSessionRetired:
+        except RunnerSessionRetired:
             error.add_note(
                 "The rejected CHF result's runner session also failed to stop."
             )
@@ -761,14 +761,14 @@ def _stopped_execution_outcome(
 
 
 def _cancel_and_join_generation(
-    session: ChfRunnerSession,
+    session: RunnerSession,
     worker: Thread,
     policy: ChfObservationPolicy,
 ) -> None:
-    cancellation_error: ChfRunnerSessionRetired | None = None
+    cancellation_error: RunnerSessionRetired | None = None
     try:
         session.cancel()
-    except ChfRunnerSessionRetired as error:
+    except RunnerSessionRetired as error:
         cancellation_error = error
     worker.join(policy.shutdown_join_seconds)
     if worker.is_alive() or cancellation_error is not None:

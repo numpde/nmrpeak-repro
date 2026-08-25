@@ -28,9 +28,12 @@ from nmrpeak_provider.chf_lifecycle import (
     select_chf_completion,
     start_chf_attempt,
 )
-from nmrpeak_provider.chf_runner_protocol import CHF_RUNNER_CONTRACT_ID
+from nmrpeak_provider.chf_runner_protocol import (
+    CHF_RUNNER_CODEC,
+    CHF_RUNNER_CONTRACT_ID,
+)
 from nmrpeak_provider.runner_protocol import ReadyFrame
-from nmrpeak_provider.chf_runner_session import ChfRunnerDeadlines, ChfRunnerSession
+from nmrpeak_provider.runner_session import RunnerDeadlines, RunnerSession
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
     NMRPEAK_SOURCE_CLOSURE_REF,
@@ -44,7 +47,7 @@ from nmrpeak_provider.provider_outcomes import (
     interpret_execution_attempt_complete,
 )
 from nmrpeak_provider.run_generation import CreatedAtWindow, RunGenerationIdentity
-from tests.fakes.chf_runner import FakeChfRunnerChannel
+from tests.fakes.runner import FakeRunnerChannel
 from tests.fakes.provider_server import ChfServerA, serve_chf_server_a
 from tests.fakes.tls_certificates import write_test_certificates
 
@@ -271,7 +274,7 @@ def _api(port: int, root: Path) -> ProviderApiClient:
     )
 
 
-def _runner_session() -> ChfRunnerSession:
+def _runner_session() -> RunnerSession:
     ready = ReadyFrame(
         boot_generation="boot:" + "1" * 32,
         runner_ref="nmrpeak_chf_v1",
@@ -283,10 +286,11 @@ def _runner_session() -> ChfRunnerSession:
         device="cpu",
         decode_policy_id="nmrpeak_chf_decode_v1",
     )
-    return ChfRunnerSession.admit(
-        FakeChfRunnerChannel(ready),
+    return RunnerSession.admit(
+        FakeRunnerChannel(CHF_RUNNER_CODEC, ready),
         _RUNNER_FACTS,
-        ChfRunnerDeadlines(0.2, 0.2, 0.2, 0.2, 0.2),
+        RunnerDeadlines(0.2, 0.2, 0.2, 0.2, 0.2),
+        CHF_RUNNER_CODEC,
     )
 
 
