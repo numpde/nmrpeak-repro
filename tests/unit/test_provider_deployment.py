@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import stat
 import subprocess
 from tempfile import TemporaryDirectory
 import threading
@@ -16,6 +17,7 @@ from deployment.provider_deployment import (
     DeploymentOperationRejected,
     deployment_plan_bytes,
     initialize_deployment,
+    materialize_deployment_plan,
     render_deployment_plan,
 )
 from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
@@ -120,29 +122,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 _docker: Path,
             ) -> dict[str, object]:
                 renders.append(environment)
-                document = compose_document()
-                document["name"] = f"nmrpeak-{deployment}"
-                services = document["services"]
-                services["provider"]["image"] = environment["PROVIDER_IMAGE_REF"]
-                services["hf-runner"]["image"] = environment["HF_RUNNER_IMAGE_REF"]
-                services["chf-runner"]["image"] = environment["CHF_RUNNER_IMAGE_REF"]
-                services["hf-runner"]["command"] = [
-                    "--checkpoint-ref",
-                    environment["HF_CHECKPOINT_REF"],
-                    "--image-input-id",
-                    environment["HF_RUNNER_IMAGE_INPUT_ID"],
-                ]
-                services["chf-runner"]["command"] = [
-                    "--checkpoint-ref",
-                    environment["CHF_CHECKPOINT_REF"],
-                    "--image-input-id",
-                    environment["CHF_RUNNER_IMAGE_INPUT_ID"],
-                ]
-                provider_mounts = services["provider"]["volumes"]
-                provider_mounts[0]["source"] = environment["PROVIDER_CONFIG_PATH"]
-                provider_mounts[1]["source"] = environment["PROVIDER_CREDENTIAL_PATH"]
-                provider_mounts[2]["source"] = environment["FROZEN_GENERATION_PATH"]
-                return document
+                return compose_for_environment(deployment, environment)
 
             with (
                 patch.object(
@@ -232,6 +212,63 @@ class ProviderDeploymentTests(unittest.TestCase):
                 renders[1]["PROVIDER_CONFIG_PATH"],
             )
             self.assertFalse((repository / "secrets").exists())
+
+    def test_materialization_is_exact_idempotent_and_rejects_drift(self) -> None:
+        with render_repository() as repository:
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_image_input_ids",
+                    return_value=INPUTS,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_local_images",
+                    return_value=IMAGES,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_render_compose",
+                    side_effect=lambda _, deployment, environment, __: (
+                        compose_for_environment(deployment, environment)
+                    ),
+                ),
+            ):
+                plan = render_deployment_plan(repository, "production")
+
+            first = materialize_deployment_plan(repository, "production", plan)
+            second = materialize_deployment_plan(repository, "production", plan)
+            self.assertEqual(first, second)
+            self.assertEqual(first[0].read_bytes(), plan.generation.provider_config)
+            self.assertEqual(
+                (first[1] / "manifest.json").read_bytes(),
+                plan.generation.manifest,
+            )
+            self.assertEqual(
+                (first[1] / "hello/hf.txt").read_bytes(),
+                b"HF description\n",
+            )
+            self.assertEqual(
+                stat.S_IMODE(first[0].stat().st_mode),
+                0o400,
+            )
+            self.assertEqual(
+                stat.S_IMODE(
+                    (repository / "secrets/deployments/production/.lifecycle.lock")
+                    .stat()
+                    .st_mode
+                ),
+                0o600,
+            )
+
+            first[0].chmod(0o600)
+            first[0].write_bytes(b"drift")
+            first[0].chmod(0o400)
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "bytes have drifted",
+            ):
+                materialize_deployment_plan(repository, "production", plan)
 
 
 class committed_repository:
@@ -372,6 +409,35 @@ release = "chf-release"
 generation_id = "chf-generation"
 not_before = "2026-08-25T00:00:00Z"
 '''
+
+
+def compose_for_environment(
+    deployment: str,
+    environment: dict[str, str],
+) -> dict[str, object]:
+    document = compose_document()
+    document["name"] = f"nmrpeak-{deployment}"
+    services = document["services"]
+    services["provider"]["image"] = environment["PROVIDER_IMAGE_REF"]
+    services["hf-runner"]["image"] = environment["HF_RUNNER_IMAGE_REF"]
+    services["chf-runner"]["image"] = environment["CHF_RUNNER_IMAGE_REF"]
+    services["hf-runner"]["command"] = [
+        "--checkpoint-ref",
+        environment["HF_CHECKPOINT_REF"],
+        "--image-input-id",
+        environment["HF_RUNNER_IMAGE_INPUT_ID"],
+    ]
+    services["chf-runner"]["command"] = [
+        "--checkpoint-ref",
+        environment["CHF_CHECKPOINT_REF"],
+        "--image-input-id",
+        environment["CHF_RUNNER_IMAGE_INPUT_ID"],
+    ]
+    provider_mounts = services["provider"]["volumes"]
+    provider_mounts[0]["source"] = environment["PROVIDER_CONFIG_PATH"]
+    provider_mounts[1]["source"] = environment["PROVIDER_CREDENTIAL_PATH"]
+    provider_mounts[2]["source"] = environment["FROZEN_GENERATION_PATH"]
+    return document
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
 )
+from nmrpeak_provider.frozen_generation import frozen_generation_id
 from nmrpeak_provider.provider_config import decode_provider_runtime_config
 from repository_checks.chf_checkpoint import checkpoint_volume_name as chf_volume_name
 from repository_checks.deployment_topology import (
@@ -302,6 +304,55 @@ def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
     )
 
 
+def materialize_deployment_plan(
+    repository: Path,
+    deployment: str,
+    plan: DeploymentPlan,
+) -> tuple[Path, Path]:
+    """Publish the plan's two immutable host inputs without engine effects."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    if type(plan) is not DeploymentPlan:
+        raise TypeError("Deployment materialization requires one resolved plan")
+    if _runtime_config_id(plan.generation.provider_config) != plan.runtime_config_id:
+        raise DeploymentOperationRejected(
+            "Deployment runtime config identity does not match its bytes"
+        )
+    if frozen_generation_id(plan.generation.manifest) != (
+        plan.generation.frozen_generation_id
+    ):
+        raise DeploymentOperationRejected(
+            "Deployment frozen generation identity does not match its manifest"
+        )
+    state_root = _ensure_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        runtime_root = _ensure_private_directory(state_root / "runtime-configs")
+        generation_root = _ensure_private_directory(state_root / "generations")
+        runtime_config = _publish_retained_tree(
+            runtime_root,
+            plan.runtime_config_id,
+            {"provider.toml": plan.generation.provider_config},
+        )
+        frozen_files = {"frozen/manifest.json": plan.generation.manifest}
+        frozen_files.update(
+            {
+                f"frozen/{frozen_file.path}": frozen_file.content
+                for frozen_file in plan.generation.files
+            }
+        )
+        frozen_generation = _publish_retained_tree(
+            generation_root,
+            plan.generation.frozen_generation_id,
+            frozen_files,
+        )
+    return runtime_config / "provider.toml", frozen_generation / "frozen"
+
+
 def _require_deployment_name(deployment: str) -> None:
     if type(deployment) is not str or _DEPLOYMENT_NAME.fullmatch(deployment) is None:
         raise DeploymentOperationRejected(
@@ -321,6 +372,182 @@ def _runtime_config_id(provider_config: bytes) -> str:
         raise TypeError("Runtime config identity requires exact bytes")
     digest = sha256(b"nmrpeak.provider_runtime_config.v1\0" + provider_config)
     return f"sha256:{digest.hexdigest()}"
+
+
+def _ensure_deployment_state_root(repository: Path, deployment: str) -> Path:
+    secrets_root = _ensure_private_directory(repository / "secrets")
+    deployments = _ensure_private_directory(secrets_root / "deployments")
+    return _ensure_private_directory(deployments / deployment)
+
+
+def _ensure_private_directory(path: Path) -> Path:
+    try:
+        path.mkdir(mode=0o700)
+        _fsync_directory(path.parent)
+    except FileExistsError:
+        pass
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            f"Deployment state directory is unavailable: {path}"
+        ) from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise DeploymentOperationRejected(
+            f"Deployment state directory must be operator-owned mode 0700: {path}"
+        )
+    return path
+
+
+@contextmanager
+def _locked_deployment_state(state_root: Path):
+    lock_path = state_root / ".lifecycle.lock"
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise DeploymentOperationRejected(
+                "Deployment lifecycle lock must be operator-owned mode 0600"
+            )
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _publish_retained_tree(
+    parent: Path,
+    identity: str,
+    files: dict[str, bytes],
+) -> Path:
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
+        raise DeploymentOperationRejected("Retained input identity is malformed")
+    destination = parent / identity
+    if destination.exists() or destination.is_symlink():
+        _require_retained_tree(destination, files)
+        return destination
+    stage = parent / f".{identity}.{secrets.token_hex(16)}.staging"
+    stage.mkdir(mode=0o700)
+    try:
+        for relative, content in files.items():
+            candidate = Path(relative)
+            if (
+                candidate.is_absolute()
+                or not candidate.parts
+                or any(part in {"", ".", ".."} for part in candidate.parts)
+                or type(content) is not bytes
+            ):
+                raise DeploymentOperationRejected(
+                    "Retained deployment input inventory is invalid"
+                )
+            directory = stage
+            for part in candidate.parts[:-1]:
+                directory = directory / part
+                if not directory.exists():
+                    directory.mkdir(mode=0o700)
+            descriptor = os.open(
+                stage / candidate,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o400,
+            )
+            try:
+                if os.write(descriptor, content) != len(content):
+                    raise OSError("Retained deployment input write was incomplete")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        _fsync_tree(stage)
+        os.rename(stage, destination)
+        _fsync_directory(parent)
+    except BaseException:
+        if stage.exists() and not stage.is_symlink():
+            shutil.rmtree(stage)
+        raise
+    _require_retained_tree(destination, files)
+    return destination
+
+
+def _require_retained_tree(path: Path, expected: dict[str, bytes]) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise DeploymentOperationRejected(
+            f"Retained deployment input is not a directory: {path.name}"
+        )
+    actual_files: dict[str, bytes] = {}
+    actual_directories: set[str] = set()
+    for directory, names, filenames in os.walk(path, followlinks=False):
+        current = Path(directory)
+        metadata = current.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            raise DeploymentOperationRejected(
+                f"Retained deployment directory posture has drifted: {path.name}"
+            )
+        relative_directory = current.relative_to(path).as_posix()
+        if relative_directory != ".":
+            actual_directories.add(relative_directory)
+        for name in names:
+            child = current / name
+            if child.is_symlink():
+                raise DeploymentOperationRejected(
+                    f"Retained deployment directory contains a symlink: {path.name}"
+                )
+        for name in filenames:
+            child = current / name
+            try:
+                descriptor = os.open(
+                    child,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                )
+            except OSError as error:
+                raise DeploymentOperationRejected(
+                    f"Retained deployment file is unavailable: {path.name}"
+                ) from error
+            try:
+                metadata = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o400
+                ):
+                    raise DeploymentOperationRejected(
+                        f"Retained deployment file posture has drifted: {path.name}"
+                    )
+                actual_files[(child.relative_to(path)).as_posix()] = os.read(
+                    descriptor,
+                    _MAX_FILE_BYTES + 1,
+                )
+            finally:
+                os.close(descriptor)
+    expected_directories = {
+        Path(*Path(relative).parts[:index]).as_posix()
+        for relative in expected
+        for index in range(1, len(Path(relative).parts))
+    }
+    if actual_files != expected or actual_directories != expected_directories:
+        raise DeploymentOperationRejected(
+            f"Retained deployment input bytes have drifted: {path.name}"
+        )
+
+
+def _fsync_tree(root: Path) -> None:
+    directories = [Path(directory) for directory, _, _ in os.walk(root)]
+    for directory in reversed(directories):
+        _fsync_directory(directory)
 
 
 def _read_regular_file(path: Path) -> bytes:
