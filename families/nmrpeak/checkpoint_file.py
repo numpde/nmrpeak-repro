@@ -10,7 +10,7 @@ import stat
 from typing import BinaryIO
 
 
-CHECKPOINT_PATH = Path("/checkpoint.pt")
+CHECKPOINT_PATH = Path("/checkpoint/checkpoint.pt")
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 _HASH_CHUNK_BYTES = 1024 * 1024
 

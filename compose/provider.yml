@@ -1,0 +1,164 @@
+# One provider owns API egress and two fixed networkless checkpoint runners.
+# Host orchestration supplies only exact named-deployment paths and identities.
+services:
+  provider:
+    image: "${PROVIDER_IMAGE_REF:?set PROVIDER_IMAGE_REF through make}"
+    pull_policy: never
+    platform: "${IMAGE_PLATFORM:?set IMAGE_PLATFORM through make}"
+    restart: "on-failure:3"
+    stop_grace_period: 35s
+    user: "65532:65532"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 1.0
+    mem_limit: 256m
+    memswap_limit: 256m
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev,uid=65532,gid=65532
+      - /run/nmrpeak-provider:size=64k,mode=0700,noexec,nosuid,nodev,uid=65532,gid=65532
+    volumes:
+      - type: bind
+        source: "${PROVIDER_CONFIG_PATH:?set PROVIDER_CONFIG_PATH through make}"
+        target: /run/config/nmrpeak-provider/provider.toml
+        read_only: true
+      - type: bind
+        source: "${PROVIDER_CREDENTIAL_PATH:?set PROVIDER_CREDENTIAL_PATH through make}"
+        target: /run/secrets/nmrpeak-provider/signing.private.json
+        read_only: true
+      - type: bind
+        source: "${FROZEN_GENERATION_PATH:?set FROZEN_GENERATION_PATH through make}"
+        target: /run/nmrpeak-provider/frozen
+        read_only: true
+      - type: volume
+        source: provider-identity-lock
+        target: /run/nmrpeak-provider-lock
+        read_only: true
+      - type: volume
+        source: provider-journal
+        target: /var/lib/nmrpeak-provider
+      - type: volume
+        source: hf-session
+        target: /run/nmrpeak-provider/hf
+      - type: volume
+        source: chf-session
+        target: /run/nmrpeak-provider/chf
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - nmrpeak_provider.provider_readiness
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
+
+  hf-runner:
+    image: "${HF_RUNNER_IMAGE_REF:?set HF_RUNNER_IMAGE_REF through make}"
+    pull_policy: never
+    platform: "${IMAGE_PLATFORM:?set IMAGE_PLATFORM through make}"
+    restart: "on-failure:3"
+    stop_grace_period: 20s
+    command:
+      - --checkpoint-ref
+      - "${HF_CHECKPOINT_REF:?set HF_CHECKPOINT_REF through make}"
+      - --image-input-id
+      - "${HF_RUNNER_IMAGE_INPUT_ID:?set HF_RUNNER_IMAGE_INPUT_ID through make}"
+    user: "65532:65532"
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 8.0
+    mem_limit: 32g
+    memswap_limit: 32g
+    shm_size: 1g
+    tmpfs:
+      - /tmp:size=2g,mode=1777,noexec,nosuid,nodev,uid=65532,gid=65532
+    volumes:
+      - type: volume
+        source: hf-session
+        target: /run/nmrpeak
+      - type: volume
+        source: hf-checkpoint
+        target: /checkpoint
+        read_only: true
+    logging:
+      driver: none
+
+  chf-runner:
+    image: "${CHF_RUNNER_IMAGE_REF:?set CHF_RUNNER_IMAGE_REF through make}"
+    pull_policy: never
+    platform: "${IMAGE_PLATFORM:?set IMAGE_PLATFORM through make}"
+    restart: "on-failure:3"
+    stop_grace_period: 20s
+    command:
+      - --checkpoint-ref
+      - "${CHF_CHECKPOINT_REF:?set CHF_CHECKPOINT_REF through make}"
+      - --image-input-id
+      - "${CHF_RUNNER_IMAGE_INPUT_ID:?set CHF_RUNNER_IMAGE_INPUT_ID through make}"
+    user: "65532:65532"
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: 8.0
+    mem_limit: 32g
+    memswap_limit: 32g
+    shm_size: 1g
+    tmpfs:
+      - /tmp:size=2g,mode=1777,noexec,nosuid,nodev,uid=65532,gid=65532
+    volumes:
+      - type: volume
+        source: chf-session
+        target: /run/nmrpeak
+      - type: volume
+        source: chf-checkpoint
+        target: /checkpoint
+        read_only: true
+    logging:
+      driver: none
+
+volumes:
+  provider-identity-lock:
+    external: true
+    name: "${PROVIDER_IDENTITY_LOCK_VOLUME:?set PROVIDER_IDENTITY_LOCK_VOLUME through make}"
+  provider-journal:
+    external: true
+    name: "${PROVIDER_JOURNAL_VOLUME:?set PROVIDER_JOURNAL_VOLUME through make}"
+  hf-checkpoint:
+    external: true
+    name: "${HF_CHECKPOINT_VOLUME:?set HF_CHECKPOINT_VOLUME through make}"
+  chf-checkpoint:
+    external: true
+    name: "${CHF_CHECKPOINT_VOLUME:?set CHF_CHECKPOINT_VOLUME through make}"
+  hf-session:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,uid=65532,gid=65532,mode=0700
+  chf-session:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,uid=65532,gid=65532,mode=0700
