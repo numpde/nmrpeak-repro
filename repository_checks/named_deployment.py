@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 
+from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
     CHF_RUNNER_CONTRACT_ID,
@@ -99,6 +100,7 @@ def render_generation(
     chf_image_input_id: str,
     hf_hello: bytes,
     chf_hello: bytes,
+    topology: bytes,
 ) -> RenderedGeneration:
     """Render one generation through the existing release and runtime owners."""
 
@@ -114,9 +116,24 @@ def render_generation(
         expected_release_name=selection.chf.release_name,
         expected_source_revision=upstream_revision,
     )
+    topology_document = parse_canonical_json_bytes(topology)
+    if (
+        type(topology_document) is not dict
+        or topology_document.get("schema_id")
+        != "nmrpeak.deployment_topology.v1"
+    ):
+        raise NamedDeploymentRejected("Deployment topology projection is invalid")
+    _require_topology_generation(
+        topology_document,
+        hf_checkpoint=hf_release.checkpoint_sha256,
+        chf_checkpoint=chf_release.checkpoint_sha256,
+        hf_image_input=hf_image_input_id,
+        chf_image_input=chf_image_input_id,
+    )
     files = (
         FrozenFile("hello/hf.txt", hf_hello),
         FrozenFile("hello/chf.txt", chf_hello),
+        FrozenFile("deployment/topology.json", topology),
     )
     runtime = GenerationRuntime(
         GENERATED_FROZEN_ID,
@@ -165,6 +182,35 @@ def render_provider_config(template: bytes, identity: str) -> bytes:
     )
     decode_provider_runtime_config(rendered)
     return rendered
+
+
+def _require_topology_generation(
+    topology: dict[str, object],
+    *,
+    hf_checkpoint: str,
+    chf_checkpoint: str,
+    hf_image_input: str,
+    chf_image_input: str,
+) -> None:
+    if topology.get("checkpoint_releases") != {
+        "hf": hf_checkpoint,
+        "chf": chf_checkpoint,
+    }:
+        raise NamedDeploymentRejected(
+            "Deployment topology names another checkpoint generation"
+        )
+    services = topology.get("services")
+    if type(services) is not list:
+        raise NamedDeploymentRejected("Deployment topology services are invalid")
+    runner_inputs = {
+        service.get("role"): service.get("image_input_id")
+        for service in services
+        if type(service) is dict and service.get("role") in {"hf", "chf"}
+    }
+    if runner_inputs != {"hf": hf_image_input, "chf": chf_image_input}:
+        raise NamedDeploymentRejected(
+            "Deployment topology names another runner generation"
+        )
 
 
 def _lane(

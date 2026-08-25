@@ -8,6 +8,7 @@ import unittest
 import zipfile
 
 from nmrpeak_provider.frozen_generation import load_frozen_generation
+from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
 from nmrpeak_provider.provider_config import decode_provider_runtime_config
 from repository_checks.chf_release import ARCHIVE_MEMBER as CHF_MEMBER
 from repository_checks.chf_release import candidate_release_bytes as chf_release_bytes
@@ -18,12 +19,19 @@ from repository_checks.named_deployment import (
     load_named_deployment,
     render_generation,
 )
+from repository_checks.deployment_topology import (
+    DeploymentCheckpoints,
+    DeploymentImages,
+    project_deployment_topology,
+)
+from tests.unit.test_deployment_topology import compose_document
 from tests.unit.test_frozen_generation import materialized_generation
 
 
 ROOT = Path(__file__).parents[2]
 SOURCE_REVISION = "1" * 40
-IMAGE_INPUT = "sha256:" + "2" * 64
+HF_IMAGE_INPUT = "sha256:" + "4" * 64
+CHF_IMAGE_INPUT = "sha256:" + "6" * 64
 
 
 class NamedDeploymentTests(unittest.TestCase):
@@ -37,24 +45,45 @@ class NamedDeploymentTests(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as bundle:
                 bundle.writestr(HF_MEMBER, b"hf checkpoint")
                 bundle.writestr(CHF_MEMBER, b"chf checkpoint")
+            hf_declaration = hf_release_bytes(
+                archive,
+                "hf-release",
+                source_revision=SOURCE_REVISION,
+            )
+            chf_declaration = chf_release_bytes(
+                archive,
+                "chf-release",
+                source_revision=SOURCE_REVISION,
+            )
+            checkpoints = DeploymentCheckpoints(
+                parse_canonical_json_bytes(hf_declaration)["checkpoint"]["sha256"],
+                parse_canonical_json_bytes(chf_declaration)["checkpoint"]["sha256"],
+            )
+            compose = compose_document()
+            compose["services"]["hf-runner"]["command"][1] = checkpoints.hf
+            compose["services"]["chf-runner"]["command"][1] = checkpoints.chf
             rendered = render_generation(
                 selection,
                 provider_config_template=(ROOT / "config/provider.toml.example").read_bytes(),
-                hf_release_declaration=hf_release_bytes(
-                    archive,
-                    "hf-release",
-                    source_revision=SOURCE_REVISION,
-                ),
-                chf_release_declaration=chf_release_bytes(
-                    archive,
-                    "chf-release",
-                    source_revision=SOURCE_REVISION,
-                ),
+                hf_release_declaration=hf_declaration,
+                chf_release_declaration=chf_declaration,
                 upstream_revision=SOURCE_REVISION,
-                hf_image_input_id=IMAGE_INPUT,
-                chf_image_input_id=IMAGE_INPUT,
+                hf_image_input_id=HF_IMAGE_INPUT,
+                chf_image_input_id=CHF_IMAGE_INPUT,
                 hf_hello=b"HF description",
                 chf_hello=b"CHF description",
+                topology=project_deployment_topology(
+                    compose,
+                    DeploymentImages(
+                        "sha256:" + "1" * 64,
+                        "sha256:" + "2" * 64,
+                        "sha256:" + "3" * 64,
+                        "sha256:" + "4" * 64,
+                        "sha256:" + "5" * 64,
+                        "sha256:" + "6" * 64,
+                    ),
+                    checkpoints,
+                ),
             )
 
         configured = decode_provider_runtime_config(rendered.provider_config)
@@ -73,7 +102,8 @@ class NamedDeploymentTests(unittest.TestCase):
             _selection().replace('target = "cpu-x86_64"', 'target = "cuda"', 1),
             _selection().replace(
                 '[implementations.chf]\n',
-                '[implementations.extra]\ntarget = "cpu-x86_64"\nrelease = "x"\n\n[implementations.chf]\n',
+                '[implementations.extra]\ntarget = "cpu-x86_64"\n'
+                'release = "x"\n\n[implementations.chf]\n',
             ),
         )
         for content in invalid:

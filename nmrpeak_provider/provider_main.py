@@ -39,6 +39,7 @@ _DESCRIPTION = (
     "formula and peak-list input."
 )
 _HELLO_FILES = ("hello/hf.txt", "hello/chf.txt")
+_FROZEN_FILES = {*_HELLO_FILES, "deployment/topology.json"}
 
 
 def run_provider(config_path: Path = CONFIG_PATH) -> None:
@@ -145,8 +146,8 @@ def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
 
 def _prepare_hello(frozen: FrozenGeneration):
     files = {frozen_file.path: frozen_file.content for frozen_file in frozen.files}
-    if set(files) != set(_HELLO_FILES):
-        raise ValueError("Frozen generation must contain exactly both hello descriptions")
+    if set(files) != _FROZEN_FILES:
+        raise ValueError("Frozen generation has an invalid public file inventory")
     try:
         descriptions = tuple(files[path].decode("utf-8") for path in _HELLO_FILES)
     except UnicodeDecodeError:

@@ -46,7 +46,7 @@ class ProviderMainTests(unittest.TestCase):
 
         self.assertEqual(
             [item["description"] for item in document["analysis_offerings"]],
-            [frozen_file.content.decode() for frozen_file in FILES],
+            [frozen_file.content.decode() for frozen_file in FILES[:2]],
         )
         self.assertIn("strict structured", document["description"])
 

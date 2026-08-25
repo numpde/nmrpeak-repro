@@ -44,6 +44,10 @@ CHF_FACTS = ProviderResultFacts(
 FILES = (
     FrozenFile("hello/hf.txt", b"Structured formula and 1H NMR input."),
     FrozenFile("hello/chf.txt", b"Structured formula, 1H NMR, and 13C NMR input."),
+    FrozenFile(
+        "deployment/topology.json",
+        b'{"schema_id":"nmrpeak.deployment_topology.v1"}',
+    ),
 )
 
 
