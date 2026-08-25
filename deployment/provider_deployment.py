@@ -383,6 +383,87 @@ def start_deployment(
         return plan
 
 
+def deployment_status_bytes(
+    repository: Path,
+    deployment: str,
+    *,
+    docker: Path = _DOCKER,
+) -> bytes:
+    """Report the currently inspected project without consulting credentials."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    services = _inspect_project_containers(docker, root, deployment)
+    records: list[dict[str, object]] = []
+    for service in ("provider", "hf-runner", "chf-runner"):
+        record = services.get(service)
+        if record is None:
+            continue
+        state = record.get("State")
+        image = record.get("Image")
+        if type(state) is not dict or type(image) is not str:
+            raise DeploymentOperationRejected(
+                "Docker provider status has an invalid service record"
+            )
+        health = state.get("Health")
+        health_status = health.get("Status") if type(health) is dict else None
+        if (
+            type(state.get("Status")) is not str
+            or (health_status is not None and type(health_status) is not str)
+        ):
+            raise DeploymentOperationRejected(
+                "Docker provider status has an invalid health record"
+            )
+        records.append(
+            {
+                "service": service,
+                "container_id": record["Id"],
+                "image_id": image,
+                "state": state.get("Status"),
+                "health": health_status,
+            }
+        )
+    return canonical_json_bytes(
+        {
+            "schema_id": "nmrpeak.deployment_status.v1",
+            "deployment": deployment,
+            "project": f"nmrpeak-{deployment}",
+            "services": records,
+        }
+    )
+
+
+def stop_deployment(
+    repository: Path,
+    deployment: str,
+    *,
+    docker: Path = _DOCKER,
+) -> None:
+    """Remove only proved-owned project containers, network, and sessions."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    state_root = _existing_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        services = _inspect_project_containers(docker, root, deployment)
+        _inspect_project_resources(docker, deployment, services)
+        _run_compose_down(docker, root, deployment)
+        remaining = _inspect_project_containers(docker, root, deployment)
+        resources = _inspect_project_resources(docker, deployment, remaining)
+        if remaining or resources:
+            raise DeploymentOperationRejected(
+                "Provider teardown left unresolved project resources"
+            )
+
+
 def _validate_deployment_plan(plan: DeploymentPlan) -> None:
     if type(plan) is not DeploymentPlan:
         raise TypeError("Deployment materialization requires one resolved plan")
@@ -501,6 +582,65 @@ def _run_compose_plan(
         ) from error
 
 
+def _run_compose_down(
+    docker: Path,
+    repository: Path,
+    deployment: str,
+) -> None:
+    try:
+        teardown = _read_committed_template(
+            repository,
+            Path("compose/provider-teardown.yml"),
+        )
+        with TemporaryDirectory() as temporary:
+            compose = Path(temporary) / "provider-teardown.yml"
+            compose.write_bytes(teardown)
+            prefix = (
+                "compose",
+                "--env-file",
+                "/dev/null",
+                "--project-directory",
+                str(repository),
+                "--project-name",
+                f"nmrpeak-{deployment}",
+                "--file",
+                str(compose),
+            )
+            _docker_command(
+                docker,
+                (*prefix, "stop", "--timeout", "600", "provider"),
+                timeout=660,
+            )
+            _docker_command(
+                docker,
+                (
+                    *prefix,
+                    "stop",
+                    "--timeout",
+                    "20",
+                    "hf-runner",
+                    "chf-runner",
+                ),
+                timeout=80,
+            )
+            _docker_command(
+                docker,
+                (
+                    *prefix,
+                    "down",
+                    "--timeout",
+                    "20",
+                    "--remove-orphans",
+                    "--volumes",
+                ),
+                timeout=80,
+            )
+    except DeploymentOperationRejected as error:
+        raise DeploymentOperationRejected(
+            "Docker Compose teardown was rejected; runtime state may be partial"
+        ) from error
+
+
 def _inspect_project_containers(
     docker: Path,
     repository: Path,
@@ -560,6 +700,149 @@ def _inspect_project_containers(
             )
         services[service] = record
     return services
+
+
+def _inspect_project_resources(
+    docker: Path,
+    deployment: str,
+    services: dict[str, dict[str, object]],
+) -> tuple[str, ...]:
+    project = f"nmrpeak-{deployment}"
+    project_container_ids = {record["Id"] for record in services.values()}
+    expected_volumes = {
+        f"{project}_hf-session": "hf-session",
+        f"{project}_chf-session": "chf-session",
+    }
+    volume_names = _docker_command(
+        docker,
+        (
+            "volume",
+            "ls",
+            "--quiet",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ),
+        timeout=60,
+    ).stdout.decode("ascii", errors="strict").splitlines()
+    if len(set(volume_names)) != len(volume_names) or any(
+        name not in expected_volumes for name in volume_names
+    ):
+        raise DeploymentOperationRejected(
+            "Provider project contains a foreign or ambiguous session volume"
+        )
+    if volume_names:
+        document = _json_output(
+            _docker_command(
+                docker,
+                ("volume", "inspect", *volume_names),
+                timeout=60,
+            ).stdout,
+            "Docker provider session volume inspection",
+        )
+        if type(document) is not list or len(document) != len(volume_names):
+            raise DeploymentOperationRejected(
+                "Docker provider session volume inspection has an invalid shape"
+            )
+        for record in document:
+            if type(record) is not dict:
+                raise DeploymentOperationRejected(
+                    "Docker provider session volume inspection has an invalid record"
+                )
+            name = record.get("Name")
+            labels = record.get("Labels")
+            if (
+                name not in volume_names
+                or type(labels) is not dict
+                or record.get("Driver") != "local"
+                or record.get("Options")
+                != {
+                    "device": "tmpfs",
+                    "o": "size=1m,uid=65532,gid=65532,mode=0700",
+                    "type": "tmpfs",
+                }
+                or labels.get("com.docker.compose.project") != project
+                or labels.get("com.docker.compose.volume")
+                != expected_volumes[name]
+            ):
+                raise DeploymentOperationRejected(
+                    "Provider project session volume ownership is invalid"
+                )
+            attachments = _docker_command(
+                docker,
+                (
+                    "ps",
+                    "--all",
+                    "--no-trunc",
+                    "--quiet",
+                    "--filter",
+                    f"volume={name}",
+                ),
+                timeout=60,
+            ).stdout.decode("ascii", errors="strict").splitlines()
+            if any(
+                re.fullmatch(r"[0-9a-f]{64}", value) is None
+                for value in attachments
+            ) or not set(attachments).issubset(project_container_ids):
+                raise DeploymentOperationRejected(
+                    "Provider project session volume has a foreign attachment"
+                )
+
+    network_ids = _docker_command(
+        docker,
+        (
+            "network",
+            "ls",
+            "--no-trunc",
+            "--quiet",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ),
+        timeout=60,
+    ).stdout.decode("ascii", errors="strict").splitlines()
+    if len(set(network_ids)) != len(network_ids) or any(
+        re.fullmatch(r"[0-9a-f]{64}", value) is None for value in network_ids
+    ):
+        raise DeploymentOperationRejected(
+            "Docker returned malformed provider project network identities"
+        )
+    network_names: list[str] = []
+    if network_ids:
+        document = _json_output(
+            _docker_command(
+                docker,
+                ("network", "inspect", *network_ids),
+                timeout=60,
+            ).stdout,
+            "Docker provider network inspection",
+        )
+        if type(document) is not list or len(document) != len(network_ids):
+            raise DeploymentOperationRejected(
+                "Docker provider network inspection has an invalid shape"
+            )
+        for record in document:
+            if type(record) is not dict:
+                raise DeploymentOperationRejected(
+                    "Docker provider network inspection has an invalid record"
+                )
+            labels = record.get("Labels")
+            containers = record.get("Containers")
+            name = record.get("Name")
+            if (
+                record.get("Id") not in network_ids
+                or name != f"{project}_default"
+                or network_names
+                or record.get("Driver") != "bridge"
+                or type(labels) is not dict
+                or labels.get("com.docker.compose.project") != project
+                or labels.get("com.docker.compose.network") != "default"
+                or type(containers) is not dict
+                or not set(containers).issubset(project_container_ids)
+            ):
+                raise DeploymentOperationRejected(
+                    "Provider project network ownership is invalid"
+                )
+            network_names.append(name)
+    return tuple(volume_names + network_names)
 
 
 def _require_ready_project(
@@ -660,6 +943,25 @@ def _ensure_deployment_state_root(repository: Path, deployment: str) -> Path:
     secrets_root = _ensure_private_directory(repository / "secrets")
     deployments = _ensure_private_directory(secrets_root / "deployments")
     return _ensure_private_directory(deployments / deployment)
+
+
+def _existing_deployment_state_root(repository: Path, deployment: str) -> Path:
+    path = repository / "secrets/deployments" / deployment
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            f"Deployment state is not initialized: {deployment}"
+        ) from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise DeploymentOperationRejected(
+            f"Deployment state directory must be operator-owned mode 0700: {path}"
+        )
+    return path
 
 
 def _ensure_private_directory(path: Path) -> Path:
@@ -1128,7 +1430,7 @@ def _fsync_directory(path: Path) -> None:
 
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Operate one named NMRPeak deployment.")
-    parser.add_argument("operation", choices=("config", "init", "up"))
+    parser.add_argument("operation", choices=("config", "down", "init", "status", "up"))
     parser.add_argument("deployment")
     options = parser.parse_args(arguments)
     repository = Path(__file__).resolve().parents[1]
@@ -1139,11 +1441,20 @@ def main(arguments: list[str] | None = None) -> int:
         elif options.operation == "config":
             plan = render_deployment_plan(repository, options.deployment)
             print(deployment_plan_bytes(plan).decode("utf-8"))
-        else:
+        elif options.operation == "up":
             plan = start_deployment(repository, options.deployment)
             print(
                 "Provider deployment ready: "
                 f"{options.deployment} {plan.generation.frozen_generation_id}"
+            )
+        elif options.operation == "status":
+            print(deployment_status_bytes(repository, options.deployment).decode("utf-8"))
+        else:
+            stop_deployment(repository, options.deployment)
+            print(
+                f"Provider deployment stopped: {options.deployment}. "
+                "Containers, its project network, and session volumes were removed; "
+                "credentials, journal, checkpoints, retained inputs, and images remain."
             )
     except (
         CheckpointOperationRejected,

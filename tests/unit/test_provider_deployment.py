@@ -19,11 +19,13 @@ from deployment.local_image import LocalImage
 from deployment.provider_deployment import (
     DeploymentPlan,
     DeploymentOperationRejected,
+    deployment_status_bytes,
     deployment_plan_bytes,
     initialize_deployment,
     materialize_deployment_plan,
     render_deployment_plan,
     start_deployment,
+    stop_deployment,
 )
 from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
 from repository_checks.chf_release import ARCHIVE_MEMBER as CHF_MEMBER
@@ -418,6 +420,214 @@ class ProviderDeploymentTests(unittest.TestCase):
                 Path("/repository"),
                 "production",
             )
+
+    def test_status_reports_stopped_owned_services_without_config(self) -> None:
+        provider = {
+            "Id": "a" * 64,
+            "Image": "sha256:" + "b" * 64,
+            "State": {"Status": "exited", "ExitCode": 2},
+        }
+        with patch.object(
+            provider_deployment,
+            "_inspect_project_containers",
+            return_value={"provider": provider},
+        ):
+            status_document = parse_canonical_json_bytes(
+                deployment_status_bytes(ROOT, "production")
+            )
+
+        self.assertEqual(
+            status_document["services"],
+            [
+                {
+                    "service": "provider",
+                    "container_id": "a" * 64,
+                    "image_id": "sha256:" + "b" * 64,
+                    "state": "exited",
+                    "health": None,
+                }
+            ],
+        )
+
+    def test_down_refuses_foreign_resources_before_compose(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            state = repository / "secrets/deployments/production"
+            state.mkdir(parents=True, mode=0o700)
+            state.chmod(0o700)
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_containers",
+                    return_value={},
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_docker_command",
+                    return_value=subprocess.CompletedProcess(
+                        (),
+                        0,
+                        b"nmrpeak-production_foreign\n",
+                        b"",
+                    ),
+                ),
+                patch.object(provider_deployment, "_run_compose_down") as compose,
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "foreign or ambiguous session volume",
+                ),
+            ):
+                stop_deployment(repository, "production")
+
+            compose.assert_not_called()
+
+    def test_resource_inspection_accepts_only_owned_disposable_resources(self) -> None:
+        project = "nmrpeak-production"
+        provider_id = "a" * 64
+        hf_id = "b" * 64
+        chf_id = "c" * 64
+        network_id = "d" * 64
+        hf_volume = f"{project}_hf-session"
+        chf_volume = f"{project}_chf-session"
+        volume_records = [
+            {
+                "Name": name,
+                "Driver": "local",
+                "Options": {
+                    "device": "tmpfs",
+                    "o": "size=1m,uid=65532,gid=65532,mode=0700",
+                    "type": "tmpfs",
+                },
+                "Labels": {
+                    "com.docker.compose.project": project,
+                    "com.docker.compose.volume": logical_name,
+                },
+            }
+            for name, logical_name in (
+                (hf_volume, "hf-session"),
+                (chf_volume, "chf-session"),
+            )
+        ]
+        network_record = [
+            {
+                "Id": network_id,
+                "Name": f"{project}_default",
+                "Driver": "bridge",
+                "Labels": {
+                    "com.docker.compose.project": project,
+                    "com.docker.compose.network": "default",
+                },
+                "Containers": {
+                    provider_id: {},
+                    hf_id: {},
+                    chf_id: {},
+                },
+            }
+        ]
+        outputs = (
+            subprocess.CompletedProcess(
+                (), 0, f"{hf_volume}\n{chf_volume}\n".encode(), b""
+            ),
+            subprocess.CompletedProcess((), 0, json.dumps(volume_records).encode(), b""),
+            subprocess.CompletedProcess(
+                (), 0, f"{provider_id}\n{hf_id}\n".encode(), b""
+            ),
+            subprocess.CompletedProcess(
+                (), 0, f"{provider_id}\n{chf_id}\n".encode(), b""
+            ),
+            subprocess.CompletedProcess((), 0, f"{network_id}\n".encode(), b""),
+            subprocess.CompletedProcess((), 0, json.dumps(network_record).encode(), b""),
+        )
+        services = {
+            "provider": {"Id": provider_id},
+            "hf-runner": {"Id": hf_id},
+            "chf-runner": {"Id": chf_id},
+        }
+        with patch.object(
+            provider_deployment,
+            "_docker_command",
+            side_effect=outputs,
+        ):
+            resources = provider_deployment._inspect_project_resources(
+                Path("/usr/bin/docker"),
+                "production",
+                services,
+            )
+
+        self.assertEqual(resources, (hf_volume, chf_volume, f"{project}_default"))
+
+    def test_down_confirms_no_project_residue_after_compose(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            state = repository / "secrets/deployments/production"
+            state.mkdir(parents=True, mode=0o700)
+            state.chmod(0o700)
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_containers",
+                    side_effect=({}, {}),
+                ) as containers,
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_resources",
+                    side_effect=((), ()),
+                ) as resources,
+                patch.object(provider_deployment, "_run_compose_down") as compose,
+            ):
+                stop_deployment(repository, "production")
+
+            self.assertEqual(containers.call_count, 2)
+            self.assertEqual(resources.call_count, 2)
+            compose.assert_called_once()
+
+    def test_down_stops_provider_then_runners_and_removes_sessions(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def docker_command(
+            _docker: Path,
+            arguments: tuple[str, ...],
+            *,
+            timeout: int,
+        ) -> subprocess.CompletedProcess[bytes]:
+            calls.append(arguments)
+            return subprocess.CompletedProcess((), 0, b"", b"")
+
+        with (
+            patch.object(
+                provider_deployment,
+                "_docker_command",
+                side_effect=docker_command,
+            ),
+            patch.object(
+                provider_deployment,
+                "_read_committed_template",
+                return_value=(ROOT / "compose/provider-teardown.yml").read_bytes(),
+            ),
+        ):
+            provider_deployment._run_compose_down(
+                Path("/usr/bin/docker"),
+                ROOT,
+                "production",
+            )
+
+        self.assertEqual(calls[0][-4:], ("stop", "--timeout", "600", "provider"))
+        self.assertEqual(
+            calls[1][-5:],
+            ("stop", "--timeout", "20", "hf-runner", "chf-runner"),
+        )
+        self.assertEqual(
+            calls[2][-5:],
+            ("down", "--timeout", "20", "--remove-orphans", "--volumes"),
+        )
+        teardown = (ROOT / "compose/provider-teardown.yml").read_text()
+        for retained_volume in (
+            "provider-journal",
+            "provider-identity-lock",
+            "hf-checkpoint",
+            "chf-checkpoint",
+        ):
+            self.assertNotIn(retained_volume, teardown)
 
 
 class committed_repository:
