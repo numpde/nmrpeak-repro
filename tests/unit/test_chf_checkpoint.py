@@ -300,6 +300,11 @@ elif args and args[0] == "run":
     ]:
         raise SystemExit(92)
     helper_args = args[image_index + 3:]
+    if helper_args[0] == "populate":
+        if "--interactive" not in args[:image_index]:
+            raise SystemExit(93)
+    elif "--interactive" in args[:image_index]:
+        raise SystemExit(94)
     if helper_args[0] == "populate" and (STATE / "fail-populate").exists():
         sys.stdin.buffer.read()
         raise SystemExit(2)
