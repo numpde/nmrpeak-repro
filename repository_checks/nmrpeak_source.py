@@ -76,8 +76,8 @@ def _verify_declared_source(
     declaration_path: Path,
     manifest_path: Path,
 ) -> None:
-    source_revision, closure_roots = _read_declaration(root / declaration_path)
-    expected_hashes = _read_manifest(root / manifest_path)
+    source_revision, closure_roots = read_source_declaration(root / declaration_path)
+    expected_hashes = read_source_manifest(root / manifest_path)
     upstream = root / upstream_path
     committed_paths = _committed_paths(upstream, source_revision, closure_roots)
     if set(expected_hashes) != set(committed_paths):
@@ -107,19 +107,19 @@ def verify_materialized_nmrpeak_source(
 ) -> None:
     """Prove a Docker build's materialized source has no other bytes."""
 
-    _revision, closure_roots = _read_declaration(declaration_path)
-    expected_hashes = _read_manifest(manifest_path)
+    _revision, closure_roots = read_source_declaration(declaration_path)
+    expected_hashes = read_source_manifest(manifest_path)
     _verify_materialized_source(Path(source_root), closure_roots, expected_hashes)
 
 
 def read_nmrpeak_source_revision(declaration_path: Path) -> str:
     """Read the revision from the authenticated source-closure declaration."""
 
-    revision, _roots = _read_declaration(declaration_path)
+    revision, _roots = read_source_declaration(declaration_path)
     return revision
 
 
-def _read_declaration(path: Path) -> tuple[str, tuple[str, ...]]:
+def read_source_declaration(path: Path) -> tuple[str, tuple[str, ...]]:
     lines = _read_regular_file(path).decode("ascii", errors="strict").splitlines()
     if not lines or not lines[0].startswith("source_revision "):
         raise ValueError("source declaration has no revision")
@@ -151,7 +151,7 @@ def _read_declaration(path: Path) -> tuple[str, tuple[str, ...]]:
     return revision, roots
 
 
-def _read_manifest(path: Path) -> dict[str, str]:
+def read_source_manifest(path: Path) -> dict[str, str]:
     hashes: dict[str, str] = {}
     raw = _read_regular_file(path).decode("ascii", errors="strict")
     for line in raw.splitlines():
