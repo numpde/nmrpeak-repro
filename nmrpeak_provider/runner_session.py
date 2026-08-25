@@ -230,6 +230,13 @@ class RunnerSession(Generic[ModelInput]):
 
         return self._facts
 
+    @property
+    def retired(self) -> bool:
+        """Report whether this admitted boot can no longer accept work."""
+
+        with self._lock:
+            return self._state is _SessionState.RETIRED
+
     def validate(
         self,
         *,
