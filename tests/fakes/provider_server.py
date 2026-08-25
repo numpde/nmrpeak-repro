@@ -1,4 +1,4 @@
-"""Stateful TLS Server A fake for complete CHF provider lifecycle proofs."""
+"""Stateful TLS Server A fake for complete NMRPeak lifecycle proofs."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ from nmrpeak_provider.provider_requests import (
 
 _ATTEMPT_REF = "execution_attempt:sha256:" + "a" * 64
 _ANALYSIS_RESULT_REF = "analysis_result:sha256:" + "c" * 64
+
+
 @dataclass(slots=True)
 class _Attempt:
     job_ref: str
@@ -32,14 +34,16 @@ class _Attempt:
     terminal_receipt: dict[str, object] | None = None
 
 
-class ChfServerA:
-    """Own the minimal remote state observed by one CHF lifecycle proof."""
+class ServerA:
+    """Own the minimal remote state observed by one NMRPeak lifecycle proof."""
 
     def __init__(
         self,
         *,
+        analysis_kind_ref: str,
         canonical_input: bytes,
     ) -> None:
+        self.analysis_kind_ref = analysis_kind_ref
         self.canonical_input = canonical_input
         self.requests: list[tuple[str, str, bytes]] = []
         self.failures: list[str] = []
@@ -114,13 +118,13 @@ class ChfServerA:
 
     def _dispatch(self, method: str, raw_target: str, body: bytes) -> dict[str, object]:
         if method == "GET" and raw_target == (
-            "/provider/v1/jobs?analysis_kind_ref=mol_from_1h_13c_formula"
+            f"/provider/v1/jobs?analysis_kind_ref={self.analysis_kind_ref}"
             "&has_provider_execution_attempt=false&limit=50"
         ):
             return self._jobs_page()
         if method == "GET" and raw_target == (
             "/provider/v1/jobs/job:selected/input"
-            "?analysis_kind_ref=mol_from_1h_13c_formula"
+            f"?analysis_kind_ref={self.analysis_kind_ref}"
         ):
             return self._job_input()
         if method == "POST" and raw_target == "/provider/v1/execution-attempts/start":
@@ -140,12 +144,12 @@ class ChfServerA:
     def _jobs_page(self) -> dict[str, object]:
         return {
             "schema_id": "nmr.provider.jobs.list.response.v1",
-            "analysis_kind_ref": "mol_from_1h_13c_formula",
+            "analysis_kind_ref": self.analysis_kind_ref,
             "has_provider_execution_attempt": False,
             "jobs": [
                 {
                     "job_ref": "job:selected",
-                    "analysis_kind_ref": "mol_from_1h_13c_formula",
+                    "analysis_kind_ref": self.analysis_kind_ref,
                     "input_fingerprint": self.input_fingerprint,
                     "input_schema_id": "nmr.job.specification.text.v1",
                     "input_byte_length": len(self.canonical_input),
@@ -186,7 +190,7 @@ class ChfServerA:
             "schema_id": "nmr.provider.execution_attempt_start_response.v1",
             "execution_attempt_ref": _ATTEMPT_REF,
             "job_ref": self.attempt.job_ref,
-            "analysis_kind_ref": "mol_from_1h_13c_formula",
+            "analysis_kind_ref": self.analysis_kind_ref,
             "provider_ref": "provider:nmrpeak",
             "state": self.attempt.state,
             "started_at": "2026-08-24T12:00:00Z",
@@ -257,8 +261,8 @@ class _QuietServer(ThreadingHTTPServer):
 
 
 @contextmanager
-def serve_chf_server_a(*, state: ChfServerA, certificate_directory: Path):
-    """Serve one CHF fake over a real localhost TLS connection."""
+def serve_server_a(*, state: ServerA, certificate_directory: Path):
+    """Serve one NMRPeak fake over a real localhost TLS connection."""
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"

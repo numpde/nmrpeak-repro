@@ -1,4 +1,4 @@
-"""Prove CHF admission becomes durable before any Attempt start can exist."""
+"""Prove NMRPeak admission becomes durable before any Attempt start can exist."""
 
 from __future__ import annotations
 
@@ -28,36 +28,36 @@ from nmrpeak_provider.attempt_journal_store import (
     AttemptJournalStore,
 )
 from nmrpeak_provider.canonical_json import canonical_json_bytes
-from nmrpeak_provider.chf_lifecycle import (
-    ChfCandidatesGenerated,
-    ChfCompletionPending,
-    ChfExecutionCutOff,
-    ChfExecutionResolved,
-    ChfExecutionShutdownFailed,
-    ChfFeedReadFailed,
-    ChfAttemptObserved,
-    ChfAttemptObservationFailed,
-    ChfInputReadFailed,
-    ChfInterruptedFailurePending,
-    ChfObservationLost,
-    ChfObservationPolicy,
-    ChfJobAdmitted,
-    ChfPageExhausted,
-    ChfInputFailurePending,
-    ChfPreparedForExecution,
-    ChfRecoveryResolved,
-    ChfRecoveryResumes,
-    ChfStartContinues,
-    ChfStartResolved,
-    ChfTerminalDelivered,
-    admit_next_chf_job,
-    deliver_chf_terminal,
-    execute_prepared_chf,
-    observe_chf_attempt,
-    prepare_chf_execution,
-    reconcile_chf_record,
-    select_chf_completion,
-    start_chf_attempt,
+from nmrpeak_provider.attempt_lifecycle import (
+    CandidatesGenerated,
+    CompletionPending,
+    ExecutionCutOff,
+    ExecutionResolved,
+    ExecutionShutdownFailed,
+    FeedReadFailed,
+    AttemptObserved,
+    AttemptObservationFailed,
+    InputReadFailed,
+    InterruptedFailurePending,
+    ObservationLost,
+    ObservationPolicy,
+    JobAdmitted,
+    PageExhausted,
+    InputFailurePending,
+    PreparedForExecution,
+    RecoveryResolved,
+    RecoveryResumes,
+    StartContinues,
+    StartResolved,
+    TerminalDelivered,
+    admit_next_job,
+    deliver_terminal,
+    execute_prepared,
+    observe_attempt,
+    prepare_execution,
+    reconcile_record,
+    select_completion,
+    start_attempt,
 )
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
@@ -76,6 +76,10 @@ from nmrpeak_provider.runner_session import (
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
     ChfRunnerInput,
+)
+from nmrpeak_provider.lifecycle_lane import (
+    CHF_LIFECYCLE_LANE,
+    HF_LIFECYCLE_LANE,
 )
 from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.product_input import InputRejected
@@ -152,7 +156,7 @@ class NonStoppingSession:
         pass
 
 
-class ChfLifecycleTests(unittest.TestCase):
+class AttemptLifecycleTests(unittest.TestCase):
     def test_first_in_window_job_is_durably_admitted_without_starting(self) -> None:
         generation = chf_generation()
         canonical_input = b"{}"
@@ -170,7 +174,8 @@ class ChfLifecycleTests(unittest.TestCase):
 
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
-                outcome = admit_next_chf_job(
+                outcome = admit_next_job(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     generation=generation,
@@ -187,7 +192,7 @@ class ChfLifecycleTests(unittest.TestCase):
                 input_fingerprint=fingerprint,
                 frozen_generation_id=FROZEN_GENERATION_ID,
             )
-            self.assertEqual(outcome, ChfJobAdmitted(expected, canonical_input))
+            self.assertEqual(outcome, JobAdmitted(expected, canonical_input))
             with AttemptJournalStore(root, maximum_records=1) as reopened:
                 self.assertEqual(reopened.records(), (expected,))
 
@@ -212,7 +217,8 @@ class ChfLifecycleTests(unittest.TestCase):
         )
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
-                outcome = admit_next_chf_job(
+                outcome = admit_next_job(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     generation=chf_generation(),
@@ -220,7 +226,7 @@ class ChfLifecycleTests(unittest.TestCase):
                 )
                 self.assertEqual(journal.records(), ())
 
-        self.assertEqual(outcome, ChfPageExhausted("bmV4dA"))
+        self.assertEqual(outcome, PageExhausted("bmV4dA"))
         self.assertEqual(len(api.requests), 1)
 
     def test_feed_or_input_drift_never_reaches_journal_admission(self) -> None:
@@ -240,7 +246,7 @@ class ChfLifecycleTests(unittest.TestCase):
                         | {"analysis_kind_ref": "mol_from_1h_peaks"}
                     )
                 ),
-                ChfFeedReadFailed(
+                FeedReadFailed(
                     ProviderSuccessRejected(SuccessRejection.RESPONSE_DRIFT)
                 ),
                 1,
@@ -261,7 +267,7 @@ class ChfLifecycleTests(unittest.TestCase):
                         | {"input_byte_length": len(valid_input) + 1}
                     ),
                 ),
-                ChfInputReadFailed(
+                InputReadFailed(
                     ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
                 ),
                 2,
@@ -271,7 +277,8 @@ class ChfLifecycleTests(unittest.TestCase):
             with self.subTest(expected=expected), journal_directory() as root:
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     self.assertEqual(
-                        admit_next_chf_job(
+                        admit_next_job(
+                            lane=CHF_LIFECYCLE_LANE,
                             api=api,
                             journal=journal,
                             generation=chf_generation(),
@@ -307,7 +314,8 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(existing)
                 with self.assertRaises(AttemptJournalAdmissionRejected):
-                    admit_next_chf_job(
+                    admit_next_job(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=chf_generation(),
@@ -328,13 +336,14 @@ class ChfLifecycleTests(unittest.TestCase):
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 self.assertEqual(
-                    admit_next_chf_job(
+                    admit_next_job(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=chf_generation(),
                         frozen_generation_id=FROZEN_GENERATION_ID,
                     ),
-                    ChfFeedReadFailed(unavailable),
+                    FeedReadFailed(unavailable),
                 )
                 self.assertEqual(journal.records(), ())
 
@@ -343,7 +352,8 @@ class ChfLifecycleTests(unittest.TestCase):
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 with self.assertRaisesRegex(ValueError, "frozen generation"):
-                    admit_next_chf_job(
+                    admit_next_job(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=chf_generation(),
@@ -362,7 +372,8 @@ class ChfLifecycleTests(unittest.TestCase):
                 )
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     journal.admit(pending)
-                    outcome = start_chf_attempt(
+                    outcome = start_attempt(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=generation,
@@ -377,7 +388,7 @@ class ChfLifecycleTests(unittest.TestCase):
                     execution_attempt_ref="execution_attempt:sha256:" + "a" * 64,
                     local_phase=LocalExecutionPhase.PRE_EXECUTION,
                 )
-                self.assertEqual(outcome, ChfStartContinues(active))
+                self.assertEqual(outcome, StartContinues(active))
                 with AttemptJournalStore(root, maximum_records=1) as reopened:
                     self.assertEqual(reopened.records(), (active,))
                 self.assertEqual(
@@ -393,7 +404,8 @@ class ChfLifecycleTests(unittest.TestCase):
                 api = CapturingApi(success_response(start_receipt(state, replayed=True)))
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     journal.admit(pending)
-                    outcome = start_chf_attempt(
+                    outcome = start_attempt(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=generation,
@@ -401,7 +413,7 @@ class ChfLifecycleTests(unittest.TestCase):
                         record=pending,
                     )
                     self.assertEqual(journal.records(), ())
-                self.assertIs(type(outcome), ChfStartResolved)
+                self.assertIs(type(outcome), StartResolved)
                 self.assertEqual(outcome.receipt.state.value, state)
 
     def test_uncertain_start_outcomes_retain_the_exact_pending_record(self) -> None:
@@ -422,7 +434,8 @@ class ChfLifecycleTests(unittest.TestCase):
                 api = CapturingApi(evidence)
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     journal.admit(pending)
-                    outcome = start_chf_attempt(
+                    outcome = start_attempt(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=generation,
@@ -440,7 +453,8 @@ class ChfLifecycleTests(unittest.TestCase):
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending)
-                outcome = start_chf_attempt(
+                outcome = start_attempt(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     generation=generation,
@@ -463,7 +477,8 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending)
                 with self.assertRaisesRegex(ValueError, "run generation"):
-                    start_chf_attempt(
+                    start_attempt(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=generation,
@@ -488,7 +503,8 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
-                outcome = prepare_chf_execution(
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     session=session,
@@ -497,7 +513,7 @@ class ChfLifecycleTests(unittest.TestCase):
                 )
                 self.assertEqual(journal.records(), (active,))
 
-        self.assertIs(type(outcome), ChfPreparedForExecution)
+        self.assertIs(type(outcome), PreparedForExecution)
         self.assertEqual(outcome.record, active)
         self.assertEqual(
             [request.operation for request in api.requests],
@@ -522,14 +538,15 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
-                outcome = prepare_chf_execution(
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     session=UnusedSession(),
                     record=active,
                     canonical_input=canonical_input,
                 )
-            self.assertIs(type(outcome), ChfInputFailurePending)
+            self.assertIs(type(outcome), InputFailurePending)
             with AttemptJournalStore(root, maximum_records=1) as reopened:
                 self.assertEqual(reopened.records(), (outcome.record,))
         terminal_body = json.loads(outcome.record.terminal_request_body)
@@ -555,7 +572,8 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
-                outcome = prepare_chf_execution(
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     session=session,
@@ -563,7 +581,7 @@ class ChfLifecycleTests(unittest.TestCase):
                     canonical_input=canonical_input,
                 )
                 self.assertEqual(journal.records(), (outcome.record,))
-        self.assertIs(type(outcome), ChfInputFailurePending)
+        self.assertIs(type(outcome), InputFailurePending)
         self.assertEqual(len(channel.received_frames), 1)
 
     def test_uncertain_preparing_progress_does_not_reach_the_runner(self) -> None:
@@ -585,7 +603,8 @@ class ChfLifecycleTests(unittest.TestCase):
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     journal.admit(pending_from_active(active))
                     journal.replace(pending_from_active(active), active)
-                    outcome = prepare_chf_execution(
+                    outcome = prepare_execution(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         session=UnusedSession(),
@@ -617,7 +636,8 @@ class ChfLifecycleTests(unittest.TestCase):
                     journal.admit(pending_from_active(record))
                     journal.replace(pending_from_active(record), record)
                     with self.assertRaisesRegex(ValueError, message):
-                        prepare_chf_execution(
+                        prepare_execution(
+                            lane=CHF_LIFECYCLE_LANE,
                             api=api,
                             journal=journal,
                             session=UnusedSession(),
@@ -639,9 +659,9 @@ class ChfLifecycleTests(unittest.TestCase):
                 )
             )
         )
-        outcome = observe_chf_attempt(api=api, record=active)
+        outcome = observe_attempt(api=api, record=active)
 
-        self.assertIs(type(outcome), ChfAttemptObserved)
+        self.assertIs(type(outcome), AttemptObserved)
         self.assertEqual(
             outcome.snapshot.execution_attempt_ref,
             active.execution_attempt_ref,
@@ -673,13 +693,13 @@ class ChfLifecycleTests(unittest.TestCase):
         )
         for response, evidence in cases:
             with self.subTest(evidence=evidence):
-                outcome = observe_chf_attempt(
+                outcome = observe_attempt(
                     api=CapturingApi(response),
                     record=active,
                 )
                 self.assertEqual(
                     outcome,
-                    ChfAttemptObservationFailed(evidence),
+                    AttemptObservationFailed(evidence),
                 )
 
     def test_generation_requires_running_durability_and_open_final_state(self) -> None:
@@ -701,16 +721,16 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
-                outcome = execute_prepared_chf(
+                outcome = execute_prepared(
                     api=api,
                     journal=journal,
                     session=session,
                     prepared=prepared,
-                    observation=ChfObservationPolicy(0.01, 0.2),
+                    observation=ObservationPolicy(0.01, 0.2),
                 )
                 self.assertEqual(journal.records(), (outcome.record,))
 
-        self.assertIs(type(outcome), ChfCandidatesGenerated)
+        self.assertIs(type(outcome), CandidatesGenerated)
         self.assertEqual(outcome.candidates.value, ["CCO", "OCC"])
         self.assertIs(
             outcome.record.local_phase,
@@ -727,8 +747,8 @@ class ChfLifecycleTests(unittest.TestCase):
 
     def test_initial_cutoff_or_terminal_snapshot_prevents_generation(self) -> None:
         cases = (
-            ("in_progress", "cancelled", ChfExecutionCutOff, True),
-            ("expired", "closed", ChfExecutionResolved, False),
+            ("in_progress", "cancelled", ExecutionCutOff, True),
+            ("expired", "closed", ExecutionResolved, False),
         )
         for state, job_state, expected_type, retained in cases:
             with self.subTest(state=state), journal_directory() as root:
@@ -748,12 +768,12 @@ class ChfLifecycleTests(unittest.TestCase):
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     journal.admit(pending_from_active(active))
                     journal.replace(pending_from_active(active), active)
-                    outcome = execute_prepared_chf(
+                    outcome = execute_prepared(
                         api=api,
                         journal=journal,
                         session=session,
                         prepared=prepared,
-                        observation=ChfObservationPolicy(0.01, 0.2),
+                        observation=ObservationPolicy(0.01, 0.2),
                     )
                     self.assertIs(type(outcome), expected_type)
                     self.assertEqual(bool(journal.records()), retained)
@@ -771,11 +791,11 @@ class ChfLifecycleTests(unittest.TestCase):
                         job_state="closed",
                     )
                 ),
-                ChfExecutionCutOff,
+                ExecutionCutOff,
             ),
             (
                 ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
-                ChfObservationLost,
+                ObservationLost,
             ),
         )
         for stopping_response, expected_type in cases:
@@ -800,12 +820,12 @@ class ChfLifecycleTests(unittest.TestCase):
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     journal.admit(pending_from_active(active))
                     journal.replace(pending_from_active(active), active)
-                    outcome = execute_prepared_chf(
+                    outcome = execute_prepared(
                         api=api,
                         journal=journal,
                         session=session,
                         prepared=prepared,
-                        observation=ChfObservationPolicy(0.01, 0.2),
+                        observation=ObservationPolicy(0.01, 0.2),
                     )
                     self.assertIs(type(outcome), expected_type)
                     self.assertIs(
@@ -822,12 +842,12 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
-                outcome = execute_prepared_chf(
+                outcome = execute_prepared(
                     api=api,
                     journal=journal,
                     session=session,
                     prepared=prepared,
-                    observation=ChfObservationPolicy(0.01, 0.2),
+                    observation=ObservationPolicy(0.01, 0.2),
                 )
                 self.assertIs(type(outcome), AttemptMutationCommitPossible)
                 self.assertEqual(journal.records(), (active,))
@@ -837,7 +857,7 @@ class ChfLifecycleTests(unittest.TestCase):
     def test_non_stopping_worker_is_reported_as_process_fatal(self) -> None:
         active = active_attempt(valid_chf_input())
         session = NonStoppingSession()
-        prepared = ChfPreparedForExecution(active, object())
+        prepared = PreparedForExecution(active, object())
         api = CapturingApi(
             success_response(progress_receipt(phase="running")),
             success_response(
@@ -863,15 +883,15 @@ class ChfLifecycleTests(unittest.TestCase):
                 journal.replace(pending_from_active(active), active)
                 try:
                     with self.assertRaisesRegex(
-                        ChfExecutionShutdownFailed,
+                        ExecutionShutdownFailed,
                         "confirmed stopped state",
                     ):
-                        execute_prepared_chf(
+                        execute_prepared(
                             api=api,
                             journal=journal,
                             session=session,
                             prepared=prepared,
-                            observation=ChfObservationPolicy(0.01, 0.01),
+                            observation=ObservationPolicy(0.01, 0.01),
                         )
                 finally:
                     session.release.set()
@@ -890,7 +910,7 @@ class ChfLifecycleTests(unittest.TestCase):
             RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
             CHF_RUNNER_CODEC,
         )
-        generated = ChfCandidatesGenerated(
+        generated = CandidatesGenerated(
             entered,
             generated_candidates(session, entered),
             session,
@@ -899,11 +919,11 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(entered))
                 journal.replace(pending_from_active(entered), entered)
-                outcome = select_chf_completion(
+                outcome = select_completion(
                     journal=journal,
                     generated=generated,
                 )
-            self.assertIs(type(outcome), ChfCompletionPending)
+            self.assertIs(type(outcome), CompletionPending)
             with AttemptJournalStore(root, maximum_records=1) as reopened:
                 self.assertEqual(reopened.records(), (outcome.record,))
 
@@ -924,7 +944,7 @@ class ChfLifecycleTests(unittest.TestCase):
             RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
             CHF_RUNNER_CODEC,
         )
-        generated = ChfCandidatesGenerated(
+        generated = CandidatesGenerated(
             entered,
             generated_candidates(session, entered),
             session,
@@ -934,7 +954,7 @@ class ChfLifecycleTests(unittest.TestCase):
                 journal.admit(pending_from_active(entered))
                 journal.replace(pending_from_active(entered), entered)
                 with self.assertRaises(RunnerResultRejected):
-                    select_chf_completion(
+                    select_completion(
                         journal=journal,
                         generated=generated,
                     )
@@ -957,7 +977,7 @@ class ChfLifecycleTests(unittest.TestCase):
             RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
             CHF_RUNNER_CODEC,
         )
-        generated = ChfCandidatesGenerated(
+        generated = CandidatesGenerated(
             selected_record,
             generated_candidates(session, generated_for),
             session,
@@ -967,7 +987,7 @@ class ChfLifecycleTests(unittest.TestCase):
                 journal.admit(pending_from_active(selected_record))
                 journal.replace(pending_from_active(selected_record), selected_record)
                 with self.assertRaisesRegex(ValueError, "retained Attempt"):
-                    select_chf_completion(
+                    select_completion(
                         journal=journal,
                         generated=generated,
                     )
@@ -988,13 +1008,13 @@ class ChfLifecycleTests(unittest.TestCase):
                     )
                     with AttemptJournalStore(root, maximum_records=1) as journal:
                         persist_terminal(journal, terminal)
-                        outcome = deliver_chf_terminal(
+                        outcome = deliver_terminal(
                             api=api,
                             journal=journal,
                             record=terminal,
                         )
                         self.assertEqual(journal.records(), ())
-                    self.assertIs(type(outcome), ChfTerminalDelivered)
+                    self.assertIs(type(outcome), TerminalDelivered)
                     self.assertEqual(api.requests[0].body, terminal.terminal_request_body)
 
     def test_uncertain_terminal_delivery_retains_exact_command(self) -> None:
@@ -1014,7 +1034,7 @@ class ChfLifecycleTests(unittest.TestCase):
                 api = CapturingApi(response)
                 with AttemptJournalStore(root, maximum_records=1) as journal:
                     persist_terminal(journal, terminal)
-                    outcome = deliver_chf_terminal(
+                    outcome = deliver_terminal(
                         api=api,
                         journal=journal,
                         record=terminal,
@@ -1040,7 +1060,8 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
-                outcome = reconcile_chf_record(
+                outcome = reconcile_record(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     generation=chf_generation(),
@@ -1048,7 +1069,41 @@ class ChfLifecycleTests(unittest.TestCase):
                     record=active,
                 )
                 self.assertEqual(journal.records(), (active,))
-        self.assertEqual(outcome, ChfRecoveryResumes(active, valid_chf_input()))
+        self.assertEqual(outcome, RecoveryResumes(active, valid_chf_input()))
+
+    def test_hf_recovery_reads_input_from_its_owned_analysis_kind(self) -> None:
+        canonical_input = valid_hf_input()
+        generation = hf_generation()
+        active = active_attempt(canonical_input, generation)
+        api = CapturingApi(
+            success_response(
+                attempt_snapshot(
+                    execution_attempt_ref=active.execution_attempt_ref,
+                    job_ref=active.job_ref,
+                    state="in_progress",
+                    job_state="open",
+                )
+            ),
+            success_response(job_input(active.job_ref, canonical_input)),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = reconcile_record(
+                    lane=HF_LIFECYCLE_LANE,
+                    api=api,
+                    journal=journal,
+                    generation=generation,
+                    frozen_generation_id=FROZEN_GENERATION_ID,
+                    record=active,
+                )
+
+        self.assertEqual(outcome, RecoveryResumes(active, canonical_input))
+        self.assertEqual(
+            api.requests[1].query,
+            "analysis_kind_ref=mol_from_1h_peaks",
+        )
 
     def test_restart_replays_a_pending_start_without_changing_its_key(self) -> None:
         pending = active_attempt(valid_chf_input())
@@ -1057,14 +1112,15 @@ class ChfLifecycleTests(unittest.TestCase):
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(record)
-                outcome = reconcile_chf_record(
+                outcome = reconcile_record(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     generation=chf_generation(),
                     frozen_generation_id=FROZEN_GENERATION_ID,
                     record=record,
                 )
-                self.assertIs(type(outcome), ChfStartContinues)
+                self.assertIs(type(outcome), StartContinues)
                 self.assertEqual(outcome.record.provider_attempt_key, record.provider_attempt_key)
                 self.assertEqual(journal.records(), (outcome.record,))
 
@@ -1084,14 +1140,15 @@ class ChfLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(entered))
                 journal.replace(pending_from_active(entered), entered)
-                outcome = reconcile_chf_record(
+                outcome = reconcile_record(
+                    lane=CHF_LIFECYCLE_LANE,
                     api=api,
                     journal=journal,
                     generation=chf_generation(),
                     frozen_generation_id=FROZEN_GENERATION_ID,
                     record=entered,
                 )
-                self.assertIs(type(outcome), ChfInterruptedFailurePending)
+                self.assertIs(type(outcome), InterruptedFailurePending)
                 self.assertEqual(journal.records(), (outcome.record,))
         command = json.loads(outcome.record.terminal_request_body)
         self.assertEqual(command["failure_code"], "provider_execution_interrupted")
@@ -1135,7 +1192,8 @@ class ChfLifecycleTests(unittest.TestCase):
                     else:
                         journal.admit(pending_from_active(record))
                         journal.replace(pending_from_active(record), record)
-                    outcome = reconcile_chf_record(
+                    outcome = reconcile_record(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=chf_generation(),
@@ -1153,9 +1211,9 @@ class ChfLifecycleTests(unittest.TestCase):
                 terminal,
                 "in_progress",
                 success_response(terminal_receipt(terminal, replayed=True)),
-                ChfTerminalDelivered,
+                TerminalDelivered,
             ),
-            (entered, "expired", None, ChfRecoveryResolved),
+            (entered, "expired", None, RecoveryResolved),
         )
         for record, state, terminal_response, expected_type in cases:
             with self.subTest(expected_type=expected_type), journal_directory() as root:
@@ -1178,7 +1236,8 @@ class ChfLifecycleTests(unittest.TestCase):
                     else:
                         journal.admit(pending_from_active(record))
                         journal.replace(pending_from_active(record), record)
-                    outcome = reconcile_chf_record(
+                    outcome = reconcile_record(
+                        lane=CHF_LIFECYCLE_LANE,
                         api=api,
                         journal=journal,
                         generation=chf_generation(),
@@ -1194,6 +1253,18 @@ def chf_generation() -> RunGenerationIdentity:
         provider_ref="provider:nmrpeak",
         analysis_kind_ref="mol_from_1h_13c_formula",
         generation_id="chf-generation",
+        scope=CreatedAtWindow(
+            datetime(2026, 8, 24, tzinfo=UTC),
+            datetime(2026, 8, 26, tzinfo=UTC),
+        ),
+    )
+
+
+def hf_generation() -> RunGenerationIdentity:
+    return RunGenerationIdentity(
+        provider_ref="provider:nmrpeak",
+        analysis_kind_ref="mol_from_1h_peaks",
+        generation_id="hf-generation",
         scope=CreatedAtWindow(
             datetime(2026, 8, 24, tzinfo=UTC),
             datetime(2026, 8, 26, tzinfo=UTC),
@@ -1229,9 +1300,12 @@ def start_receipt(state: str, *, replayed: bool) -> dict[str, object]:
     }
 
 
-def active_attempt(canonical_input: bytes) -> ActiveAttempt:
+def active_attempt(
+    canonical_input: bytes,
+    generation: RunGenerationIdentity | None = None,
+) -> ActiveAttempt:
     input_fingerprint = fingerprint_of(canonical_input)
-    generation = chf_generation()
+    generation = chf_generation() if generation is None else generation
     return ActiveAttempt(
         job_ref="job:selected",
         provider_attempt_key=derive_provider_attempt_key(
@@ -1294,6 +1368,31 @@ def valid_chf_input() -> bytes:
     ).encode("utf-8")
 
 
+def valid_hf_input() -> bytes:
+    return json.dumps(
+        {
+            "schema_id": "nmrpeak.structure_generation.request.v1",
+            "model_input": {
+                "formula": "C2H6O",
+                "spectra": {
+                    "1H": {
+                        "peaks": [
+                            {
+                                "shift_lo": "1.20",
+                                "shift_hi": "1.30",
+                                "integral": "3",
+                                "multiplicity": "t",
+                                "j_hz": ["7.1"],
+                            }
+                        ]
+                    },
+                },
+            },
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def progress_receipt(*, phase: str = "preparing") -> dict[str, object]:
     return {
         "schema_id": "nmr.provider.execution_attempt_progress_response.v1",
@@ -1338,7 +1437,7 @@ def validated_execution(
     active: ActiveAttempt,
     *,
     fault: FakeRunnerFault | None = None,
-) -> tuple[RunnerSession, FakeRunnerChannel, ChfPreparedForExecution]:
+) -> tuple[RunnerSession, FakeRunnerChannel, PreparedForExecution]:
     channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame(), fault=fault)
     session = RunnerSession.admit(
         channel,
@@ -1357,7 +1456,7 @@ def validated_execution(
     )
     if type(request) is not ValidatedRunnerRequest:
         raise AssertionError("test runner unexpectedly rejected validation")
-    return session, channel, ChfPreparedForExecution(active, request)
+    return session, channel, PreparedForExecution(active, request)
 
 
 def generated_candidates(
