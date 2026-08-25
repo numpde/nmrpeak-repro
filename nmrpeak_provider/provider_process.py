@@ -664,13 +664,15 @@ def _outcome_failure_cause(outcome: object) -> BaseException | None:
     if type(outcome) is InputInterpretationUnavailable:
         return outcome.evidence
     evidence = _outcome_evidence(outcome)
-    return _transport_failure_cause(evidence)
+    return _evidence_failure_cause(evidence)
 
 
-def _transport_failure_cause(evidence: object) -> BaseException | None:
+def _evidence_failure_cause(evidence: object) -> BaseException | None:
     if type(evidence) in {
+        ProviderProblemRejected,
         ProviderRequestUnavailable,
         ProviderResponseRejected,
+        ProviderSuccessRejected,
         ProviderTlsRejected,
     }:
         return evidence.cause
@@ -679,7 +681,7 @@ def _transport_failure_cause(evidence: object) -> BaseException | None:
 
 def _raise_provider_protocol_failure(message: str, evidence: object) -> Never:
     failure = ProviderProtocolFailed(message)
-    cause = _transport_failure_cause(evidence)
+    cause = _evidence_failure_cause(evidence)
     if cause is not None:
         raise failure from cause
     raise failure

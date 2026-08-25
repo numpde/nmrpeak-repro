@@ -100,6 +100,7 @@ class ProviderProblemRejected:
 
     reason: ProblemRejection
     status: int
+    cause: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 def parse_provider_problem(
@@ -122,9 +123,14 @@ def parse_provider_problem(
             ProblemRejection.NOT_A_PROBLEM_RESPONSE,
             response.status,
         )
-    document = decode_provider_response_object(response.body)
-    if document is None:
-        return ProviderProblemRejected(ProblemRejection.INVALID_JSON, response.status)
+    try:
+        document = decode_provider_response_object(response.body)
+    except (UnicodeDecodeError, TypeError, ValueError, RecursionError) as error:
+        return ProviderProblemRejected(
+            ProblemRejection.INVALID_JSON,
+            response.status,
+            error,
+        )
     diagnostic_codes = _diagnostic_codes(operation, response.status)
     expected_fields = {"type", "title", "status", "instance", "request_id"}
     if diagnostic_codes is not None:

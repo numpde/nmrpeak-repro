@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from hashlib import sha256
@@ -48,6 +48,7 @@ class SuccessRejection(Enum):
 @dataclass(frozen=True, slots=True)
 class ProviderSuccessRejected:
     reason: SuccessRejection
+    cause: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 class AttemptState(Enum):
@@ -600,8 +601,8 @@ def _parse_job_input_response(
     try:
         canonical_input = b64decode(encoded, validate=True)
         canonical_input.decode("utf-8", errors="strict")
-    except (ValueError, UnicodeDecodeError):
-        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
+    except (ValueError, UnicodeDecodeError) as error:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD, error)
     if b64encode(canonical_input).decode("ascii") != encoded:
         return ProviderSuccessRejected(SuccessRejection.INVALID_FIELD)
     expected_fingerprint = "sha256:" + sha256(canonical_input).hexdigest()
@@ -627,12 +628,10 @@ def _success_document(
         or response.content_type != "application/json"
     ):
         return ProviderSuccessRejected(SuccessRejection.NOT_A_SUCCESS_RESPONSE)
-    document = decode_provider_response_object(response.body)
-    return (
-        document
-        if document is not None
-        else ProviderSuccessRejected(SuccessRejection.INVALID_JSON)
-    )
+    try:
+        return decode_provider_response_object(response.body)
+    except (UnicodeDecodeError, TypeError, ValueError, RecursionError) as error:
+        return ProviderSuccessRejected(SuccessRejection.INVALID_JSON, error)
 
 
 def _prepared_document(prepared: _PreparedProviderRequest) -> dict[str, object]:

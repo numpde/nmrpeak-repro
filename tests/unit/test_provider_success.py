@@ -320,14 +320,16 @@ class ProviderSuccessTests(unittest.TestCase):
             None,
             b'{"schema_id":"x","schema_id":"y"}',
         )
+        outcome = parse_provider_hello_success(
+            hello,
+            malformed,
+            expected_provider_ref="provider:nmrpeak",
+        )
         self.assertEqual(
-            parse_provider_hello_success(
-                hello,
-                malformed,
-                expected_provider_ref="provider:nmrpeak",
-            ),
+            outcome,
             ProviderSuccessRejected(SuccessRejection.INVALID_JSON),
         )
+        self.assertIsInstance(outcome.cause, ValueError)
 
     def test_attempt_inventory_is_bounded_by_the_requested_page(self) -> None:
         prepared = prepare_execution_attempts_list(limit=1)

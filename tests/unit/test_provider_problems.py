@@ -137,10 +137,10 @@ class ProviderProblemTests(unittest.TestCase):
         )
         for response, reason in cases:
             with self.subTest(reason=reason):
-                self.assertEqual(
-                    parse_provider_problem(ProviderOperation.JOBS_LIST, response),
-                    ProviderProblemRejected(reason, 401),
-                )
+                outcome = parse_provider_problem(ProviderOperation.JOBS_LIST, response)
+                self.assertEqual(outcome, ProviderProblemRejected(reason, 401))
+                if reason is ProblemRejection.INVALID_JSON:
+                    self.assertIsInstance(outcome.cause, ValueError)
 
     def test_status_must_be_declared_by_the_operation(self) -> None:
         response = _problem_response(

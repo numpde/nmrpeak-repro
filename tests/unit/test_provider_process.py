@@ -139,7 +139,13 @@ class ConcurrentProviderApi:
             if analysis_kind == self.failing_analysis:
                 raise RuntimeError("lane failure")
             if analysis_kind == self.fatal_analysis:
-                return response({"schema_id": "wrong"})
+                return ProviderHttpResponse(
+                    200,
+                    "dev-local",
+                    "application/json",
+                    None,
+                    b"{",
+                )
             if analysis_kind == self.unavailable_analysis:
                 return ProviderRequestUnavailable(
                     RequestDelivery.NOT_SENT,
@@ -399,7 +405,7 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertTrue(hf_channel.closed)
         self.assertTrue(chf_channel.closed)
 
-    def test_session_drift_and_fatal_response_drift_fail_before_more_work(self) -> None:
+    def test_session_drift_and_malformed_response_fail_before_more_work(self) -> None:
         runtime = generation_runtime()
         stop = Event()
         api = ConcurrentProviderApi(stop=stop)
@@ -450,9 +456,10 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertIs(type(cause), ProviderProtocolFailed)
         self.assertIn("Cannot read the Job feed", str(cause))
         self.assertIn(
-            "HTTP 200 success response failed validation (invalid_shape)",
+            "HTTP 200 success response failed validation (invalid_json)",
             str(cause),
         )
+        self.assertIsInstance(cause.__cause__, ValueError)
         self.assertNotIn("authentication or contract evidence", str(cause))
 
     def test_lane_stops_after_its_bounded_unavailability_budget(self) -> None:
