@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write
+.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 test: test/unit test/contract test/repository
 
@@ -23,6 +23,18 @@ test/repository:
 check/source:
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m repository_checks.nmrpeak_source "$(REPOSITORY_ROOT)"
+
+weights/check:
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m repository_checks.nmrpeak_weights check "$(REPOSITORY_ROOT)"
+
+weights/download: private export INTERFACE_INPUT := $(value INTERFACE)
+weights/download:
+	@test "$(origin INTERFACE)" = undefined -o "$(origin INTERFACE)" = command\ line || { echo 'INTERFACE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin INTERFACE)" = undefined -o -n "$$INTERFACE_INPUT" || { echo 'INTERFACE must not be empty when supplied' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m repository_checks.nmrpeak_weights download \
+		"$(REPOSITORY_ROOT)" --interface "$$INTERFACE_INPUT"
 
 upstream-contracts/check upstream-contracts/write: private export NMR_API_V1_DIR_INPUT := $(value NMR_API_V1_DIR)
 upstream-contracts/check upstream-contracts/write: private export RELEASE_INPUT := $(value RELEASE)

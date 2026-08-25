@@ -694,6 +694,40 @@ implementation, boot, phase, duration, count, validated upstream request ID, and
 closed failure codes.
 
 
+Weights acquisition boundary
+----------------------------
+
+The public weights archive is pinned by
+`families/nmrpeak/weights.declaration.json` to Zenodo record DOI
+`10.5281/zenodo.19122815`, the exact versioned `weights.zip` URL, its byte
+length, and Zenodo's published MD5. The DOI record is selected explicitly;
+the acquisition lane never follows a mutable "latest version" reference.
+
+Acquire or resume the ignored local archive with:
+
+    make weights/download
+
+The optional `INTERFACE` argument selects an outbound network interface for
+that invocation without changing the artifact identity. For example, a large
+download can be kept on Wi-Fi with:
+
+    make weights/download INTERFACE=wlp1s0
+
+The operation holds one operator-owned acquisition lock, resumes only the
+fixed `weights/weights.zip.part`, and renames it locally to
+`weights/weights.zip` only after its exact size and Zenodo MD5 match the
+declaration. An interrupted or rejected transfer remains a resumable partial
+and is never presented as the archive. A valid local archive makes later
+downloads idempotent.
+
+`make weights/check` is the offline, read-only proof for the complete local
+archive. It does not inspect ZIP members, load Torch, or execute checkpoint
+bytes. Zenodo's whole-archive MD5 proves acquisition against the public record;
+it is not a checkpoint release identity. The separate release preparation and
+import lanes below continue to inventory the ZIP safely and bind each selected
+checkpoint member by SHA-256.
+
+
 Checkpoint release boundary
 ---------------------------
 
