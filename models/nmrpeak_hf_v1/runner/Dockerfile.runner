@@ -44,6 +44,7 @@ COPY --chown=0:0 families/nmrpeak/checkpoint_file.py \
     /opt/nmrpeak/families/nmrpeak/
 COPY --chown=0:0 nmrpeak_provider/__init__.py \
     nmrpeak_provider/canonical_json.py \
+    nmrpeak_provider/failure_message.py \
     nmrpeak_provider/hf_binding.py \
     nmrpeak_provider/hf_runner_protocol.py \
     nmrpeak_provider/nmrpeak_binding.py \

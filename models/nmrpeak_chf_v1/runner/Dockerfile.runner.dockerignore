@@ -32,6 +32,7 @@
 !nmrpeak_provider/canonical_json.py
 !nmrpeak_provider/chf_binding.py
 !nmrpeak_provider/chf_runner_protocol.py
+!nmrpeak_provider/failure_message.py
 !nmrpeak_provider/nmrpeak_binding.py
 !nmrpeak_provider/owner_session_endpoint.py
 !nmrpeak_provider/owner_session_supervisor.py
