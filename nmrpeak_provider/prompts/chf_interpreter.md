@@ -27,20 +27,20 @@ only from the source:
 }
 ```
 
-The formula must be neutral and use valid element symbols with positive integer
-counts. Use NMRPeak's formula order: C first when present, H next when present,
-then every other element alphabetically. Without C, H remains first when
-present. Both spectra are required and each contains at least one peak. Each
-proton peak has exactly the five fields shown. Preserve reported shift bounds;
-use the same reported shift for both bounds when it is a point value. Proton
-shifts use at most two decimal places. Integrals are positive integer strings
-from 1 through 50. Couplings are strings from 0.1 through 299.9 with at most one
-decimal place. `j_hz` is always a list and may be empty. Multiplicity must
-preserve the reported NMR label, such as `s`, `d`, `t`, `q`, `m`, `dd`, `dt`,
-or `brs`. Carbon shifts are strings with at most one decimal place.
+Copy the complete molecular formula exactly as reported. Do not reorder,
+balance, complete, correct, or assess it. The application owns formula syntax,
+canonicalization, bounds, and model-input validation.
 
-Do not infer, round, or repair missing scientific values. Ignore candidate
-structures, identifiers, provenance, evaluation, and decode metadata. If the
-formula or either usable peak list cannot be determined reliably, call
-`report_input_problem` with a helpful explanation of what the caller must
-provide or clarify.
+Both spectra are required and each contains at least one peak. Each proton peak
+has exactly the five fields shown. Preserve reported shift bounds; use the same
+reported shift for both bounds when it is a point value. Copy proton shifts,
+integrals, couplings, and carbon shifts into the shown string fields without
+rounding. `j_hz` is always a list and may be empty. Multiplicity must preserve
+the reported NMR label, such as `s`, `d`, `t`, `q`, `m`, `dd`, `dt`, or `brs`.
+
+Do not infer or repair missing values. Ignore candidate structures, identifiers,
+provenance, evaluation, and decode metadata. Call `report_input_problem` only
+when the formula or either usable peak list is missing, ambiguous, contradictory
+in the source, or cannot be transcribed without inventing a required value. Do
+not report a problem merely because supplied values appear chemically unusual
+or mutually implausible.

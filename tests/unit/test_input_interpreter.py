@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import cast
 from unittest.mock import patch
 
 from nmrpeak_provider.chf_binding import ChfRunnerInput
@@ -22,11 +23,14 @@ from nmrpeak_provider.interpreter import (
     InterpreterUnavailable,
     ReportedInputProblem,
 )
-from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE
+from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE, HF_LIFECYCLE_LANE
 from nmrpeak_provider.runner_session import ValidatedRunnerRequest
 
 
 SOURCE = b"Formula C2H6O. 1H: 1.25 (t, 3H, J 7.1 Hz). 13C: 58.1."
+ODD_FORMULA_SOURCE = (
+    b"Formula C16H27NO8S. 1H: 1.25 (t, 3H, J 7.1 Hz). 13C: 58.1."
+)
 VALUE = {
     "schema_id": "nmrpeak.structure_generation.request.v1",
     "model_input": {
@@ -46,6 +50,17 @@ VALUE = {
             "13C": {"peaks": [{"shift": "58.1"}]},
         },
     },
+}
+HF_VALUE = {
+    "schema_id": "nmrpeak.structure_generation.request.v1",
+    "model_input": {
+        "formula": "C16H27NO8S",
+        "spectra": {"1H": VALUE["model_input"]["spectra"]["1H"]},
+    },
+}
+CHF_VALUE = {
+    "schema_id": "nmrpeak.structure_generation.request.v1",
+    "model_input": VALUE["model_input"] | {"formula": "C16H27NO8S"},
 }
 
 
@@ -67,6 +82,48 @@ class BoundEndpoints:
 
 
 class InputInterpreterTests(unittest.TestCase):
+    def test_both_prompts_limit_formula_handling_to_transcription(self) -> None:
+        for lane, value, required_text, excluded_text in (
+            (
+                HF_LIFECYCLE_LANE,
+                HF_VALUE,
+                "At least one proton peak is required",
+                "Both spectra are required",
+            ),
+            (
+                CHF_LIFECYCLE_LANE,
+                CHF_VALUE,
+                "Both spectra are required",
+                "At least one proton peak is required",
+            ),
+        ):
+            prompts: list[object] = []
+
+            async def call(prompt: object) -> InterpreterTurn:
+                prompts.append(prompt)
+                return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": value})
+
+            with self.subTest(lane=lane.offering.implementation_ref):
+                run_with_endpoint(call, source=ODD_FORMULA_SOURCE, lane=lane)
+                self.assertEqual(len(prompts), 1)
+                messages = cast(list[dict[str, str]], prompts[0])
+                self.assertEqual(
+                    [message["role"] for message in messages],
+                    ["system", "user", "user"],
+                )
+                self.assertIn(
+                    "transcription into the selected JSON shape",
+                    messages[0]["content"],
+                )
+                self.assertIn(
+                    "Copy the complete molecular formula exactly",
+                    messages[1]["content"],
+                )
+                self.assertIn(required_text, messages[1]["content"])
+                self.assertNotIn(excluded_text, messages[1]["content"])
+                self.assertNotIn("formula must be neutral", messages[1]["content"])
+                self.assertEqual(messages[2]["content"], ODD_FORMULA_SOURCE.decode())
+
     def test_typed_candidate_crosses_existing_parser_and_runner_validation(self) -> None:
         async def call(_prompt: object) -> InterpreterTurn:
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
@@ -111,6 +168,8 @@ class InputInterpreterTests(unittest.TestCase):
 def run_with_endpoint(
     call: object,
     *,
+    source: bytes = SOURCE,
+    lane: object = CHF_LIFECYCLE_LANE,
     session: CapturingSession | None = None,
 ) -> ValidatedRunnerRequest:
     endpoint = InterpreterEndpoint("fake", "fake-model", call)
@@ -129,8 +188,8 @@ def run_with_endpoint(
         return_value=BoundEndpoints(endpoint),
     ):
         return interpreter.validate_freeform_input(
-            source=SOURCE,
-            lane=CHF_LIFECYCLE_LANE,
+            source=source,
+            lane=lane,
             session=session or CapturingSession(),
             execution_attempt_ref="execution_attempt:sha256:" + "a" * 64,
             provider_attempt_key="provider-attempt:test",
