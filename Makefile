@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source release/check release/write test test/contract test/repository test/unit
+.PHONY: check/source checkpoint/import checkpoint/recover release/check release/write test test/contract test/repository test/unit
 
 test: test/unit test/contract test/repository
 
@@ -41,3 +41,18 @@ release/check:
 		$(PYTHON) -m repository_checks.chf_release check \
 			--runner "$(RUNNER)" --release "$(RELEASE)" --archive "$(ARCHIVE)" \
 			--declaration "$(DECLARATION)"
+
+checkpoint/import:
+	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
+	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m repository_checks.chf_checkpoint import \
+			--runner "$(RUNNER)" --release "$(RELEASE)" --archive "$(ARCHIVE)"
+
+checkpoint/recover:
+	@test "$(origin VOLUME)" = command\ line || { echo 'VOLUME must be set on the make command line' >&2; exit 2; }
+	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m repository_checks.chf_checkpoint recover \
+			--volume "$(VOLUME)" --confirm "$(CONFIRM)"
