@@ -49,8 +49,10 @@ from nmrpeak_provider.frozen_generation import (
     frozen_generation_id,
     load_frozen_generation,
 )
-from nmrpeak_provider.interpreter import MAX_INTERPRETER_ENDPOINTS
-from nmrpeak_provider.openai_chat_interpreter import MAX_INTERPRETER_CONFIG_BYTES
+from nmrpeak_provider.interpreter_policy import (
+    MAX_INTERPRETER_CONFIG_BYTES,
+    MAX_INTERPRETER_ENDPOINTS,
+)
 from nmrpeak_provider.provider_config import (
     ProviderEndpointConfig,
     ProviderRuntimeConfig,

@@ -19,6 +19,7 @@ from typing import Generic, Protocol, TypeVar
 
 import nmrpeak_provider.provider_events as _events
 from nmrpeak_provider.failure_message import is_failure_message
+from nmrpeak_provider.interpreter_policy import MAX_INTERPRETER_ENDPOINTS
 from nmrpeak_provider.text_provenance import (
     ModelGeneratedText,
     UserProvidedText,
@@ -28,7 +29,6 @@ from nmrpeak_provider.text_provenance import (
 Candidate = TypeVar("Candidate")
 Admitted = TypeVar("Admitted")
 MAX_TURNS_PER_ENDPOINT = 3
-MAX_INTERPRETER_ENDPOINTS = 4
 MAX_INTERPRETER_CONFIGURATION_ID_BYTES = 128
 _MAX_PROMPT_BYTES = 64 * 1024
 _CONFIGURATION_ID = re.compile(

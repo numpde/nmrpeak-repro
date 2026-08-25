@@ -1,9 +1,13 @@
-"""Define dependency-free timeout policy for bounded interpretation."""
+"""Define dependency-free limits and timeout policy for interpretation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+
+
+MAX_INTERPRETER_CONFIG_BYTES = 64 * 1024
+MAX_INTERPRETER_ENDPOINTS = 4
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

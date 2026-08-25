@@ -20,7 +20,6 @@ import httpx
 
 from nmrpeak_provider.http_response import best_effort_release_response
 from nmrpeak_provider.interpreter import (
-    MAX_INTERPRETER_ENDPOINTS,
     InterpreterEndpoint,
     InterpreterPrompt,
     InterpreterTool,
@@ -29,15 +28,18 @@ from nmrpeak_provider.interpreter import (
     InterpreterTurn,
     require_interpreter_configuration_id,
 )
+from nmrpeak_provider.interpreter_policy import (
+    MAX_INTERPRETER_CONFIG_BYTES,
+    MAX_INTERPRETER_ENDPOINTS,
+    OpenAIChatCallPolicy,
+)
 from nmrpeak_provider.local_input import (
     LocalInputFailureReason,
     LocalInputSnapshotError,
     read_ordered_bounded_regular_files,
 )
-from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
 
 
-MAX_INTERPRETER_CONFIG_BYTES = 64 * 1024
 _MAX_CONFIG_DIRECTORY_ENTRIES = 32
 _MAX_MODEL_BYTES = 256
 _MAX_RESPONSE_BYTES = 256 * 1024
