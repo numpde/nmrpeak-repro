@@ -1,7 +1,84 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+.DEFAULT_GOAL := help
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+
+help:
+	@printf '%s\n' \
+		'NMR API provider' \
+		'' \
+		'Verify this checkout:' \
+		'  make test [PYTHON=<prepared-python>]' \
+		'      Run the networkless, credential-free, checkpoint-free default lane.' \
+		'      Requires the dependencies in requirements.lock to be installed; does not install them.' \
+		'  make test/unit' \
+		'  make test/contract' \
+		'  make test/repository' \
+		'      Run one part of the default lane.' \
+		'  make check/source' \
+		'      Verify the pinned NMRPeak and Uni-Core source closure.' \
+		'  make upstream-contracts/check NMR_API_V1_DIR=<path> RELEASE=<revision>' \
+		'      Check the committed NMR API contract projection.' \
+		'  make upstream-contracts/write NMR_API_V1_DIR=<path> RELEASE=<revision>' \
+		'      Replace that projection after review of the selected API revision.' \
+		'' \
+		'Prepare public checkpoints:' \
+		'  make weights/download [INTERFACE=<name>]' \
+		'      Resume the pinned Zenodo download and verify its size and MD5; omit INTERFACE for normal routing.' \
+		'  make weights/check' \
+		'      Verify the complete local archive without network access.' \
+		'  make release/write RUNNER=<runner> RELEASE=<name> ARCHIVE=<zip>' \
+		'      Print a candidate declaration without changing the checkout.' \
+		'  make release/check RUNNER=<runner> RELEASE=<name> ARCHIVE=<zip> DECLARATION=<json>' \
+		'      Verify the named release declaration and its selected archive member.' \
+		'  make release/install RUNNER=<runner> RELEASE=<name> ARCHIVE=<zip> DECLARATION=<json>' \
+		'      Install a reviewed declaration without replacement.' \
+		'  make checkpoint/import RUNNER=<runner> RELEASE=<name> ARCHIVE=<zip>' \
+		'      Stream the checkpoint named by the installed release into its Docker volume without loading it.' \
+		'  make checkpoint/recover VOLUME=<volume> CONFIRM=<volume>' \
+		'      Repair an interrupted checkpoint volume after exact confirmation.' \
+		'' \
+		'Build provider and runner images:' \
+		'  make provider/image/build' \
+		'      Build the provider from a clean committed checkout; dependency downloads use wlp1s0.' \
+		'  make runner/lock/stage TARGET=<target> [NMRPEAK_WIFI_INTERFACE=<name>]' \
+		'      Resolve dependencies through the selected interface and stage a candidate outside the checkout.' \
+		'  make runner/lock/check TARGET=<target>' \
+		'      Verify the committed dependency lock without network access.' \
+		'  make runner/lock/apply TARGET=<target>' \
+		'      Replace the committed lock with the verified staged candidate.' \
+		'  make runner/image/build RUNNER=<runner> TARGET=<target>' \
+		'      Build one runner image from the selected committed inputs; dependency downloads use wlp1s0.' \
+		'' \
+		'Operate a named deployment:' \
+		'  make provider/deployment/init DEPLOYMENT=<name>' \
+		'      Create the configuration and private credential scaffold without installing a credential.' \
+		'  make provider/credential/install DEPLOYMENT=<name> NMR_API_V1_DIR=<path> [REPLACE=1]' \
+		'      Install the matching API-issued private provider credential.' \
+		'  make provider/deployment/config DEPLOYMENT=<name>' \
+		'      Validate and render a public-trust deployment without starting it.' \
+		'  make provider/deployment/up DEPLOYMENT=<name>' \
+		'      Load the reviewed checkpoints and start signed API activity using public trust.' \
+		'  make provider/deployment/config/localhost DEPLOYMENT=<name> LOCALHOST_CA_CERTIFICATE=<path>' \
+		'      Validate and render a same-host private-CA deployment without starting it.' \
+		'  make provider/deployment/up/localhost DEPLOYMENT=<name> LOCALHOST_CA_CERTIFICATE=<path>' \
+		'      Load the reviewed checkpoints and start signed API activity using the supplied private CA.' \
+		'  make provider/deployment/status DEPLOYMENT=<name>' \
+		'      Report the owned provider and runner container state.' \
+		'  make provider/logs DEPLOYMENT=<name>' \
+		'      Follow logs from the running owned provider.' \
+		'  make provider/deployment/down DEPLOYMENT=<name>' \
+		'      Stop the deployment; preserve config, credentials, journals, generations, images, checkpoint volumes, and identity locks.' \
+		'' \
+		'Exceptional removal:' \
+		'  make provider/deployment/generation/remove DEPLOYMENT=<name> FROZEN_GENERATION=<id> CONFIRM=<id>' \
+		'      Remove one unreferenced frozen generation after exact confirmation.' \
+		'  make provider/deployment/journal/retire DEPLOYMENT=<name> CONFIRM=<provider-ref>' \
+		'      Remove one empty stopped deployment journal after exact confirmation.' \
+		'  make provider/identity-lock/remove PROVIDER_REF=<provider-ref> CONFIRM=<provider-ref>' \
+		'      Remove one unused provider identity lock after exact confirmation.' \
+		'  There is no blanket cleanup target.'
 
 test: test/unit test/contract test/repository
 
