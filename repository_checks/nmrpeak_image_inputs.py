@@ -1,4 +1,4 @@
-"""Materialize one exact committed NMRPeak runner image context."""
+"""Materialize one exact committed NMRPeak image context."""
 
 from __future__ import annotations
 
@@ -44,14 +44,28 @@ def materialize_image_context(
 
     _require_revision(revision)
     _require_empty_directory(destination)
-    runner_root = _runner_root(runner)
-    declaration_path = runner_root / "image-inputs.txt"
+    image_root = _image_root(runner)
+    declaration_path = image_root / "image-inputs.txt"
     declaration = _git_file(repo_root, revision, declaration_path)[1]
-    selected_paths = _read_selected_paths(declaration, runner_root, runner)
+    selected_paths = _read_selected_paths(declaration, image_root, runner)
+    if runner == "provider":
+        _require_complete_provider_inputs(repo_root, revision, selected_paths)
     for path in selected_paths:
         mode, content = _git_file(repo_root, revision, path)
         _write_file(destination / path, content, mode)
 
+    if runner != "provider":
+        _materialize_source_closures(repo_root, revision, destination, runner)
+
+    return "sha256:" + _context_digest(destination)
+
+
+def _materialize_source_closures(
+    repo_root: Path,
+    revision: str,
+    destination: Path,
+    runner: str,
+) -> None:
     for upstream, declaration_path, manifest_path in SOURCE_CLOSURES:
         source_revision, closure_roots = read_source_declaration(destination / declaration_path)
         expected_hashes = read_source_manifest(destination / manifest_path)
@@ -82,15 +96,36 @@ def materialize_image_context(
                 )
             _write_file(destination / upstream / path, content, mode)
 
-    return "sha256:" + _context_digest(destination)
+
+def _require_complete_provider_inputs(
+    repo_root: Path,
+    revision: str,
+    selected_paths: tuple[Path, ...],
+) -> None:
+    package_paths = {
+        Path(path)
+        for path in _git_tree_paths(repo_root, revision, ("nmrpeak_provider",))
+    }
+    required_paths = package_paths | {
+        Path("containers/provider/Dockerfile"),
+        Path("containers/provider/Dockerfile.dockerignore"),
+        Path("pyproject.toml"),
+        Path("requirements.lock"),
+    }
+    if set(selected_paths) != required_paths:
+        raise ImageInputRejected(
+            "Provider image inputs must select exactly its Docker policy, package, metadata, and dependency lock."
+        )
 
 
-def _runner_root(runner: str) -> Path:
+def _image_root(runner: str) -> Path:
+    if runner == "provider":
+        return Path("containers/provider")
     if runner == "nmrpeak_chf_v1":
         return Path("models/nmrpeak_chf_v1/runner")
     if runner == "nmrpeak_hf_v1":
         return Path("models/nmrpeak_hf_v1/runner")
-    raise ImageInputRejected(f"NMRPeak runner image is not supported: {runner or '<unset>'}")
+    raise ImageInputRejected(f"NMRPeak image is not supported: {runner or '<unset>'}")
 
 
 def _read_selected_paths(raw: bytes, runner_root: Path, runner: str) -> tuple[Path, ...]:
@@ -116,10 +151,8 @@ def _read_selected_paths(raw: bytes, runner_root: Path, runner: str) -> tuple[Pa
                 f"{runner} image inputs must select pinned source through its closure manifest: {line}"
             )
         paths.append(Path(line))
-    required = {
-        runner_root / "Dockerfile.runner",
-        runner_root / "Dockerfile.runner.dockerignore",
-    }
+    dockerfile_name = "Dockerfile" if runner == "provider" else "Dockerfile.runner"
+    required = {runner_root / dockerfile_name, runner_root / f"{dockerfile_name}.dockerignore"}
     if not required.issubset(paths):
         raise ImageInputRejected(
             f"{runner} image inputs omit the Dockerfile or its deny-by-default ignore file."
@@ -223,7 +256,7 @@ def _git(repository: Path, *arguments: str) -> bytes:
 
 
 def main(arguments: list[str]) -> None:
-    parser = argparse.ArgumentParser(description="Materialize a committed NMRPeak runner image context.")
+    parser = argparse.ArgumentParser(description="Materialize a committed NMRPeak image context.")
     parser.add_argument("runner")
     parser.add_argument("repository", type=Path)
     parser.add_argument("revision")

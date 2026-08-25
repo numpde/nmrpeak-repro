@@ -1,0 +1,5 @@
+**
+!nmrpeak_provider/
+!nmrpeak_provider/**
+!pyproject.toml
+!requirements.lock

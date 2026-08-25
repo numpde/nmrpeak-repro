@@ -30,7 +30,7 @@ esac
 readonly repo_root="$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/..")"
 readonly python="${PYTHON:-python3}"
 readonly revision="$(git -C "$repo_root" rev-parse --verify HEAD)"
-readonly wifi_interface="${NMRPEAK_WIFI_INTERFACE:-wlp1s0}"
+readonly wifi_interface=wlp1s0
 [[ -d "/sys/class/net/$wifi_interface" ]] ||
     fail "cannot build $runner because the Wi-Fi interface does not exist: $wifi_interface"
 
