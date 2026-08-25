@@ -1,4 +1,4 @@
-"""Keep one CHF checkpoint descriptor across verification and model load."""
+"""Keep one NMRPeak checkpoint descriptor across verification and model load."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 _HASH_CHUNK_BYTES = 1024 * 1024
 
 
-def open_verified_chf_checkpoint(expected_checkpoint_ref: str) -> BinaryIO:
+def open_verified_checkpoint(expected_checkpoint_ref: str) -> BinaryIO:
     """Open, verify, and rewind the fixed checkpoint for deserialization."""
 
     return _open_verified_checkpoint(CHECKPOINT_PATH, expected_checkpoint_ref)
@@ -29,7 +29,7 @@ def _open_verified_checkpoint(
         type(expected_checkpoint_ref) is not str
         or _SHA256_REF.fullmatch(expected_checkpoint_ref) is None
     ):
-        raise ValueError("expected CHF checkpoint identity is not a SHA-256 reference")
+        raise ValueError("expected NMRPeak checkpoint identity is not a SHA-256 reference")
 
     descriptor = os.open(
         checkpoint_path,
@@ -37,7 +37,7 @@ def _open_verified_checkpoint(
     )
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise RuntimeError("CHF checkpoint is not a regular file")
+            raise RuntimeError("NMRPeak checkpoint is not a regular file")
         checkpoint = os.fdopen(descriptor, "rb")
     except BaseException:
         os.close(descriptor)
@@ -48,7 +48,7 @@ def _open_verified_checkpoint(
         while chunk := checkpoint.read(_HASH_CHUNK_BYTES):
             measured.update(chunk)
         if "sha256:" + measured.hexdigest() != expected_checkpoint_ref:
-            raise RuntimeError("CHF checkpoint bytes differ from the admitted release")
+            raise RuntimeError("NMRPeak checkpoint bytes differ from the admitted release")
         checkpoint.seek(0)
         return checkpoint
     except BaseException:

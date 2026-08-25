@@ -44,8 +44,8 @@ COPY --chown=0:0 families/nmrpeak/checkpoint_file.py \
     /opt/nmrpeak/families/nmrpeak/
 COPY --chown=0:0 nmrpeak_provider/__init__.py \
     nmrpeak_provider/canonical_json.py \
-    nmrpeak_provider/chf_binding.py \
-    nmrpeak_provider/chf_runner_protocol.py \
+    nmrpeak_provider/hf_binding.py \
+    nmrpeak_provider/hf_runner_protocol.py \
     nmrpeak_provider/nmrpeak_binding.py \
     nmrpeak_provider/owner_session_endpoint.py \
     nmrpeak_provider/owner_session_supervisor.py \
@@ -55,10 +55,10 @@ COPY --chown=0:0 nmrpeak_provider/__init__.py \
     nmrpeak_provider/product_result.py \
     nmrpeak_provider/runner_protocol.py \
     nmrpeak_provider/
-COPY --chown=0:0 models/nmrpeak_chf_v1/runner/owner_session_supervisor.py \
-    models/nmrpeak_chf_v1/runner/runtime.py \
-    models/nmrpeak_chf_v1/runner/worker.py \
-    models/nmrpeak_chf_v1/runner/
+COPY --chown=0:0 models/nmrpeak_hf_v1/runner/owner_session_supervisor.py \
+    models/nmrpeak_hf_v1/runner/runtime.py \
+    models/nmrpeak_hf_v1/runner/worker.py \
+    models/nmrpeak_hf_v1/runner/
 
 COPY repository_checks/nmrpeak_source.py /tmp/nmrpeak_source.py
 COPY families/nmrpeak/source-closure.paths \
@@ -81,7 +81,7 @@ RUN python -B /tmp/nmrpeak_source.py \
         'from pathlib import Path; from nmrpeak_source import verify_bart_config; verify_bart_config(Path("/tmp/image-inputs"))' \
     && PYTHONPATH=/opt/nmrpeak:/opt/unicore python -B -c \
         'import nmrpeak; import unicore; from nmrpeak.data import TokenizedNmrDataset; from nmrpeak.models.spec_trans_mol import SpecTransMolModel' \
-    && PYTHONPATH=/opt/nmrpeak:/opt/unicore python -B -m models.nmrpeak_chf_v1.runner.worker --help >/dev/null \
+    && PYTHONPATH=/opt/nmrpeak:/opt/unicore python -B -m models.nmrpeak_hf_v1.runner.worker --help >/dev/null \
     && rm -r /tmp/image-inputs /tmp/nmrpeak_source.py \
     && test -z "$(find /opt/nmrpeak /opt/unicore -xdev ! -type d ! -type f -print -quit)" \
     && find /opt/nmrpeak /opt/unicore -xdev -type d -exec chmod 0555 {} + \
@@ -93,8 +93,8 @@ RUN printf '%s\n' "$SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$' \
     && printf '%s\n' "$IMAGE_INPUT_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
 LABEL org.opencontainers.image.revision="$SOURCE_REVISION"
 LABEL io.numpde.nmrpeak.image.input-id="$IMAGE_INPUT_ID"
-LABEL io.numpde.nmrpeak.runner.ref="nmrpeak_chf_v1"
-LABEL io.numpde.nmrpeak.runner.contract-id="nmrpeak.runner_session.chf.v1"
+LABEL io.numpde.nmrpeak.runner.ref="nmrpeak_hf_v1"
+LABEL io.numpde.nmrpeak.runner.contract-id="nmrpeak.runner_session.hf.v1"
 LABEL io.numpde.nmrpeak.runner.target="cpu-x86_64"
 
 ENV CUDA_VISIBLE_DEVICES="" \
@@ -112,4 +112,4 @@ ENV CUDA_VISIBLE_DEVICES="" \
     XDG_CACHE_HOME=/tmp/cache
 
 USER 65532:65532
-ENTRYPOINT ["python", "-m", "models.nmrpeak_chf_v1.runner.owner_session_supervisor", "5", "5", "--", "python", "-m", "models.nmrpeak_chf_v1.runner.worker"]
+ENTRYPOINT ["python", "-m", "models.nmrpeak_hf_v1.runner.owner_session_supervisor", "5", "5", "--", "python", "-m", "models.nmrpeak_hf_v1.runner.worker"]

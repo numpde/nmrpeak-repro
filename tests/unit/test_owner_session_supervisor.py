@@ -32,22 +32,24 @@ WAIT_SECONDS = 5
 
 
 class OwnerSessionSupervisorTests(unittest.TestCase):
-    def test_chf_launcher_supplies_its_owned_socket_identity(self) -> None:
+    def test_each_launcher_supplies_the_family_socket_identity(self) -> None:
         from nmrpeak_provider.runner_protocol import RUNNER_SOCKET_PATH
 
-        launcher = (
-            Path(__file__).resolve().parents[2]
-            / "models/nmrpeak_chf_v1/runner/owner_session_supervisor.py"
-        )
-        with patch.object(
-            owner_session_supervisor,
-            "main",
-            return_value=73,
-        ) as main, self.assertRaises(SystemExit) as raised:
-            runpy.run_path(str(launcher), run_name="__main__")
+        for runner in ("nmrpeak_chf_v1", "nmrpeak_hf_v1"):
+            with self.subTest(runner=runner):
+                launcher = (
+                    Path(__file__).resolve().parents[2]
+                    / f"models/{runner}/runner/owner_session_supervisor.py"
+                )
+                with patch.object(
+                    owner_session_supervisor,
+                    "main",
+                    return_value=73,
+                ) as main, self.assertRaises(SystemExit) as raised:
+                    runpy.run_path(str(launcher), run_name="__main__")
 
-        self.assertEqual(raised.exception.code, 73)
-        main.assert_called_once_with(RUNNER_SOCKET_PATH)
+                self.assertEqual(raised.exception.code, 73)
+                main.assert_called_once_with(RUNNER_SOCKET_PATH)
 
     def test_terminal_worker_exit_outranks_simultaneous_owner_loss(self) -> None:
         module = _load_supervisor()

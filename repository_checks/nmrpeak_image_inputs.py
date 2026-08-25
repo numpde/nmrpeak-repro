@@ -1,4 +1,4 @@
-"""Materialize one exact committed CHF runner image context."""
+"""Materialize one exact committed NMRPeak runner image context."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from repository_checks.nmrpeak_source import (
 )
 
 
-INPUT_DECLARATION = Path("models/nmrpeak_chf_v1/runner/image-inputs.txt")
 SOURCE_CLOSURES = (
     (
         Path("nmrpeak-upstream"),
@@ -35,13 +34,20 @@ class ImageInputRejected(ValueError):
     pass
 
 
-def materialize_image_context(repo_root: Path, revision: str, destination: Path) -> str:
+def materialize_image_context(
+    repo_root: Path,
+    revision: str,
+    destination: Path,
+    runner: str,
+) -> str:
     """Write and identify the exact committed inputs admitted by one image."""
 
     _require_revision(revision)
     _require_empty_directory(destination)
-    declaration = _git_file(repo_root, revision, INPUT_DECLARATION)[1]
-    selected_paths = _read_selected_paths(declaration)
+    runner_root = _runner_root(runner)
+    declaration_path = runner_root / "image-inputs.txt"
+    declaration = _git_file(repo_root, revision, declaration_path)[1]
+    selected_paths = _read_selected_paths(declaration, runner_root, runner)
     for path in selected_paths:
         mode, content = _git_file(repo_root, revision, path)
         _write_file(destination / path, content, mode)
@@ -52,7 +58,7 @@ def materialize_image_context(repo_root: Path, revision: str, destination: Path)
         gitlink_mode, gitlink_revision = _git_entry(repo_root, revision, upstream)
         if gitlink_mode != "160000" or gitlink_revision != source_revision:
             raise ImageInputRejected(
-                f"Cannot materialize the CHF image context; {upstream} does not match its declared revision."
+                f"Cannot materialize the {runner} image context; {upstream} does not match its declared revision."
             )
         upstream_repository = repo_root / upstream
         committed_paths = _git_tree_paths(
@@ -62,7 +68,7 @@ def materialize_image_context(repo_root: Path, revision: str, destination: Path)
         )
         if set(committed_paths) != set(expected_hashes):
             raise ImageInputRejected(
-                f"Cannot materialize the CHF image context; {upstream} manifest does not own its complete source closure."
+                f"Cannot materialize the {runner} image context; {upstream} manifest does not own its complete source closure."
             )
         for path in sorted(expected_hashes):
             mode, content = _git_file(
@@ -72,20 +78,28 @@ def materialize_image_context(repo_root: Path, revision: str, destination: Path)
             )
             if sha256(content).hexdigest() != expected_hashes[path]:
                 raise ImageInputRejected(
-                    f"Cannot materialize the CHF image context; committed source digest differs: {upstream / path}"
+                    f"Cannot materialize the {runner} image context; committed source digest differs: {upstream / path}"
                 )
             _write_file(destination / upstream / path, content, mode)
 
     return "sha256:" + _context_digest(destination)
 
 
-def _read_selected_paths(raw: bytes) -> tuple[Path, ...]:
+def _runner_root(runner: str) -> Path:
+    if runner == "nmrpeak_chf_v1":
+        return Path("models/nmrpeak_chf_v1/runner")
+    if runner == "nmrpeak_hf_v1":
+        return Path("models/nmrpeak_hf_v1/runner")
+    raise ImageInputRejected(f"NMRPeak runner image is not supported: {runner or '<unset>'}")
+
+
+def _read_selected_paths(raw: bytes, runner_root: Path, runner: str) -> tuple[Path, ...]:
     try:
         lines = raw.decode("utf-8", errors="strict").splitlines()
     except UnicodeDecodeError as error:
-        raise ImageInputRejected("CHF image input declaration is not UTF-8 text.") from error
+        raise ImageInputRejected(f"{runner} image input declaration is not UTF-8 text.") from error
     if not lines or lines != sorted(set(lines)):
-        raise ImageInputRejected("CHF image input paths must be non-empty, sorted, and unique.")
+        raise ImageInputRejected(f"{runner} image input paths must be non-empty, sorted, and unique.")
     paths: list[Path] = []
     for line in lines:
         path = PurePosixPath(line)
@@ -96,25 +110,27 @@ def _read_selected_paths(raw: bytes) -> tuple[Path, ...]:
             or ".." in path.parts
             or any(ord(character) < 32 for character in line)
         ):
-            raise ImageInputRejected(f"CHF image input path is unsafe: {line!r}")
+            raise ImageInputRejected(f"{runner} image input path is unsafe: {line!r}")
         if any(path == upstream or upstream in path.parents for upstream, _, _ in SOURCE_CLOSURES):
             raise ImageInputRejected(
-                f"CHF image inputs must select pinned source through its closure manifest: {line}"
+                f"{runner} image inputs must select pinned source through its closure manifest: {line}"
             )
         paths.append(Path(line))
     required = {
-        Path("models/nmrpeak_chf_v1/runner/Dockerfile.runner"),
-        Path("models/nmrpeak_chf_v1/runner/Dockerfile.runner.dockerignore"),
+        runner_root / "Dockerfile.runner",
+        runner_root / "Dockerfile.runner.dockerignore",
     }
     if not required.issubset(paths):
-        raise ImageInputRejected("CHF image inputs omit the Dockerfile or its deny-by-default ignore file.")
+        raise ImageInputRejected(
+            f"{runner} image inputs omit the Dockerfile or its deny-by-default ignore file."
+        )
     return tuple(paths)
 
 
 def _git_file(repository: Path, revision: str, path: Path) -> tuple[int, bytes]:
     mode, object_id = _git_entry(repository, revision, path)
     if mode not in {"100644", "100755"}:
-        raise ImageInputRejected(f"CHF image input is not a regular committed file: {path}")
+        raise ImageInputRejected(f"NMRPeak image input is not a regular committed file: {path}")
     content = _git(repository, "cat-file", "blob", object_id)
     return (0o755 if mode == "100755" else 0o644), content
 
@@ -123,14 +139,14 @@ def _git_entry(repository: Path, revision: str, path: Path) -> tuple[str, str]:
     raw = _git(repository, "ls-tree", "-z", revision, "--", path.as_posix())
     entries = [entry for entry in raw.split(b"\0") if entry]
     if len(entries) != 1:
-        raise ImageInputRejected(f"CHF image input is not one committed Git entry: {path}")
+        raise ImageInputRejected(f"NMRPeak image input is not one committed Git entry: {path}")
     metadata, raw_path = entries[0].split(b"\t", 1)
     mode, object_type, object_id = metadata.decode("ascii").split(" ")
     if raw_path.decode("utf-8", errors="strict") != path.as_posix():
-        raise ImageInputRejected(f"Git returned a different CHF image input path: {path}")
+        raise ImageInputRejected(f"Git returned a different NMRPeak image input path: {path}")
     expected_type = "commit" if mode == "160000" else "blob"
     if object_type != expected_type:
-        raise ImageInputRejected(f"CHF image input has an unsupported Git object type: {path}")
+        raise ImageInputRejected(f"NMRPeak image input has an unsupported Git object type: {path}")
     return mode, object_id
 
 
@@ -173,7 +189,7 @@ def _context_digest(root: Path) -> str:
     for path in sorted(candidate for candidate in root.rglob("*") if not candidate.is_dir()):
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode):
-            raise ImageInputRejected(f"CHF image context contains a special file: {path.relative_to(root)}")
+            raise ImageInputRejected(f"NMRPeak image context contains a special file: {path.relative_to(root)}")
         relative = path.relative_to(root).as_posix()
         content = path.read_bytes()
         executable = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
@@ -184,14 +200,14 @@ def _context_digest(root: Path) -> str:
 def _require_empty_directory(path: Path) -> None:
     metadata = path.lstat()
     if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
-        raise ImageInputRejected(f"CHF image context destination is not a non-symlink directory: {path}")
+        raise ImageInputRejected(f"NMRPeak image context destination is not a non-symlink directory: {path}")
     if any(path.iterdir()):
-        raise ImageInputRejected(f"CHF image context destination is not empty: {path}")
+        raise ImageInputRejected(f"NMRPeak image context destination is not empty: {path}")
 
 
 def _require_revision(revision: str) -> None:
     if len(revision) != 40 or any(character not in "0123456789abcdef" for character in revision):
-        raise ImageInputRejected(f"CHF image source revision is not one full Git object ID: {revision}")
+        raise ImageInputRejected(f"NMRPeak image source revision is not one full Git object ID: {revision}")
 
 
 def _git(repository: Path, *arguments: str) -> bytes:
@@ -203,11 +219,12 @@ def _git(repository: Path, *arguments: str) -> bytes:
             stderr=subprocess.PIPE,
         ).stdout
     except subprocess.CalledProcessError as error:
-        raise ImageInputRejected("Cannot read one committed CHF image input from Git.") from error
+        raise ImageInputRejected("Cannot read one committed NMRPeak image input from Git.") from error
 
 
 def main(arguments: list[str]) -> None:
-    parser = argparse.ArgumentParser(description="Materialize the committed CHF runner image context.")
+    parser = argparse.ArgumentParser(description="Materialize a committed NMRPeak runner image context.")
+    parser.add_argument("runner")
     parser.add_argument("repository", type=Path)
     parser.add_argument("revision")
     parser.add_argument("destination", type=Path)
@@ -218,6 +235,7 @@ def main(arguments: list[str]) -> None:
                 options.repository.resolve(strict=True),
                 options.revision,
                 options.destination.resolve(strict=True),
+                options.runner,
             )
         )
     except (ImageInputRejected, OSError, ValueError) as error:

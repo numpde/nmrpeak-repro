@@ -1,4 +1,4 @@
-"""Prove CHF checkpoint verification without importing or executing Torch."""
+"""Prove NMRPeak checkpoint verification without importing or executing Torch."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ import unittest
 
 _MODULE_PATH = (
     Path(__file__).resolve().parents[2]
-    / "models/nmrpeak_chf_v1/runner/checkpoint_file.py"
+    / "families/nmrpeak/checkpoint_file.py"
 )
-_SPEC = importlib.util.spec_from_file_location("nmrpeak_chf_checkpoint_file", _MODULE_PATH)
+_SPEC = importlib.util.spec_from_file_location("nmrpeak_checkpoint_file", _MODULE_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 checkpoint_file = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(checkpoint_file)
 
 
-class ChfCheckpointFileTests(unittest.TestCase):
+class CheckpointFileTests(unittest.TestCase):
     def test_verified_descriptor_is_rewound_and_detached_from_path_replacement(self) -> None:
         admitted_bytes = b"admitted checkpoint bytes"
         expected_ref = "sha256:" + sha256(admitted_bytes).hexdigest()

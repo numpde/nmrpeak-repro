@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from families.nmrpeak.runner_runtime import NmrpeakRuntimeInputRejected
+from families.nmrpeak.runner_worker import serve_loaded_nmrpeak_runtime
 from nmrpeak_provider.canonical_json import JsonValue
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
@@ -86,20 +87,21 @@ class ChfWorkerTests(unittest.TestCase):
         checkpoint = object()
         runtime = RecordingRuntime(candidates=["CCO"])
         connection = object()
-        served: list[tuple[object, object, ReadyFrame]] = []
+        served: list[tuple[object, object, ReadyFrame, object]] = []
 
         def serve(
             received_connection: object,
             received_runtime: object,
             ready: ReadyFrame,
+            codec: object,
         ) -> int:
-            served.append((received_connection, received_runtime, ready))
+            served.append((received_connection, received_runtime, ready, codec))
             return 0
 
         with (
             patch.object(
                 worker_module,
-                "open_verified_chf_checkpoint",
+                "open_verified_checkpoint",
                 return_value=CheckpointContext(checkpoint),
             ) as open_checkpoint,
             patch.object(
@@ -107,7 +109,11 @@ class ChfWorkerTests(unittest.TestCase):
                 "load_nmrpeak_chf_runtime",
                 return_value=runtime,
             ) as load_runtime,
-            patch.object(worker_module, "serve_loaded_chf_runtime", side_effect=serve),
+            patch.object(
+                worker_module,
+                "serve_loaded_nmrpeak_runtime",
+                side_effect=serve,
+            ),
         ):
             result = worker_module.serve_chf_worker(
                 connection,
@@ -119,7 +125,7 @@ class ChfWorkerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         open_checkpoint.assert_called_once_with(FACTS.checkpoint_ref)
         load_runtime.assert_called_once_with(checkpoint)
-        self.assertEqual(served, [(connection, runtime, READY)])
+        self.assertEqual(served, [(connection, runtime, READY, CHF_RUNNER_CODEC)])
 
     def test_loaded_worker_completes_the_provider_session_and_retires(self) -> None:
         runtime = RecordingRuntime(candidates=["CCO", "OCC"])
@@ -264,10 +270,11 @@ class WorkerHarness:
 
     def _serve(self) -> None:
         try:
-            self.result = worker_module.serve_loaded_chf_runtime(
+            self.result = serve_loaded_nmrpeak_runtime(
                 self.worker,
                 self.runtime,
                 READY,
+                CHF_RUNNER_CODEC,
             )
         except BaseException as error:
             self.failure = error
