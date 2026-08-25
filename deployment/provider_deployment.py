@@ -24,6 +24,10 @@ from deployment.local_image import (
     LocalImageSpec,
     resolve_local_image,
 )
+from deployment.provider_volumes import (
+    provider_identity_lock_volume_name,
+    provider_journal_volume_name,
+)
 from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
@@ -658,9 +662,6 @@ def _compose_environment(
     frozen_generation: Path,
 ) -> dict[str, str]:
     state_root = repository / "secrets/deployments" / deployment
-    lock_digest = sha256(
-        b"nmrpeak.provider_identity_lock.v1\0" + provider_ref.encode("ascii")
-    ).hexdigest()
     return {
         "PATH": "/usr/bin:/bin",
         "HOME": "/tmp",
@@ -672,8 +673,10 @@ def _compose_environment(
         "PROVIDER_CONFIG_PATH": str(provider_config),
         "PROVIDER_CREDENTIAL_PATH": str(state_root / "signing.private.json"),
         "FROZEN_GENERATION_PATH": str(frozen_generation),
-        "PROVIDER_IDENTITY_LOCK_VOLUME": f"nmrpeak-provider-lock-{lock_digest}",
-        "PROVIDER_JOURNAL_VOLUME": f"nmrpeak-{deployment}-journal-v1",
+        "PROVIDER_IDENTITY_LOCK_VOLUME": provider_identity_lock_volume_name(
+            provider_ref
+        ),
+        "PROVIDER_JOURNAL_VOLUME": provider_journal_volume_name(deployment),
         "HF_CHECKPOINT_VOLUME": hf_volume_name(checkpoints.hf),
         "CHF_CHECKPOINT_VOLUME": chf_volume_name(checkpoints.chf),
         "HF_CHECKPOINT_REF": checkpoints.hf,
