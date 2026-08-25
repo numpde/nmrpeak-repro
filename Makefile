@@ -40,16 +40,16 @@ help:
 		'      Repair an interrupted checkpoint volume after exact confirmation.' \
 		'' \
 		'Build provider and runner images:' \
-		'  make provider/image/build' \
-		'      Build the provider from a clean committed checkout; dependency downloads use wlp1s0.' \
+		'  make provider/image/build [NMRPEAK_WIFI_INTERFACE=<name>]' \
+		'      Build the provider from a clean committed checkout; an explicit interface binds dependency downloads to Wi-Fi.' \
 		'  make runner/lock/stage TARGET=<target> [NMRPEAK_WIFI_INTERFACE=<name>]' \
-		'      Resolve dependencies through the selected interface and stage a candidate outside the checkout.' \
+		'      Resolve dependencies and stage a candidate outside the checkout; an explicit interface binds downloads to Wi-Fi.' \
 		'  make runner/lock/check TARGET=<target>' \
 		'      Verify the committed dependency lock without network access.' \
 		'  make runner/lock/apply TARGET=<target>' \
 		'      Replace the committed lock with the verified staged candidate.' \
-		'  make runner/image/build RUNNER=<runner> TARGET=<target>' \
-		'      Build one runner image from the selected committed inputs; dependency downloads use wlp1s0.' \
+		'  make runner/image/build RUNNER=<runner> TARGET=<target> [NMRPEAK_WIFI_INTERFACE=<name>]' \
+		'      Build one runner image from committed inputs; an explicit interface binds dependency downloads to Wi-Fi.' \
 		'' \
 		'Operate a named deployment:' \
 		'  make provider/deployment/init DEPLOYMENT=<name>' \

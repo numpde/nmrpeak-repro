@@ -78,9 +78,10 @@ fi
 require_regular_file "$renderer"
 require_regular_file "$renderer_ignore"
 require_regular_file "$compiler"
-readonly wifi_interface="${NMRPEAK_WIFI_INTERFACE:-wlp1s0}"
-[[ -d "/sys/class/net/$wifi_interface" ]] ||
-    fail "cannot stage the $target lock because the Wi-Fi interface does not exist: $wifi_interface"
+readonly wifi_interface="${NMRPEAK_WIFI_INTERFACE:-}"
+if [[ -n "$wifi_interface" && ! -d "/sys/class/net/$wifi_interface" ]]; then
+    fail "cannot stage the $target lock because the selected Wi-Fi interface does not exist: $wifi_interface"
+fi
 
 tmp="$(mktemp -d)"
 proxy_pid=''
@@ -105,33 +106,49 @@ cp -- "$intent" "$tmp/pyproject.toml"
 cp -- "$lock" "$tmp/requirements.seed"
 readonly input_digests="$(sha256sum -- "$intent" "$lock" "$renderer" "$renderer_ignore" "$compiler")"
 
-readonly ready_file="$tmp/proxy.port"
-"$python" "$repo_root/docker/bound_http_proxy.py" \
-    --interface "$wifi_interface" --ready-file "$ready_file" &
-proxy_pid=$!
-for _ in {1..100}; do
-    [[ -s "$ready_file" ]] && break
-    kill -0 "$proxy_pid" 2>/dev/null || fail "Wi-Fi proxy stopped before staging the $target lock."
-    sleep 0.05
-done
-[[ -s "$ready_file" ]] || fail "Wi-Fi proxy did not become ready before staging the $target lock."
-readonly proxy_url="http://127.0.0.1:$(<"$ready_file")"
+build_network=default
+run_network=bridge
+proxy_build_arguments=()
+proxy_run_arguments=()
+if [[ -n "$wifi_interface" ]]; then
+    readonly ready_file="$tmp/proxy.port"
+    "$python" "$repo_root/docker/bound_http_proxy.py" \
+        --interface "$wifi_interface" --ready-file "$ready_file" &
+    proxy_pid=$!
+    for _ in {1..100}; do
+        [[ -s "$ready_file" ]] && break
+        kill -0 "$proxy_pid" 2>/dev/null || fail "Wi-Fi proxy stopped before staging the $target lock."
+        sleep 0.05
+    done
+    [[ -s "$ready_file" ]] || fail "Wi-Fi proxy did not become ready before staging the $target lock."
+    readonly proxy_url="http://127.0.0.1:$(<"$ready_file")"
+    build_network=host
+    run_network=host
+    proxy_build_arguments=(
+        --build-arg "HTTP_PROXY=$proxy_url"
+        --build-arg "HTTPS_PROXY=$proxy_url"
+    )
+    proxy_run_arguments=(
+        --env "HTTP_PROXY=$proxy_url"
+        --env "HTTPS_PROXY=$proxy_url"
+        --env "http_proxy=$proxy_url"
+        --env "https_proxy=$proxy_url"
+    )
+fi
 readonly image="nmrpeak-lock-renderer:${repo_digest:0:12}-$target"
 
-docker build --network host \
-    --build-arg "HTTP_PROXY=$proxy_url" --build-arg "HTTPS_PROXY=$proxy_url" \
+docker build --network "$build_network" "${proxy_build_arguments[@]}" \
     --tag "$image" --file "$context/families/nmrpeak/targets/$target/Dockerfile.lock" \
     "$context" >&2
 
 readonly rendered="$tmp/requirements.rendered"
 set +e
-docker run --rm --network host --read-only --cap-drop ALL \
+docker run --rm --network "$run_network" --read-only --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 64 --cpus 1 --memory 2g \
     --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1g,mode=1777 \
     --tmpfs /out:rw,noexec,nosuid,nodev,size=40m,mode=1777 \
     --user "$(id -u):$(id -g)" \
-    --env "HTTP_PROXY=$proxy_url" --env "HTTPS_PROXY=$proxy_url" \
-    --env "http_proxy=$proxy_url" --env "https_proxy=$proxy_url" \
+    "${proxy_run_arguments[@]}" \
     --mount "type=bind,src=$tmp/pyproject.toml,dst=/work/pyproject.toml,readonly" \
     --mount "type=bind,src=$tmp/requirements.seed,dst=/seed/requirements.lock,readonly" \
     --workdir /work "$image" pyproject.toml --group "$target" \

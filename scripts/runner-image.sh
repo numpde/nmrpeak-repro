@@ -30,9 +30,10 @@ esac
 readonly repo_root="$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/..")"
 readonly python="${PYTHON:-python3}"
 readonly revision="$(git -C "$repo_root" rev-parse --verify HEAD)"
-readonly wifi_interface=wlp1s0
-[[ -d "/sys/class/net/$wifi_interface" ]] ||
-    fail "cannot build $runner because the Wi-Fi interface does not exist: $wifi_interface"
+readonly wifi_interface="${NMRPEAK_WIFI_INTERFACE:-}"
+if [[ -n "$wifi_interface" && ! -d "/sys/class/net/$wifi_interface" ]]; then
+    fail "cannot build $runner because the selected Wi-Fi interface does not exist: $wifi_interface"
+fi
 
 tmp="$(mktemp -d)"
 proxy_pid=''
@@ -55,22 +56,30 @@ readonly image_input_id="$({
         "$python" -m repository_checks.nmrpeak_image_inputs \
         "$runner" "$repo_root" "$revision" "$context"
 })"
-readonly ready_file="$tmp/proxy.port"
-"$python" "$repo_root/docker/bound_http_proxy.py" \
-    --interface "$wifi_interface" --ready-file "$ready_file" &
-proxy_pid=$!
-for _ in {1..100}; do
-    [[ -s "$ready_file" ]] && break
-    kill -0 "$proxy_pid" 2>/dev/null || fail "Wi-Fi proxy stopped before the $runner build."
-    sleep 0.05
-done
-[[ -s "$ready_file" ]] || fail "Wi-Fi proxy did not become ready before the $runner build."
-readonly proxy_url="http://127.0.0.1:$(<"$ready_file")"
+build_network=default
+proxy_build_arguments=()
+if [[ -n "$wifi_interface" ]]; then
+    readonly ready_file="$tmp/proxy.port"
+    "$python" "$repo_root/docker/bound_http_proxy.py" \
+        --interface "$wifi_interface" --ready-file "$ready_file" &
+    proxy_pid=$!
+    for _ in {1..100}; do
+        [[ -s "$ready_file" ]] && break
+        kill -0 "$proxy_pid" 2>/dev/null || fail "Wi-Fi proxy stopped before the $runner build."
+        sleep 0.05
+    done
+    [[ -s "$ready_file" ]] || fail "Wi-Fi proxy did not become ready before the $runner build."
+    readonly proxy_url="http://127.0.0.1:$(<"$ready_file")"
+    build_network=host
+    proxy_build_arguments=(
+        --build-arg "HTTP_PROXY=$proxy_url"
+        --build-arg "HTTPS_PROXY=$proxy_url"
+    )
+fi
 readonly image="$image_repository:${image_input_id#sha256:}"
 readonly image_id_file="$tmp/image.id"
 
-docker build --network host \
-    --build-arg "HTTP_PROXY=$proxy_url" --build-arg "HTTPS_PROXY=$proxy_url" \
+docker build --network "$build_network" "${proxy_build_arguments[@]}" \
     --build-arg "SOURCE_REVISION=$revision" --build-arg "IMAGE_INPUT_ID=$image_input_id" \
     --iidfile "$image_id_file" --tag "$image" \
     --file "$context/models/$runner/runner/Dockerfile.runner" "$context"
