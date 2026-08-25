@@ -478,7 +478,7 @@ class ChfLifecycleTests(unittest.TestCase):
         session = ChfRunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
         )
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
@@ -544,7 +544,7 @@ class ChfLifecycleTests(unittest.TestCase):
         session = ChfRunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
         )
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
@@ -882,7 +882,7 @@ class ChfLifecycleTests(unittest.TestCase):
         session = ChfRunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
         )
         generated = ChfCandidatesGenerated(
             entered,
@@ -915,7 +915,7 @@ class ChfLifecycleTests(unittest.TestCase):
         session = ChfRunnerSession.admit(
             channel,
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
         )
         generated = ChfCandidatesGenerated(
             entered,
@@ -947,7 +947,7 @@ class ChfLifecycleTests(unittest.TestCase):
         session = ChfRunnerSession.admit(
             FakeChfRunnerChannel(ready_frame()),
             RUNNER_FACTS,
-            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+            ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
         )
         generated = ChfCandidatesGenerated(
             selected_record,
@@ -1335,7 +1335,7 @@ def validated_execution(
     session = ChfRunnerSession.admit(
         channel,
         RUNNER_FACTS,
-        ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1),
+        ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
     )
     request = session.validate(
         execution_attempt_ref=active.execution_attempt_ref,

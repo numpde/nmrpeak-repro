@@ -75,7 +75,7 @@ MODEL_INPUT = ChfRunnerInput(
     (ChfRunnerCarbonPeak("70.4"),),
 )
 CORRELATION = AttemptCorrelation(BOOT, "request:" + "6" * 32, ATTEMPT_REF, ATTEMPT_KEY)
-DEADLINES = ChfRunnerDeadlines(1, 1, 1, 1)
+DEADLINES = ChfRunnerDeadlines(1, 1, 1, 1, 1)
 
 
 class ChfWorkerTests(unittest.TestCase):

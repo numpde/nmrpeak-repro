@@ -285,7 +285,7 @@ def _runner_session() -> ChfRunnerSession:
     return ChfRunnerSession.admit(
         FakeChfRunnerChannel(ready),
         _RUNNER_FACTS,
-        ChfRunnerDeadlines(0.2, 0.2, 0.2, 0.2),
+        ChfRunnerDeadlines(0.2, 0.2, 0.2, 0.2, 0.2),
     )
 
 

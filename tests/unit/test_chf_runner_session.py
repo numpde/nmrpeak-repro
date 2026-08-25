@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from threading import Thread
+import os
+from pathlib import Path
+import socket
+from threading import Event, Thread
+import tempfile
 import unittest
 
 from nmrpeak_provider.chf_binding import (
@@ -15,6 +19,7 @@ from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
     ReadyFrame,
     RetireFrame,
+    encode_chf_runner_frame,
 )
 from nmrpeak_provider.chf_runner_session import (
     ChfInputRejected,
@@ -24,6 +29,7 @@ from nmrpeak_provider.chf_runner_session import (
     ChfRunnerSessionRetired,
     GeneratedChfCandidates,
     ValidatedChfRequest,
+    open_chf_runner_session,
 )
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
@@ -44,7 +50,7 @@ FACTS = ProviderResultFacts(
     checkpoint_ref="sha256:" + "4" * 64,
     image_input_ref="sha256:" + "5" * 64,
 )
-DEADLINES = ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1)
+DEADLINES = ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1)
 MODEL_INPUT = ChfRunnerInput(
     "C2H6O",
     (ChfRunnerProtonPeak("1.25", 3, "t", "7.1_"),),
@@ -75,6 +81,86 @@ def validate(session: ChfRunnerSession) -> ValidatedChfRequest | ChfInputRejecte
 
 
 class ChfRunnerSessionTests(unittest.TestCase):
+    def test_private_endpoint_connects_and_admits_its_ready_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "runner.sock"
+            with ListeningEndpoint(socket_path) as listener:
+                failure: list[BaseException] = []
+
+                def serve() -> None:
+                    try:
+                        connection, _ = listener.accept()
+                        with connection:
+                            connection.sendall(encode_chf_runner_frame(ready_frame()))
+                            connection.recv(4096)
+                    except BaseException as error:
+                        failure.append(error)
+
+                thread = Thread(target=serve)
+                thread.start()
+                session = open_chf_runner_session(str(socket_path), FACTS, DEADLINES)
+                session.retire()
+                thread.join(timeout=1)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(failure, [])
+
+    def test_absent_private_endpoint_expires_under_the_connect_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            deadlines = replace(DEADLINES, connect_seconds=0.02)
+            with self.assertRaisesRegex(ChfRunnerAdmissionError, "connect deadline"):
+                open_chf_runner_session(
+                    str(Path(directory) / "absent.sock"),
+                    FACTS,
+                    deadlines,
+                )
+
+    def test_private_endpoint_must_be_an_owner_only_socket(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "runner.sock"
+            socket_path.write_text("not a socket", encoding="ascii")
+            with self.assertRaisesRegex(ChfRunnerAdmissionError, "Unix socket"):
+                open_chf_runner_session(str(socket_path), FACTS, DEADLINES)
+
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "runner.sock"
+            with ListeningEndpoint(socket_path):
+                os.chmod(socket_path, 0o660)
+                with self.assertRaisesRegex(ChfRunnerAdmissionError, "owner-only"):
+                    open_chf_runner_session(str(socket_path), FACTS, DEADLINES)
+
+    def test_ready_wait_has_its_own_budget_after_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "runner.sock"
+            accepted = Event()
+            release = Event()
+            with ListeningEndpoint(socket_path) as listener:
+                def withhold_ready() -> None:
+                    connection, _ = listener.accept()
+                    with connection:
+                        accepted.set()
+                        release.wait(timeout=1)
+
+                thread = Thread(target=withhold_ready)
+                thread.start()
+                deadlines = replace(
+                    DEADLINES,
+                    connect_seconds=1,
+                    ready_seconds=0.02,
+                )
+                try:
+                    with self.assertRaisesRegex(
+                        ChfRunnerAdmissionError,
+                        "READY exchange",
+                    ):
+                        open_chf_runner_session(str(socket_path), FACTS, deadlines)
+                    self.assertTrue(accepted.is_set())
+                finally:
+                    release.set()
+                    thread.join(timeout=1)
+
+            self.assertFalse(thread.is_alive())
+
     def test_ready_compares_every_provider_owned_deployment_fact(self) -> None:
         mismatches = {
             "runner_ref": "nmrpeak_other_v1",
@@ -143,7 +229,11 @@ class ChfRunnerSessionTests(unittest.TestCase):
             ready_frame(),
             fault=FakeRunnerFault.BLOCK_GENERATION,
         )
-        session = ChfRunnerSession.admit(channel, FACTS, ChfRunnerDeadlines(1, 1, 5, 1))
+        session = ChfRunnerSession.admit(
+            channel,
+            FACTS,
+            ChfRunnerDeadlines(1, 1, 1, 5, 1),
+        )
         accepted = validate(session)
         self.assertIsInstance(accepted, ValidatedChfRequest)
         assert isinstance(accepted, ValidatedChfRequest)
@@ -206,6 +296,21 @@ class ChfRunnerSessionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RunnerResultRejected, "JSON array"):
             canonical_result_bytes(candidates.value, session.result_facts)
+
+
+class ListeningEndpoint:
+    def __init__(self, socket_path: Path) -> None:
+        self.socket_path = socket_path
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    def __enter__(self) -> socket.socket:
+        self.listener.bind(str(self.socket_path))
+        os.chmod(self.socket_path, 0o600)
+        self.listener.listen(1)
+        return self.listener
+
+    def __exit__(self, *_error: object) -> None:
+        self.listener.close()
 
 
 if __name__ == "__main__":

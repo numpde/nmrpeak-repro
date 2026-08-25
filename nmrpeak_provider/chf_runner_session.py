@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 import math
+import os
 import secrets
 import socket
+import stat
 from threading import Lock
+import time
 from typing import Protocol
 
 from .canonical_json import JsonValue
@@ -25,6 +28,7 @@ from .chf_runner_protocol import (
     encode_chf_runner_frame,
     receive_chf_runner_frame,
 )
+from .owner_session_endpoint import open_owner_session_directory
 from .product_result import (
     CHF_RESULT_IDENTITY,
     NMRPEAK_SOURCE_CLOSURE_REF,
@@ -52,6 +56,7 @@ class ChfRunnerSessionRetired(RuntimeError):
 class ChfRunnerDeadlines:
     """Bounded waits for each private runner exchange phase."""
 
+    connect_seconds: float
     ready_seconds: float
     validate_seconds: float
     generate_seconds: float
@@ -59,6 +64,7 @@ class ChfRunnerDeadlines:
 
     def __post_init__(self) -> None:
         for value in (
+            self.connect_seconds,
             self.ready_seconds,
             self.validate_seconds,
             self.generate_seconds,
@@ -96,6 +102,68 @@ class _SessionState(StrEnum):
     VALIDATED = "validated"
     GENERATING = "generating"
     RETIRED = "retired"
+
+
+def open_chf_runner_session(
+    socket_path: str,
+    facts: ProviderResultFacts,
+    deadlines: ChfRunnerDeadlines,
+) -> ChfRunnerSession:
+    """Attach to one private CHF endpoint, then admit its READY exchange."""
+
+    if type(deadlines) is not ChfRunnerDeadlines:
+        raise TypeError("CHF runner attachment requires owned deadlines")
+    connect_deadline = time.monotonic() + deadlines.connect_seconds
+    parent_fd, socket_name = open_owner_session_directory(socket_path)
+    try:
+        while True:
+            remaining = _remaining_connect_seconds(connect_deadline)
+            try:
+                endpoint = os.stat(
+                    socket_name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                time.sleep(min(0.01, remaining))
+                continue
+            if not stat.S_ISSOCK(endpoint.st_mode):
+                raise ChfRunnerAdmissionError(
+                    "Cannot connect to CHF runner: endpoint is not a Unix socket"
+                )
+            if (
+                endpoint.st_uid != os.geteuid()
+                or stat.S_IMODE(endpoint.st_mode) != 0o600
+            ):
+                raise ChfRunnerAdmissionError(
+                    "Cannot connect to CHF runner: endpoint is not owner-only"
+                )
+
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                connection.settimeout(remaining)
+                connection.connect(socket_path)
+            except (FileNotFoundError, ConnectionRefusedError):
+                close_error = _close_channel(connection)
+                if close_error is not None:
+                    raise ChfRunnerAdmissionError(
+                        "Cannot retry CHF runner connection after socket cleanup failed"
+                    ) from close_error
+                time.sleep(min(0.01, _remaining_connect_seconds(connect_deadline)))
+                continue
+            except BaseException as error:
+                close_error = _close_channel(connection)
+                if close_error is not None:
+                    error.add_note("The failed CHF connection also failed to close.")
+                raise
+
+            try:
+                return ChfRunnerSession.admit(connection, facts, deadlines)
+            except BaseException:
+                _close_channel(connection)
+                raise
+    finally:
+        os.close(parent_fd)
 
 
 class ChfRunnerSession:
@@ -361,6 +429,15 @@ def _ready_matches_provider_facts(
         and ready.device == "cpu"
         and ready.decode_policy_id == facts.identity.decode_policy.decode_policy_id
     )
+
+
+def _remaining_connect_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ChfRunnerAdmissionError(
+            "Cannot connect to CHF runner before the connect deadline"
+        )
+    return remaining
 
 
 def _close_channel(channel: _RunnerChannel) -> OSError | None:
