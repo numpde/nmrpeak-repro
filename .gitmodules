@@ -1,3 +1,6 @@
 [submodule "nmrpeak-upstream"]
 	path = nmrpeak-upstream
 	url = https://github.com/Colin-Jay/NMRPeak
+[submodule "unicore-upstream"]
+	path = unicore-upstream
+	url = https://github.com/dptech-corp/Uni-Core.git

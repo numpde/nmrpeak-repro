@@ -1,0 +1,6 @@
+{
+  "repository": "https://huggingface.co/facebook/bart-base",
+  "revision": "aadd2ab0ae0c8268c7c9693540e9904811f36177",
+  "resource": "config.json",
+  "sha256": "c4022c931216afcb778991477332e5312aca8be478027ee3a8bf34b7004c44e2"
+}
