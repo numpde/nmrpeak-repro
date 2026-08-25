@@ -9,8 +9,9 @@ from repository_checks.hf_checkpoint import (
     VOLUME_SCHEMA_ID,
     checkpoint_volume_name,
     recover_hf_checkpoint,
+    verify_hf_checkpoint,
 )
-from repository_checks.hf_release import ARCHIVE_MEMBER
+from repository_checks.hf_release import ARCHIVE_MEMBER, parse_release_bytes
 from tests.unit.test_chf_checkpoint import CheckpointOperationFixture
 
 
@@ -45,6 +46,39 @@ class HfCheckpointOperationTests(unittest.TestCase):
         chf_volume = "nmrpeak-chf-checkpoint-" + "a" * 64
         with self.assertRaises(HfCheckpointOperationRejected):
             recover_hf_checkpoint(chf_volume, chf_volume)
+
+    def test_verification_rejects_checkpoint_volume_byte_drift(self) -> None:
+        with CheckpointOperationFixture("hf") as fixture:
+            volume = fixture.import_checkpoint()
+            declaration = (
+                fixture.repository
+                / f"models/nmrpeak_hf_v1/releases/{fixture.release_name}.json"
+            ).read_bytes()
+            release = parse_release_bytes(
+                declaration,
+                expected_release_name=fixture.release_name,
+                expected_source_revision="1" * 40,
+            )
+            self.assertEqual(
+                verify_hf_checkpoint(
+                    fixture.repository,
+                    release,
+                    docker_binary=fixture.docker,
+                    runtime_directory=fixture.runtime,
+                ),
+                volume,
+            )
+            checkpoint = fixture.volume_directory(volume.name) / "checkpoint.pt"
+            checkpoint.chmod(0o644)
+            checkpoint.write_bytes(b"drift")
+            checkpoint.chmod(0o444)
+            with self.assertRaises(HfCheckpointOperationRejected):
+                verify_hf_checkpoint(
+                    fixture.repository,
+                    release,
+                    docker_binary=fixture.docker,
+                    runtime_directory=fixture.runtime,
+                )
 
 
 if __name__ == "__main__":

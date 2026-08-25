@@ -13,8 +13,9 @@ from repository_checks.checkpoint import (
     import_checkpoint,
     recover_checkpoint,
     run_checkpoint_cli,
+    verify_checkpoint_volume,
 )
-from repository_checks.chf_release import CHF_RELEASE_SPEC
+from repository_checks.chf_release import CHF_RELEASE_SPEC, ChfCheckpointRelease
 
 
 VOLUME_SCHEMA_ID = "nmrpeak.checkpoint_volume.chf.v1"
@@ -60,6 +61,22 @@ def recover_chf_checkpoint(
         volume_name,
         confirmation,
         repository_root=repository_root,
+        docker_binary=docker_binary,
+        runtime_directory=runtime_directory,
+    )
+
+
+def verify_chf_checkpoint(
+    repository_root: Path,
+    release: ChfCheckpointRelease,
+    *,
+    docker_binary: Path = DOCKER_BINARY,
+    runtime_directory: Path | None = None,
+) -> CheckpointVolume:
+    return verify_checkpoint_volume(
+        CHF_CHECKPOINT_SPEC,
+        repository_root,
+        release,
         docker_binary=docker_binary,
         runtime_directory=runtime_directory,
     )

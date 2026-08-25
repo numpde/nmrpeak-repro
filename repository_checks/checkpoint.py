@@ -181,6 +181,37 @@ def recover_checkpoint(
             )
 
 
+def verify_checkpoint_volume(
+    spec: CheckpointImportSpec,
+    repository_root: Path,
+    release: CheckpointRelease,
+    *,
+    docker_binary: Path = DOCKER_BINARY,
+    runtime_directory: Path | None = None,
+) -> CheckpointVolume:
+    """Reprove one imported volume's labels, marker, and checkpoint bytes."""
+
+    if type(release) is not CheckpointRelease:
+        raise TypeError("Checkpoint verification requires one admitted release")
+    helper_path = _admit_clean_repository(spec, repository_root)
+    volume_name = checkpoint_volume_name(spec, release.checkpoint_sha256)
+    with _volume_lock(spec, volume_name, runtime_directory):
+        volume = _find_volume(spec, docker_binary, volume_name)
+        if volume is None:
+            raise CheckpointOperationRejected(
+                f"{spec.lane_name} checkpoint volume is not imported"
+            )
+        _run_volume_helper(
+            docker_binary,
+            helper_path,
+            spec,
+            volume,
+            release,
+            "verify",
+        )
+        return volume
+
+
 def checkpoint_volume_name(
     spec: CheckpointImportSpec,
     checkpoint_sha256: str,
