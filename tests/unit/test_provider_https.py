@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -174,6 +175,7 @@ class ProviderHttpsTests(unittest.TestCase):
             outcome,
             ProviderRequestUnavailable(RequestDelivery.NOT_SENT),
         )
+        self.assertIsInstance(outcome.cause, ConnectionRefusedError)
 
     def test_untrusted_server_certificate_is_a_fatal_tls_rejection(self) -> None:
         with _tls_server(self._certificate_directory) as server:
@@ -195,6 +197,7 @@ class ProviderHttpsTests(unittest.TestCase):
                 ),
             )
         self.assertEqual(outcome, ProviderTlsRejected())
+        self.assertIsInstance(outcome.cause, ssl.SSLError)
         self.assertEqual(server.requests, [])
 
     def test_response_envelope_rejects_each_untrusted_common_fact(self) -> None:
@@ -271,6 +274,7 @@ class ProviderHttpsTests(unittest.TestCase):
             outcome,
             ProviderResponseRejected(ResponseRejection.RESPONSE_BODY_INCOMPLETE, 200),
         )
+        self.assertIsInstance(outcome.cause, TimeoutError)
 
     def test_close_before_status_leaves_delivery_possible(self) -> None:
         with _tls_server(self._certificate_directory, close_before_status=True) as server:
@@ -279,6 +283,7 @@ class ProviderHttpsTests(unittest.TestCase):
             outcome,
             ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
         )
+        self.assertIsInstance(outcome.cause, http.client.HTTPException)
         self.assertEqual(len(server.requests), 1)
 
     def test_start_problem_preserves_commit_uncertainty_across_tls(self) -> None:

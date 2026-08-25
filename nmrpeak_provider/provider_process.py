@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 from threading import Event, Thread
 import time
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Never
 
 from .attempt_inventory import (
     AttemptInventoryReadFailed,
@@ -31,7 +31,6 @@ from .attempt_lifecycle import (
     run_recovery_record,
 )
 from .generation_runtime import GenerationLane, GenerationRuntime
-from .interpreter import InterpreterUnavailable
 from .provider_api import ProviderApiClient
 from .provider_outcomes import (
     AttemptMutationCommitPossible,
@@ -365,9 +364,10 @@ def _publish_hello(
     if type(outcome) is ProviderRequestUnavailable:
         return
     if type(outcome) is not ProviderHttpResponse:
-        raise ProviderProtocolFailed(
+        _raise_provider_protocol_failure(
             "Cannot publish provider capabilities: "
-            f"{_fatal_evidence_message(outcome)}."
+            f"{_fatal_evidence_message(outcome)}.",
+            outcome,
         )
     if outcome.status == 200:
         receipt = parse_provider_hello_success(
@@ -418,12 +418,16 @@ def _recover_startup(
             break
         _outcome_is_unavailable(inventory)
         if attempt + 1 == policy.maximum_consecutive_unavailable:
-            raise ProviderStartupUnavailable(
+            failure = ProviderStartupUnavailable(
                 "Cannot start the provider after "
                 f"{policy.maximum_consecutive_unavailable} unavailable reads of the "
                 "in-progress Attempt inventory. No new Jobs were admitted; check API "
                 "availability before restarting."
             )
+            cause = _outcome_failure_cause(inventory)
+            if cause is not None:
+                raise failure from cause
+            raise failure
         if stop.wait(policy.feed_interval_seconds):
             return
     else:
@@ -471,8 +475,9 @@ def _recover_startup(
                     f"operations for {current.execution_attempt_ref}. Its journal record "
                     "remains available for the next startup."
                 )
-                if type(outcome) is InputInterpretationUnavailable:
-                    raise failure from outcome.evidence
+                cause = _outcome_failure_cause(outcome)
+                if cause is not None:
+                    raise failure from cause
                 raise failure
             if stop.wait(policy.feed_interval_seconds):
                 return
@@ -494,7 +499,7 @@ def _run_lane(
     try:
         while not stop.is_set():
             unavailable = False
-            interpreter_failure: InterpreterUnavailable | None = None
+            unavailable_cause: BaseException | None = None
             records = tuple(
                 record
                 for record in journal.records()
@@ -514,8 +519,7 @@ def _run_lane(
                         observation=policy.observation,
                     )
                     unavailable = _outcome_is_unavailable(outcome)
-                    if type(outcome) is InputInterpretationUnavailable:
-                        interpreter_failure = outcome.evidence
+                    unavailable_cause = _outcome_failure_cause(outcome)
                     if unavailable:
                         break
             else:
@@ -542,12 +546,12 @@ def _run_lane(
                         observation=policy.observation,
                     )
                     unavailable = _outcome_is_unavailable(outcome)
-                    if type(outcome) is InputInterpretationUnavailable:
-                        interpreter_failure = outcome.evidence
+                    unavailable_cause = _outcome_failure_cause(outcome)
                 elif type(admitted) is PageExhausted:
                     cursor = admitted.next_cursor
                 elif admitted is not None:
                     unavailable = _outcome_is_unavailable(admitted)
+                    unavailable_cause = _outcome_failure_cause(admitted)
             if unavailable:
                 consecutive_unavailable += 1
                 if (
@@ -561,8 +565,8 @@ def _run_lane(
                         "operations. Any retained Attempt records remain available for "
                         "restart recovery; inspect the failure evidence before restarting."
                     )
-                    if interpreter_failure is not None:
-                        raise failure from interpreter_failure
+                    if unavailable_cause is not None:
+                        raise failure from unavailable_cause
                     raise failure
             else:
                 consecutive_unavailable = 0
@@ -602,16 +606,8 @@ def _owner_for_record(
 def _outcome_is_unavailable(outcome: object) -> bool:
     if type(outcome) is InputInterpretationUnavailable:
         return True
-    if type(outcome) in {
-        AttemptInventoryReadFailed,
-        AttemptObservationFailed,
-        FeedReadFailed,
-        InputReadFailed,
-        AttemptMutationCommitPossible,
-        AttemptMutationNotCommitted,
-    }:
-        evidence = outcome.evidence
-    else:
+    evidence = _outcome_evidence(outcome)
+    if evidence is None:
         return False
     if type(evidence) is ProviderRequestUnavailable:
         return True
@@ -624,16 +620,18 @@ def _outcome_is_unavailable(outcome: object) -> bool:
         }:
             return True
     if type(outcome) is AttemptMutationNotCommitted:
-        raise ProviderProtocolFailed(
+        _raise_provider_protocol_failure(
             "Cannot continue after the API rejected an Attempt mutation: "
             f"{_fatal_evidence_message(evidence)}. The API proved that the mutation "
-            "did not commit."
+            "did not commit.",
+            evidence,
         )
     if type(outcome) is AttemptMutationCommitPossible:
-        raise ProviderProtocolFailed(
+        _raise_provider_protocol_failure(
             "Cannot continue after an Attempt mutation response failed validation: "
             f"{_fatal_evidence_message(evidence)}. The mutation may have committed; "
-            "its retained journal record must be reconciled before retry."
+            "its retained journal record must be reconciled before retry.",
+            evidence,
         )
     operation = {
         AttemptInventoryReadFailed: "read the in-progress Attempt inventory",
@@ -643,9 +641,48 @@ def _outcome_is_unavailable(outcome: object) -> bool:
     }.get(type(outcome))
     if operation is None:
         raise AssertionError("Fatal provider outcome has no operator description")
-    raise ProviderProtocolFailed(
-        f"Cannot {operation}: {_fatal_evidence_message(evidence)}."
+    _raise_provider_protocol_failure(
+        f"Cannot {operation}: {_fatal_evidence_message(evidence)}.",
+        evidence,
     )
+
+
+def _outcome_evidence(outcome: object) -> object | None:
+    if type(outcome) in {
+        AttemptInventoryReadFailed,
+        AttemptObservationFailed,
+        FeedReadFailed,
+        InputReadFailed,
+        AttemptMutationCommitPossible,
+        AttemptMutationNotCommitted,
+    }:
+        return outcome.evidence
+    return None
+
+
+def _outcome_failure_cause(outcome: object) -> BaseException | None:
+    if type(outcome) is InputInterpretationUnavailable:
+        return outcome.evidence
+    evidence = _outcome_evidence(outcome)
+    return _transport_failure_cause(evidence)
+
+
+def _transport_failure_cause(evidence: object) -> BaseException | None:
+    if type(evidence) in {
+        ProviderRequestUnavailable,
+        ProviderResponseRejected,
+        ProviderTlsRejected,
+    }:
+        return evidence.cause
+    return None
+
+
+def _raise_provider_protocol_failure(message: str, evidence: object) -> Never:
+    failure = ProviderProtocolFailed(message)
+    cause = _transport_failure_cause(evidence)
+    if cause is not None:
+        raise failure from cause
+    raise failure
 
 
 def _fatal_evidence_message(evidence: object) -> str:

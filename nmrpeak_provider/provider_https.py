@@ -179,6 +179,7 @@ class ProviderRequestUnavailable:
     """No valid response was received for this single send."""
 
     delivery: RequestDelivery
+    cause: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +187,7 @@ class ProviderTlsRejected:
     """TLS identity or protocol verification failed before HTTP delivery."""
 
     delivery: RequestDelivery = RequestDelivery.NOT_SENT
+    cause: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +197,7 @@ class ProviderResponseRejected:
     reason: ResponseRejection
     status: int | None
     delivery: RequestDelivery = RequestDelivery.RESPONSE_RECEIVED
+    cause: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 ProviderHttpsOutcome = (
@@ -305,15 +308,18 @@ def send_provider_request(
     try:
         try:
             connection.connect()
-        except (ssl.SSLCertVerificationError, ssl.SSLError):
-            return ProviderTlsRejected()
-        except (OSError, TimeoutError):
-            return ProviderRequestUnavailable(RequestDelivery.NOT_SENT)
+        except (ssl.SSLCertVerificationError, ssl.SSLError) as error:
+            return ProviderTlsRejected(cause=error)
+        except (OSError, TimeoutError) as error:
+            return ProviderRequestUnavailable(RequestDelivery.NOT_SENT, error)
 
         deadline = monotonic() + endpoint.io_deadline_seconds
         transport_socket = connection.sock
         if transport_socket is None:
-            return ProviderRequestUnavailable(RequestDelivery.NOT_SENT)
+            return ProviderRequestUnavailable(
+                RequestDelivery.NOT_SENT,
+                RuntimeError("HTTPS connection exposed no transport socket"),
+            )
         try:
             _set_remaining_socket_timeout(transport_socket, deadline)
             connection.putrequest(
@@ -329,8 +335,8 @@ def send_provider_request(
             connection.endheaders(request.body)
             _set_remaining_socket_timeout(transport_socket, deadline)
             response = connection.getresponse()
-        except (OSError, TimeoutError, http.client.HTTPException):
-            return ProviderRequestUnavailable(RequestDelivery.POSSIBLE)
+        except (OSError, TimeoutError, http.client.HTTPException) as error:
+            return ProviderRequestUnavailable(RequestDelivery.POSSIBLE, error)
 
         return _read_response(
             transport_socket=transport_socket,
@@ -428,8 +434,12 @@ def _read_response(
                 break
             body_parts.append(part)
             body_length += len(part)
-    except (OSError, TimeoutError, http.client.HTTPException):
-        return ProviderResponseRejected(ResponseRejection.RESPONSE_BODY_INCOMPLETE, status)
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        return ProviderResponseRejected(
+            ResponseRejection.RESPONSE_BODY_INCOMPLETE,
+            status,
+            cause=error,
+        )
     body = b"".join(body_parts)
     if len(body) > profile.response_body_limit:
         return ProviderResponseRejected(ResponseRejection.RESPONSE_BODY_TOO_LARGE, status)

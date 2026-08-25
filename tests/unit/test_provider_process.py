@@ -97,12 +97,14 @@ class ConcurrentProviderApi:
         failing_analysis: str | None = None,
         fatal_analysis: str | None = None,
         unavailable_analysis: str | None = None,
+        unavailable_cause: BaseException | None = None,
     ) -> None:
         self.stop = stop
         self.terminal = terminal
         self.failing_analysis = failing_analysis
         self.fatal_analysis = fatal_analysis
         self.unavailable_analysis = unavailable_analysis
+        self.unavailable_cause = unavailable_cause
         self.feed_barrier = Barrier(2)
         self.requests: list[object] = []
         self._lock = Lock()
@@ -139,7 +141,10 @@ class ConcurrentProviderApi:
             if analysis_kind == self.fatal_analysis:
                 return response({"schema_id": "wrong"})
             if analysis_kind == self.unavailable_analysis:
-                return ProviderRequestUnavailable(RequestDelivery.NOT_SENT)
+                return ProviderRequestUnavailable(
+                    RequestDelivery.NOT_SENT,
+                    self.unavailable_cause,
+                )
             if (
                 self.failing_analysis is None
                 and self.fatal_analysis is None
@@ -453,9 +458,11 @@ class ProviderProcessTests(unittest.TestCase):
     def test_lane_stops_after_its_bounded_unavailability_budget(self) -> None:
         runtime = generation_runtime()
         stop = Event()
+        transport_failure = OSError("provider test transport failure")
         api = ConcurrentProviderApi(
             stop=stop,
             unavailable_analysis=HF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+            unavailable_cause=transport_failure,
         )
         hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
@@ -480,6 +487,7 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertIn("hf lane", str(cause))
         self.assertIn("2 consecutive unavailable operations", str(cause))
         self.assertIn("inspect the failure evidence before restarting", str(cause))
+        self.assertIs(cause.__cause__, transport_failure)
         hf_feeds = [
             request
             for request in api.requests
