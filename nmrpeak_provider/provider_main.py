@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import stat
 from threading import Event
+import traceback
 
 from .attempt_journal_store import AttemptJournalStore
 from .frozen_generation import FrozenGeneration, load_frozen_generation
@@ -160,8 +161,8 @@ def _prepare_hello(frozen: FrozenGeneration):
         raise ValueError("Frozen generation has an invalid public file inventory")
     try:
         descriptions = tuple(files[path].decode("utf-8") for path in _HELLO_FILES)
-    except UnicodeDecodeError:
-        raise ValueError("Frozen hello description is not UTF-8 text") from None
+    except UnicodeDecodeError as error:
+        raise ValueError("Frozen hello description is not UTF-8 text") from error
     return prepare_provider_hello(
         display_name=_DISPLAY_NAME,
         description=_DESCRIPTION,
@@ -179,8 +180,8 @@ def _prepare_hello(frozen: FrozenGeneration):
 def _read_regular_file(path: Path, maximum_bytes: int) -> bytes:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    except OSError:
-        raise ValueError("Provider startup input is unavailable") from None
+    except OSError as error:
+        raise ValueError(f"Cannot read provider startup input {path}") from error
     try:
         status = os.fstat(descriptor)
         if not stat.S_ISREG(status.st_mode) or status.st_size > maximum_bytes:
@@ -197,43 +198,15 @@ def main() -> int:
     try:
         run_provider()
     except Exception as error:
-        print(_render_provider_failure(error), file=os.sys.stderr)
+        print("Provider process stopped unexpectedly.", file=os.sys.stderr)
+        traceback.print_exception(error, file=os.sys.stderr)
+        print(
+            "The provider is not ready; inspect the failure above and the runner "
+            "status before restarting.",
+            file=os.sys.stderr,
+        )
         return 1
     return 0
-
-
-def _render_provider_failure(error: Exception) -> str:
-    """Render the process outcome and one owned causal layer for operators."""
-
-    lines = [
-        "Provider process stopped unexpectedly: "
-        f"{_owned_provider_diagnostic(error)}"
-    ]
-    cause = error.__cause__
-    if cause is not None and _is_owned_provider_error(cause):
-        lines.append(f"Cause: {cause}")
-    if _is_owned_provider_error(error) and getattr(error, "__notes__", ()):
-        lines.append(
-            "Additional failure: shutdown could not confirm every local resource "
-            "closure."
-        )
-    lines.append(
-        "The provider is not ready; inspect the deployment and runner status before "
-        "restarting."
-    )
-    return "\n".join(lines)
-
-
-def _owned_provider_diagnostic(error: Exception) -> str:
-    if _is_owned_provider_error(error):
-        return str(error)
-    return "an unexpected internal error escaped the provider boundary"
-
-
-def _is_owned_provider_error(error: BaseException) -> bool:
-    return type(error) is ValueError or type(error).__module__.startswith(
-        "nmrpeak_provider."
-    )
 
 
 if __name__ == "__main__":

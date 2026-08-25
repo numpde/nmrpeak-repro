@@ -203,13 +203,13 @@ class _OpenAIChatCall:
                     # of OpenAI-specific operational failures. The sleep and
                     # all attempts remain inside the one advertised deadline.
                     await asyncio.sleep(self._policy.retry_delay_seconds)
-        except (httpx.TransportError, TimeoutError):
-            raise InterpreterTransportError("endpoint_unavailable") from None
+        except (httpx.TransportError, TimeoutError) as error:
+            raise InterpreterTransportError("endpoint_unavailable") from error
 
         try:
             return _parse_completion(response_body)
-        except (UnicodeError, ValueError, RecursionError):
-            raise InterpreterTransportError("invalid_response_envelope") from None
+        except (UnicodeError, ValueError, RecursionError) as error:
+            raise InterpreterTransportError("invalid_response_envelope") from error
 
     async def _post_once(
         self,
@@ -238,15 +238,15 @@ class _OpenAIChatCall:
             if response is not None:
                 self._schedule_response_release(response, deadline=deadline)
             raise
-        except (httpx.TransportError, httpx.DecodingError):
+        except (httpx.TransportError, httpx.DecodingError) as error:
             if response is not None:
                 release = self._schedule_response_release(
                     response,
                     deadline=deadline,
                 )
                 await asyncio.shield(release)
-            raise httpx.TransportError("response delivery failed") from None
-        except Exception:
+            raise httpx.TransportError("response delivery failed") from error
+        except Exception as error:
             if response is not None:
                 release = self._schedule_response_release(
                     response,
@@ -258,7 +258,7 @@ class _OpenAIChatCall:
                     # iterator declares the body complete. A close exception
                     # is therefore an incomplete delivery at this boundary,
                     # not a trustworthy model result followed by housekeeping.
-                    raise httpx.TransportError("response close failed") from None
+                    raise httpx.TransportError("response close failed") from error
             # Do not disguise an adapter or invariant defect as endpoint
             # unavailability; generic fallback is only for operational errors.
             raise

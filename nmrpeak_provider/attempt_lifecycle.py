@@ -199,6 +199,8 @@ class InputFailurePending:
 class InputInterpretationUnavailable:
     """No configured interpreter produced a trustworthy answer in time."""
 
+    evidence: InterpreterUnavailable
+
 
 PreExecutionOutcome = (
     PreparedForExecution
@@ -669,8 +671,8 @@ def prepare_execution(
             return _retain_input_rejection(journal, record, problem.message)
         except InterpretationRejected as rejection:
             return _retain_input_rejection(journal, record, rejection.message)
-        except InterpreterUnavailable:
-            return InputInterpretationUnavailable()
+        except InterpreterUnavailable as unavailable:
+            return InputInterpretationUnavailable(unavailable)
     return PreparedForExecution(record, validated)
 
 

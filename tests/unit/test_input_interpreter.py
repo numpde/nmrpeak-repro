@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import cast
 from unittest.mock import patch
 
 from nmrpeak_provider.chf_binding import ChfRunnerInput
@@ -17,6 +18,7 @@ from nmrpeak_provider.interpreter import (
     InterpreterEndpoint,
     InterpreterCall,
     InterpreterPrompt,
+    InterpreterProtocolError,
     InterpretationRejected,
     InterpreterTool,
     InterpreterToolInvocation,
@@ -212,7 +214,7 @@ class InputInterpreterTests(unittest.TestCase):
 
         with self.assertLogs(
             "nmrpeak_provider.input_interpreter", level="WARNING"
-        ) as logged, self.assertRaises(InterpreterUnavailable):
+        ) as logged, self.assertRaises(InterpreterUnavailable) as raised:
             run_with_endpoint(call)
         rendered = "\n".join(logged.output)
         self.assertIn("endpoint fake-1 failed while preparing Attempt", rendered)
@@ -220,6 +222,27 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIn("endpoints_exhausted", rendered)
         self.assertIn("No runner request was validated", rendered)
         self.assertNotIn(SOURCE.decode(), rendered)
+        self.assertIsInstance(raised.exception.__cause__, ExceptionGroup)
+        assert isinstance(raised.exception.__cause__, ExceptionGroup)
+        self.assertEqual(len(raised.exception.__cause__.exceptions), 1)
+        self.assertIsInstance(
+            raised.exception.__cause__.exceptions[0],
+            InterpreterTransportError,
+        )
+
+    def test_endpoint_protocol_failure_is_preserved_as_the_unavailable_cause(self) -> None:
+        async def call(_prompt: object) -> InterpreterTurn:
+            return cast(InterpreterTurn, object())
+
+        with self.assertRaises(InterpreterUnavailable) as raised:
+            run_with_endpoint(call)
+
+        self.assertIsInstance(raised.exception.__cause__, ExceptionGroup)
+        assert isinstance(raised.exception.__cause__, ExceptionGroup)
+        self.assertEqual(len(raised.exception.__cause__.exceptions), 1)
+        protocol_failure = raised.exception.__cause__.exceptions[0]
+        self.assertIsInstance(protocol_failure, InterpreterProtocolError)
+        self.assertEqual(str(protocol_failure), "invalid_turn_type")
 
 
 def run_with_endpoint(

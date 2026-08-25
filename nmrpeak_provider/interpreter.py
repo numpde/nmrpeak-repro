@@ -48,7 +48,7 @@ class InterpreterProtocolError(ValueError):
 
     def __init__(self, reason: str) -> None:
         self.reason = _require_failure_reason(reason)
-        super().__init__("interpreter_protocol_error")
+        super().__init__(self.reason)
 
 
 class InterpreterTransportError(RuntimeError):
@@ -56,10 +56,7 @@ class InterpreterTransportError(RuntimeError):
 
     def __init__(self, reason: str = "unclassified") -> None:
         self.reason = _require_failure_reason(reason)
-        # Keep the classification out of incidental tracebacks. Deliberate
-        # operator surfaces may project ``reason`` without risking response
-        # bodies, prompts, or credentials.
-        super().__init__("interpreter_transport_error")
+        super().__init__(self.reason)
 
 
 class InterpreterUnavailableReason(StrEnum):
@@ -81,7 +78,10 @@ class InterpreterUnavailable(RuntimeError):
     ) -> None:
         self.reason = reason
         self.attempted_configuration_ids = attempted_configuration_ids
-        super().__init__("interpreter_unavailable")
+        attempted = ",".join(attempted_configuration_ids) or "none"
+        super().__init__(
+            f"{reason.value}; attempted interpreter endpoints: {attempted}"
+        )
 
 
 class ReportedInputProblem(ValueError):
@@ -236,14 +236,15 @@ async def interpret(
             {"role": "user", "content": source_text},
         ]
         correction = _read_prompt(_CORRECTION_PROMPT_PATH)
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, UnicodeError, ValueError) as error:
         # Prompt files are runtime dependencies. A broken hot reload is an
         # unavailable interpreter, not evidence that caller input was bad.
         raise InterpreterUnavailable(
             InterpreterUnavailableReason.PROMPT_UNAVAILABLE
-        ) from None
+        ) from error
 
     attempted: list[str] = []
+    endpoint_failures: list[BaseException] = []
     all_endpoints_rejected_candidate = True
     last_rejection: str | None = None
     deadline = asyncio.timeout(interpretation_timeout_seconds)
@@ -264,6 +265,7 @@ async def interpret(
                         assistant = await endpoint.call(deepcopy(prompt))
                     except InterpreterTransportError as error:
                         all_endpoints_rejected_candidate = False
+                        endpoint_failures.append(error)
                         _report_endpoint_failure(
                             report_endpoint_failure,
                             endpoint.configuration_id,
@@ -273,11 +275,13 @@ async def interpret(
                         break
                     if type(assistant) is not InterpreterTurn:
                         all_endpoints_rejected_candidate = False
+                        error = InterpreterProtocolError("invalid_turn_type")
+                        endpoint_failures.append(error)
                         _report_endpoint_failure(
                             report_endpoint_failure,
                             endpoint.configuration_id,
                             failure_kind="protocol",
-                            failure_reason="invalid_turn_type",
+                            failure_reason=error.reason,
                         )
                         break
 
@@ -300,6 +304,7 @@ async def interpret(
                     except InterpreterProtocolError as error:
                         if repair_exhausted or not has_repair_context:
                             all_endpoints_rejected_candidate = False
+                            endpoint_failures.append(error)
                             _report_endpoint_failure(
                                 report_endpoint_failure,
                                 endpoint.configuration_id,
@@ -328,7 +333,7 @@ async def interpret(
                         configuration_id=endpoint.configuration_id,
                         attempted_configuration_ids=tuple(attempted),
                     )
-    except TimeoutError:
+    except TimeoutError as error:
         if not deadline.expired():
             # Endpoint adapters must translate their own operational timeouts
             # to InterpreterTransportError. Do not conceal a broken adapter
@@ -347,7 +352,7 @@ async def interpret(
         raise InterpreterUnavailable(
             InterpreterUnavailableReason.DEADLINE_EXCEEDED,
             attempted_configuration_ids=tuple(attempted),
-        ) from None
+        ) from error
 
     if all_endpoints_rejected_candidate:
         if last_rejection is None:
@@ -355,10 +360,16 @@ async def interpret(
                 "Interpreter rejection outcome has no runner diagnostic"
             )
         raise InterpretationRejected(last_rejection)
-    raise InterpreterUnavailable(
+    unavailable = InterpreterUnavailable(
         InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
         attempted_configuration_ids=tuple(attempted),
-    ) from None
+    )
+    if endpoint_failures:
+        raise unavailable from ExceptionGroup(
+            "Interpreter endpoint failures",
+            endpoint_failures,
+        )
+    raise unavailable
 
 
 def _report_endpoint_failure(

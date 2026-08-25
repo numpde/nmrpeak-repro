@@ -454,8 +454,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests, 2)
         self.assertEqual(raised.exception.reason, "endpoint_unavailable")
         rendered = "".join(traceback.format_exception(raised.exception))
-        self.assertNotIn("private read failure", rendered)
-        self.assertNotIn("private close failure", rendered)
+        self.assertIn("private read failure", rendered)
 
     async def test_cancellation_cleanup_is_owned_until_client_teardown(self) -> None:
         stream = _ControlledReadAndCloseStream()
@@ -585,7 +584,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests, 2)
         self.assertEqual(raised.exception.reason, "endpoint_unavailable")
         rendered = "".join(traceback.format_exception(raised.exception))
-        self.assertNotIn("not a gzip stream", rendered)
+        self.assertIn("incorrect header check", rendered)
 
     async def test_rejects_unknown_reasoning_effort(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

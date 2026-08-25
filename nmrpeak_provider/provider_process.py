@@ -31,6 +31,7 @@ from .attempt_lifecycle import (
     run_recovery_record,
 )
 from .generation_runtime import GenerationLane, GenerationRuntime
+from .interpreter import InterpreterUnavailable
 from .provider_api import ProviderApiClient
 from .provider_outcomes import (
     AttemptMutationCommitPossible,
@@ -464,12 +465,15 @@ def _recover_startup(
                 )
             current = retained[0]
             if attempt + 1 == policy.maximum_consecutive_unavailable:
-                raise ProviderStartupUnavailable(
+                failure = ProviderStartupUnavailable(
                     "Cannot start the provider after "
                     f"{policy.maximum_consecutive_unavailable} unavailable recovery "
                     f"operations for {current.execution_attempt_ref}. Its journal record "
                     "remains available for the next startup."
                 )
+                if type(outcome) is InputInterpretationUnavailable:
+                    raise failure from outcome.evidence
+                raise failure
             if stop.wait(policy.feed_interval_seconds):
                 return
 
@@ -490,6 +494,7 @@ def _run_lane(
     try:
         while not stop.is_set():
             unavailable = False
+            interpreter_failure: InterpreterUnavailable | None = None
             records = tuple(
                 record
                 for record in journal.records()
@@ -509,6 +514,8 @@ def _run_lane(
                         observation=policy.observation,
                     )
                     unavailable = _outcome_is_unavailable(outcome)
+                    if type(outcome) is InputInterpretationUnavailable:
+                        interpreter_failure = outcome.evidence
                     if unavailable:
                         break
             else:
@@ -535,6 +542,8 @@ def _run_lane(
                         observation=policy.observation,
                     )
                     unavailable = _outcome_is_unavailable(outcome)
+                    if type(outcome) is InputInterpretationUnavailable:
+                        interpreter_failure = outcome.evidence
                 elif type(admitted) is PageExhausted:
                     cursor = admitted.next_cursor
                 elif admitted is not None:
@@ -545,13 +554,16 @@ def _run_lane(
                     consecutive_unavailable
                     >= policy.maximum_consecutive_unavailable
                 ):
-                    raise ProviderLaneUnavailable(
+                    failure = ProviderLaneUnavailable(
                         f"Cannot continue the {owner.generation.lane.offering.implementation_ref} "
                         "lane after "
                         f"{policy.maximum_consecutive_unavailable} consecutive unavailable "
-                        "API operations. Any retained Attempt records remain available for "
-                        "restart recovery; check API availability before restarting."
+                        "operations. Any retained Attempt records remain available for "
+                        "restart recovery; inspect the failure evidence before restarting."
                     )
+                    if interpreter_failure is not None:
+                        raise failure from interpreter_failure
+                    raise failure
             else:
                 consecutive_unavailable = 0
             if owner.session.retired:

@@ -478,8 +478,8 @@ class ProviderProcessTests(unittest.TestCase):
         cause = raised.exception.__cause__
         self.assertIs(type(cause), ProviderLaneUnavailable)
         self.assertIn("hf lane", str(cause))
-        self.assertIn("2 consecutive unavailable API operations", str(cause))
-        self.assertIn("check API availability before restarting", str(cause))
+        self.assertIn("2 consecutive unavailable operations", str(cause))
+        self.assertIn("inspect the failure evidence before restarting", str(cause))
         hf_feeds = [
             request
             for request in api.requests

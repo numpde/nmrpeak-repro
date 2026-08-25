@@ -636,6 +636,11 @@ class AttemptLifecycleTests(unittest.TestCase):
                 )
                 self.assertEqual(journal.records(), (active,))
         self.assertIs(type(outcome), InputInterpretationUnavailable)
+        self.assertIs(
+            outcome.evidence.reason,
+            InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
+        )
+        self.assertEqual(outcome.evidence.attempted_configuration_ids, ("fake",))
 
     def test_reported_input_problem_uses_existing_terminal_authority(self) -> None:
         canonical_input = b"Proton and carbon peak lists without a molecular formula."

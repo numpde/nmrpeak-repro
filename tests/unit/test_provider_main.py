@@ -69,13 +69,13 @@ class ProviderMainTests(unittest.TestCase):
         rendered = stderr.getvalue()
         self.assertIn("Provider process stopped unexpectedly", rendered)
         self.assertIn("coordinated provider shutdown began", rendered)
-        self.assertIn("Cause: Cannot read the Job feed", rendered)
-        self.assertIn("shutdown could not confirm every local resource closure", rendered)
+        self.assertIn("Cannot read the Job feed", rendered)
+        self.assertIn("A sibling runner session also failed to close", rendered)
         self.assertIn("provider is not ready", rendered)
 
-    def test_main_does_not_publish_unowned_exception_text(self) -> None:
-        failure = RuntimeError("api_key=must-not-reach-operator-stderr")
-        failure.add_note("credential=must-not-reach-operator-stderr")
+    def test_main_publishes_unexpected_exception_text_and_notes(self) -> None:
+        failure = RuntimeError("original unexpected failure")
+        failure.add_note("original cleanup note")
         stderr = StringIO()
 
         with (
@@ -85,8 +85,31 @@ class ProviderMainTests(unittest.TestCase):
             self.assertEqual(main(), 1)
 
         rendered = stderr.getvalue()
-        self.assertIn("unexpected internal error", rendered)
-        self.assertNotIn("must-not-reach-operator-stderr", rendered)
+        self.assertIn("RuntimeError: original unexpected failure", rendered)
+        self.assertIn("original cleanup note", rendered)
+
+    def test_main_publishes_nested_grouped_failure_evidence(self) -> None:
+        endpoint_failures = ExceptionGroup(
+            "Interpreter endpoint failures",
+            [RuntimeError("endpoint one refused the connection")],
+        )
+        unavailable = ProviderProtocolFailed("All interpreter endpoints failed")
+        unavailable.__cause__ = endpoint_failures
+        failure = ProviderLaneFailed("The hf provider lane stopped")
+        failure.__cause__ = unavailable
+        stderr = StringIO()
+
+        with (
+            patch("nmrpeak_provider.provider_main.run_provider", side_effect=failure),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(main(), 1)
+
+        rendered = stderr.getvalue()
+        self.assertIn("Interpreter endpoint failures", rendered)
+        self.assertIn("endpoint one refused the connection", rendered)
+        self.assertIn("All interpreter endpoints failed", rendered)
+        self.assertIn("The hf provider lane stopped", rendered)
 
     def test_hello_uses_only_the_two_authenticated_frozen_descriptions(self) -> None:
         frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
