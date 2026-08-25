@@ -36,9 +36,8 @@ Copy shifts, integrals, and couplings into the shown string fields without
 rounding. `j_hz` is always a list and may be empty. Multiplicity must preserve
 the reported NMR label, such as `s`, `d`, `t`, `q`, `m`, `dd`, `dt`, or `brs`.
 
-At least one proton peak is required. Do not infer or repair missing values.
-Ignore candidate structures, identifiers, provenance, evaluation, and decode
-metadata. Call `report_input_problem` only when the formula or usable proton
-peak list is missing, ambiguous, contradictory in the source, or cannot be
-transcribed without inventing a required value. Do not report a problem merely
-because supplied values appear chemically unusual or mutually implausible.
+At least one proton peak is required. If a required peak field is not reported,
+do not infer it. Ignore candidate structures, identifiers, provenance,
+evaluation, and decode metadata. A reported formula or peak value remains
+source data even when it appears chemically unusual. Do not cross-check the
+formula and peaks for scientific consistency.

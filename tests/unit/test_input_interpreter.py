@@ -24,7 +24,7 @@ from nmrpeak_provider.interpreter import (
     ReportedInputProblem,
 )
 from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE, HF_LIFECYCLE_LANE
-from nmrpeak_provider.runner_session import ValidatedRunnerRequest
+from nmrpeak_provider.runner_session import RunnerInputRejected, ValidatedRunnerRequest
 
 
 SOURCE = b"Formula C2H6O. 1H: 1.25 (t, 3H, J 7.1 Hz). 13C: 58.1."
@@ -65,11 +65,17 @@ CHF_VALUE = {
 
 
 class CapturingSession:
-    def __init__(self) -> None:
+    def __init__(self, *, reject_first: bool = False) -> None:
         self.model_inputs: list[object] = []
+        self.reject_first = reject_first
 
-    def validate(self, **values: object) -> ValidatedRunnerRequest:
+    def validate(
+        self, **values: object
+    ) -> RunnerInputRejected | ValidatedRunnerRequest:
         self.model_inputs.append(values["model_input"])
+        if self.reject_first:
+            self.reject_first = False
+            return RunnerInputRejected()
         return ValidatedRunnerRequest(self, object())
 
 
@@ -134,6 +140,33 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIs(type(validated), ValidatedRunnerRequest)
         self.assertEqual(len(session.model_inputs), 1)
         self.assertIs(type(session.model_inputs[0]), ChfRunnerInput)
+
+    def test_runner_repair_does_not_invite_changes_to_supplied_values(self) -> None:
+        prompts: list[object] = []
+
+        async def call(prompt: object) -> InterpreterTurn:
+            prompts.append(prompt)
+            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
+
+        run_with_endpoint(call, session=CapturingSession(reject_first=True))
+
+        self.assertEqual(len(prompts), 2)
+        repaired = cast(list[dict[str, str]], prompts[1])
+        self.assertEqual(repaired[-2]["role"], "tool")
+        self.assertIn(
+            "preserve the caller's supplied values",
+            repaired[-2]["content"],
+        )
+        self.assertNotIn("corrected complete document", repaired[-2]["content"])
+        self.assertIn(
+            "cannot accept the supplied input unchanged",
+            repaired[-2]["content"],
+        )
+        self.assertEqual(repaired[-1]["role"], "user")
+        self.assertIn(
+            "Never change a supplied value",
+            repaired[-1]["content"],
+        )
 
     def test_reported_input_problem_remains_a_caller_failure(self) -> None:
         async def call(_prompt: object) -> InterpreterTurn:

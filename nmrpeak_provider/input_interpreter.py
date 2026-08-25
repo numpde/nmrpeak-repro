@@ -49,8 +49,10 @@ _PROMPT_PATHS = {
 }
 _RUNNER_REJECTION = ProviderDiagnosticText(
     "The interpreted document does not meet the selected runner's input requirements. "
-    "Call submit_interpretation with one corrected complete document, or call "
-    "report_input_problem to explain which required caller value is missing or unsupported."
+    "Compare it with the source and preserve the caller's supplied values. If the prior "
+    "document mis-transcribed the source, call submit_interpretation with one accurate, "
+    "complete document. Otherwise, call report_input_problem and explain that the selected "
+    "runner cannot accept the supplied input unchanged."
 )
 
 
