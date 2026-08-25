@@ -669,8 +669,8 @@ def prepare_execution(
             return _retain_input_rejection(journal, record)
         except ReportedInputProblem as problem:
             return _retain_input_rejection(journal, record, problem.message)
-        except InterpretationRejected as rejection:
-            return _retain_input_rejection(journal, record, rejection.diagnostic)
+        except InterpretationRejected:
+            return _retain_input_rejection(journal, record)
         except InterpreterUnavailable as unavailable:
             return InputInterpretationUnavailable(unavailable)
     return PreparedForExecution(record, validated)

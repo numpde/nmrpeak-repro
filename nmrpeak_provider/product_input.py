@@ -19,7 +19,11 @@ MAX_CARBON_PEAKS = 64
 MAX_COUPLINGS_PER_PEAK = 8
 MAX_FORMULA_ATOMS = 100
 
-_PUBLIC_REJECTION = "The Job input is not supported by this NMRPeak analysis."
+_PUBLIC_REJECTION = (
+    "The input could not be validated, so this Job did not run the analysis. Check "
+    "the molecular formula and the peak lists required for this analysis. Because "
+    "this Job is terminal, submit corrected input as a new Job."
+)
 _FORMULA_TOKEN = re.compile(r"([A-Z][a-z]?)([1-9][0-9]{0,2})?")
 _PROTON_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?")
 _CARBON_OR_COUPLING_DECIMAL = re.compile(

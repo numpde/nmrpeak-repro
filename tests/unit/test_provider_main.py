@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+from io import StringIO
 from types import SimpleNamespace
 import signal
 import unittest
@@ -11,7 +13,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
 from nmrpeak_provider.frozen_generation import FrozenGeneration
-from nmrpeak_provider.provider_main import _prepare_hello, run_provider
+from nmrpeak_provider.provider_main import (
+    _prepare_hello,
+    main,
+    run_provider,
+)
+from nmrpeak_provider.provider_process import (
+    ProviderLaneFailed,
+    ProviderProtocolFailed,
+)
 from nmrpeak_provider.provider_credential import parse_provider_signing_credential
 from tests.unit.test_frozen_generation import FILES, runtime
 from tests.unit.test_provider_config import CONFIG
@@ -38,6 +48,46 @@ class FakeJournal:
 
 
 class ProviderMainTests(unittest.TestCase):
+    def test_main_renders_process_effect_cause_and_cleanup_note(self) -> None:
+        cause = ProviderProtocolFailed(
+            "Cannot read the Job feed: the HTTP 403 problem response failed validation."
+        )
+        failure = ProviderLaneFailed(
+            "The hf provider lane stopped unexpectedly, so coordinated provider "
+            "shutdown began."
+        )
+        failure.__cause__ = cause
+        failure.add_note("A sibling runner session also failed to close.")
+        stderr = StringIO()
+
+        with (
+            patch("nmrpeak_provider.provider_main.run_provider", side_effect=failure),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(main(), 1)
+
+        rendered = stderr.getvalue()
+        self.assertIn("Provider process stopped unexpectedly", rendered)
+        self.assertIn("coordinated provider shutdown began", rendered)
+        self.assertIn("Cause: Cannot read the Job feed", rendered)
+        self.assertIn("shutdown could not confirm every local resource closure", rendered)
+        self.assertIn("provider is not ready", rendered)
+
+    def test_main_does_not_publish_unowned_exception_text(self) -> None:
+        failure = RuntimeError("api_key=must-not-reach-operator-stderr")
+        failure.add_note("credential=must-not-reach-operator-stderr")
+        stderr = StringIO()
+
+        with (
+            patch("nmrpeak_provider.provider_main.run_provider", side_effect=failure),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(main(), 1)
+
+        rendered = stderr.getvalue()
+        self.assertIn("unexpected internal error", rendered)
+        self.assertNotIn("must-not-reach-operator-stderr", rendered)
+
     def test_hello_uses_only_the_two_authenticated_frozen_descriptions(self) -> None:
         frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
 

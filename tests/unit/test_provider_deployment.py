@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
-from io import BytesIO
+from contextlib import nullcontext, redirect_stderr
+from io import BytesIO, StringIO
 import json
 from pathlib import Path
 import stat
@@ -582,6 +582,19 @@ class ProviderDeploymentTests(unittest.TestCase):
                 provider_deployment._admit_interpreter_configs(state)
             grant.assert_called_once_with(directory)
 
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_read_acl",
+                    return_value=("user::rwx",),
+                ),
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "operator-installed mode-0600 file",
+                ),
+            ):
+                provider_deployment._admit_interpreter_configs(state)
+
             (directory / "README").write_text("unexpected", encoding="utf-8")
             with (
                 patch.object(
@@ -591,7 +604,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(
                     DeploymentOperationRejected,
-                    "invalid file",
+                    "filename must end in .toml",
                 ),
             ):
                 provider_deployment._admit_interpreter_configs(state)
@@ -747,6 +760,102 @@ class ProviderDeploymentTests(unittest.TestCase):
             ("--pull", "never"),
         )
         self.assertEqual(captured["timeout"], 720)
+
+        compose_failure = DeploymentOperationRejected(
+            "The Docker provider deployment operation exited with status 1: "
+            "container provider is unhealthy"
+        )
+        with patch.object(
+            provider_deployment,
+            "_docker_command",
+            side_effect=compose_failure,
+        ), self.assertRaises(DeploymentOperationRejected) as raised:
+            provider_deployment._run_compose_plan(
+                Path("/usr/bin/docker"),
+                repository,
+                "production",
+                plan,
+            )
+        rendered = str(raised.exception)
+        self.assertIn("Cannot confirm provider deployment 'production' is ready", rendered)
+        self.assertIn("Containers and session volumes may remain", rendered)
+        self.assertIn("provider/deployment/status DEPLOYMENT=production", rendered)
+        self.assertIn("provider/logs DEPLOYMENT=production", rendered)
+        self.assertIs(raised.exception.__cause__, compose_failure)
+
+    def test_docker_rejection_keeps_one_bounded_printable_diagnostic(self) -> None:
+        diagnostic = b"progress\n\x1b[31mcontainer provider is unhealthy\x1b[0m\n"
+        with patch.object(
+            subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess((), 1, b"", diagnostic),
+        ), self.assertRaises(DeploymentOperationRejected) as raised:
+            provider_deployment._docker_command(
+                Path("/usr/bin/docker"),
+                ("compose", "up"),
+                timeout=720,
+            )
+        self.assertEqual(
+            str(raised.exception),
+            "The Docker provider deployment operation exited with status 1: "
+            "container provider is unhealthy",
+        )
+
+    def test_cli_names_missing_and_forbidden_operation_options(self) -> None:
+        cases = (
+            (["config", "localhost", "--replace"], "config does not accept --replace"),
+            (
+                ["credential-install", "localhost", "--confirm", "x"],
+                "requires --nmr-api-v1; does not accept --confirm",
+            ),
+            (["down", "localhost", "--confirm", "x"], "down does not accept --confirm"),
+            (
+                ["generation-remove", "localhost", "--nmr-api-v1", "/tmp/api"],
+                "requires --frozen-generation and --confirm; does not accept --nmr-api-v1",
+            ),
+            (["init", "localhost", "--replace"], "init does not accept --replace"),
+            (
+                ["journal-retire", "localhost", "--replace"],
+                "requires --confirm; does not accept --replace",
+            ),
+            (["logs", "localhost", "--confirm", "x"], "logs does not accept --confirm"),
+            (["status", "localhost", "--replace"], "status does not accept --replace"),
+            (["up", "localhost", "--replace"], "up does not accept --replace"),
+        )
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                stderr = StringIO()
+                with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                    provider_deployment.main(arguments)
+                self.assertIn(expected, stderr.getvalue())
+
+    def test_deployment_renderer_preserves_owned_cause_without_raw_os_error(self) -> None:
+        cause = DeploymentOperationRejected(
+            "The Docker provider deployment operation exited with status 1: "
+            "container provider is unhealthy"
+        )
+        failure = DeploymentOperationRejected(
+            "Cannot confirm provider deployment 'localhost' is ready"
+        )
+        failure.__cause__ = cause
+        cause.__cause__ = OSError("secret-bearing raw daemon detail")
+
+        stderr = StringIO()
+        with (
+            patch.object(
+                provider_deployment,
+                "start_deployment",
+                side_effect=failure,
+            ),
+            redirect_stderr(stderr),
+        ):
+            status = provider_deployment.main(["up", "localhost"])
+
+        self.assertEqual(status, 2)
+        rendered = stderr.getvalue()
+        self.assertIn("Provider deployment startup failed for 'localhost'", rendered)
+        self.assertIn("Cause: The Docker provider deployment operation", rendered)
+        self.assertNotIn("secret-bearing raw daemon detail", rendered)
 
     def test_localhost_render_selects_the_exact_overlay(self) -> None:
         rendered = canonical_json_bytes(compose_document())

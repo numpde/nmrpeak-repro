@@ -45,6 +45,8 @@ from .provider_https import (
     ProviderHttpResponse,
     ProviderOperation,
     ProviderRequestUnavailable,
+    ProviderResponseRejected,
+    ProviderTlsRejected,
 )
 from .provider_requests import _PreparedProviderRequest
 from .provider_success import (
@@ -312,7 +314,8 @@ def run_provider_process(
             if work.error is not None:
                 lane = work.owner.generation.lane.offering.implementation_ref
                 failure = ProviderLaneFailed(
-                    f"NMRPeak {lane} lane stopped before process shutdown"
+                    f"The {lane} provider lane stopped unexpectedly, so coordinated "
+                    "provider shutdown began."
                 )
                 if live:
                     failure.add_note(
@@ -362,7 +365,8 @@ def _publish_hello(
         return
     if type(outcome) is not ProviderHttpResponse:
         raise ProviderProtocolFailed(
-            "NMRPeak hello failed without an admitted HTTP response"
+            "Cannot publish provider capabilities: "
+            f"{_fatal_evidence_message(outcome)}."
         )
     if outcome.status == 200:
         receipt = parse_provider_hello_success(
@@ -374,7 +378,9 @@ def _publish_hello(
             return
         if type(receipt) is ProviderSuccessRejected:
             raise ProviderProtocolFailed(
-                "NMRPeak hello receipt did not bind to this provider"
+                "Cannot publish provider capabilities: the API returned HTTP 200, "
+                "but the success response failed validation "
+                f"({receipt.reason.value})."
             )
         raise AssertionError("NMRPeak hello parser returned an unknown outcome")
     problem = parse_provider_problem(prepared.operation, outcome)
@@ -382,10 +388,12 @@ def _publish_hello(
         return
     if type(problem) is ProviderProblemRejected:
         raise ProviderProtocolFailed(
-            "NMRPeak hello response violated the pinned problem contract"
+            "Cannot publish provider capabilities: "
+            f"{_fatal_evidence_message(problem)}."
         )
     raise ProviderProtocolFailed(
-        f"NMRPeak hello was rejected with HTTP status {outcome.status}"
+        "Cannot publish provider capabilities: "
+        f"{_fatal_evidence_message(problem)}."
     )
 
 
@@ -410,7 +418,10 @@ def _recover_startup(
         _outcome_is_unavailable(inventory)
         if attempt + 1 == policy.maximum_consecutive_unavailable:
             raise ProviderStartupUnavailable(
-                "NMRPeak startup exhausted complete-inventory read attempts"
+                "Cannot start the provider after "
+                f"{policy.maximum_consecutive_unavailable} unavailable reads of the "
+                "in-progress Attempt inventory. No new Jobs were admitted; check API "
+                "availability before restarting."
             )
         if stop.wait(policy.feed_interval_seconds):
             return
@@ -450,7 +461,10 @@ def _recover_startup(
             current = retained[0]
             if attempt + 1 == policy.maximum_consecutive_unavailable:
                 raise ProviderStartupUnavailable(
-                    "NMRPeak startup exhausted retained-Attempt recovery attempts"
+                    "Cannot start the provider after "
+                    f"{policy.maximum_consecutive_unavailable} unavailable recovery "
+                    f"operations for {current.execution_attempt_ref}. Its journal record "
+                    "remains available for the next startup."
                 )
             if stop.wait(policy.feed_interval_seconds):
                 return
@@ -528,13 +542,19 @@ def _run_lane(
                     >= policy.maximum_consecutive_unavailable
                 ):
                     raise ProviderLaneUnavailable(
-                        "NMRPeak lane exhausted consecutive API-unavailability attempts"
+                        f"Cannot continue the {owner.generation.lane.offering.implementation_ref} "
+                        "lane after "
+                        f"{policy.maximum_consecutive_unavailable} consecutive unavailable "
+                        "API operations. Any retained Attempt records remain available for "
+                        "restart recovery; check API availability before restarting."
                     )
             else:
                 consecutive_unavailable = 0
             if owner.session.retired:
                 raise RunnerSessionRetired(
-                    "NMRPeak lane cannot continue with a retired runner session"
+                    f"Cannot continue the {owner.generation.lane.offering.implementation_ref} "
+                    "lane because its runner session retired. Inspect the runner container "
+                    "before restarting the provider."
                 )
             stop.wait(policy.feed_interval_seconds)
     except BaseException as error:
@@ -587,9 +607,53 @@ def _outcome_is_unavailable(outcome: object) -> bool:
             AttemptMutationNotCommitted,
         }:
             return True
+    if type(outcome) is AttemptMutationNotCommitted:
+        raise ProviderProtocolFailed(
+            "Cannot continue after the API rejected an Attempt mutation: "
+            f"{_fatal_evidence_message(evidence)}. The API proved that the mutation "
+            "did not commit."
+        )
+    if type(outcome) is AttemptMutationCommitPossible:
+        raise ProviderProtocolFailed(
+            "Cannot continue after an Attempt mutation response failed validation: "
+            f"{_fatal_evidence_message(evidence)}. The mutation may have committed; "
+            "its retained journal record must be reconciled before retry."
+        )
+    operation = {
+        AttemptInventoryReadFailed: "read the in-progress Attempt inventory",
+        AttemptObservationFailed: "observe the retained Attempt",
+        FeedReadFailed: "read the Job feed",
+        InputReadFailed: "read the selected Job input",
+    }.get(type(outcome))
+    if operation is None:
+        raise AssertionError("Fatal provider outcome has no operator description")
     raise ProviderProtocolFailed(
-        "NMRPeak provider operation returned fatal authentication or contract evidence"
+        f"Cannot {operation}: {_fatal_evidence_message(evidence)}."
     )
+
+
+def _fatal_evidence_message(evidence: object) -> str:
+    """Render only bounded, validated API evidence for provider operators."""
+
+    if type(evidence) is ProviderProblem:
+        code = f", code {evidence.code}" if evidence.code is not None else ""
+        return (
+            f"the API returned HTTP {evidence.status} ({evidence.title.lower()}{code}; "
+            f"request {evidence.transport_request_id})"
+        )
+    if type(evidence) is ProviderProblemRejected:
+        return (
+            f"the HTTP {evidence.status} problem response failed validation "
+            f"({evidence.reason.value})"
+        )
+    if type(evidence) is ProviderSuccessRejected:
+        return f"the HTTP 200 success response failed validation ({evidence.reason.value})"
+    if type(evidence) is ProviderResponseRejected:
+        status = "without a valid status" if evidence.status is None else f"with HTTP {evidence.status}"
+        return f"the API response {status} failed validation ({evidence.reason.value})"
+    if type(evidence) is ProviderTlsRejected:
+        return "TLS verification failed before the request was sent"
+    raise AssertionError("Fatal provider evidence has no operator description")
 
 
 def _join_threads(threads: tuple[Thread, ...], timeout_seconds: float) -> None:

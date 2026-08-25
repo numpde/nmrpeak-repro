@@ -197,12 +197,43 @@ def main() -> int:
     try:
         run_provider()
     except Exception as error:
-        print(
-            f"NMRPeak provider stopped: {type(error).__name__}: {error}",
-            file=os.sys.stderr,
-        )
+        print(_render_provider_failure(error), file=os.sys.stderr)
         return 1
     return 0
+
+
+def _render_provider_failure(error: Exception) -> str:
+    """Render the process outcome and one owned causal layer for operators."""
+
+    lines = [
+        "Provider process stopped unexpectedly: "
+        f"{_owned_provider_diagnostic(error)}"
+    ]
+    cause = error.__cause__
+    if cause is not None and _is_owned_provider_error(cause):
+        lines.append(f"Cause: {cause}")
+    if _is_owned_provider_error(error) and getattr(error, "__notes__", ()):
+        lines.append(
+            "Additional failure: shutdown could not confirm every local resource "
+            "closure."
+        )
+    lines.append(
+        "The provider is not ready; inspect the deployment and runner status before "
+        "restarting."
+    )
+    return "\n".join(lines)
+
+
+def _owned_provider_diagnostic(error: Exception) -> str:
+    if _is_owned_provider_error(error):
+        return str(error)
+    return "an unexpected internal error escaped the provider boundary"
+
+
+def _is_owned_provider_error(error: BaseException) -> bool:
+    return type(error) is ValueError or type(error).__module__.startswith(
+        "nmrpeak_provider."
+    )
 
 
 if __name__ == "__main__":

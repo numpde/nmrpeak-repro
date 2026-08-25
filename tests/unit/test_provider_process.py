@@ -52,6 +52,7 @@ from nmrpeak_provider.provider_https import (
 )
 from nmrpeak_provider.provider_process import (
     ProviderLaneFailed,
+    ProviderLaneUnavailable,
     ProviderProcessPolicy,
     ProviderProtocolFailed,
     ProviderShutdownFailed,
@@ -258,7 +259,10 @@ class ProviderProcessTests(unittest.TestCase):
 
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=2) as journal:
-                with self.assertRaisesRegex(ProviderLaneFailed, "hf lane") as raised:
+                with self.assertRaisesRegex(
+                    ProviderLaneFailed,
+                    "hf provider lane stopped unexpectedly",
+                ) as raised:
                     run_provider_process(
                         runtime=runtime,
                         api=api,
@@ -437,7 +441,14 @@ class ProviderProcessTests(unittest.TestCase):
                         stop=stop,
                         on_ready=lambda: None,
                     )
-        self.assertEqual(type(raised.exception.__cause__).__name__, "ProviderProtocolFailed")
+        cause = raised.exception.__cause__
+        self.assertIs(type(cause), ProviderProtocolFailed)
+        self.assertIn("Cannot read the Job feed", str(cause))
+        self.assertIn(
+            "HTTP 200 success response failed validation (invalid_shape)",
+            str(cause),
+        )
+        self.assertNotIn("authentication or contract evidence", str(cause))
 
     def test_lane_stops_after_its_bounded_unavailability_budget(self) -> None:
         runtime = generation_runtime()
@@ -464,7 +475,11 @@ class ProviderProcessTests(unittest.TestCase):
                         on_ready=lambda: None,
                     )
 
-        self.assertEqual(type(raised.exception.__cause__).__name__, "ProviderLaneUnavailable")
+        cause = raised.exception.__cause__
+        self.assertIs(type(cause), ProviderLaneUnavailable)
+        self.assertIn("hf lane", str(cause))
+        self.assertIn("2 consecutive unavailable API operations", str(cause))
+        self.assertIn("check API availability before restarting", str(cause))
         hf_feeds = [
             request
             for request in api.requests
@@ -511,7 +526,7 @@ class ProviderProcessTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=2) as journal:
                 with self.assertRaisesRegex(
                     ProviderProtocolFailed,
-                    "hello receipt did not bind",
+                    "publish provider capabilities.*invalid_shape",
                 ):
                     run_provider_process(
                         runtime=runtime,

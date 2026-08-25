@@ -14,6 +14,7 @@ from .canonical_json import canonical_json_bytes
 from .interpreter import (
     InterpretationCandidateRejected,
     InterpreterProtocolError,
+    InterpreterUnavailable,
     interpret,
 )
 from .lifecycle_lane import LifecycleLane
@@ -27,6 +28,7 @@ from .product_input import (
     InputRejectionReason,
     parse_job_input,
 )
+from .provider_events import InterpreterEndpointFailed
 from .runner_session import (
     RunnerInputRejected,
     RunnerSession,
@@ -46,8 +48,9 @@ _PROMPT_PATHS = {
     "chf": _PROMPT_DIRECTORY / "chf_interpreter.md",
 }
 _RUNNER_REJECTION = ProviderDiagnosticText(
-    "The interpreted input is outside the runner's supported domain. "
-    "Re-read the source and either submit a corrected value or report the input problem."
+    "The interpreted document does not meet the selected runner's input requirements. "
+    "Call submit_interpretation with one corrected complete document, or call "
+    "report_input_problem to explain which required caller value is missing or unsupported."
 )
 
 
@@ -110,6 +113,12 @@ class InputInterpreter:
                 raise InterpretationCandidateRejected(_RUNNER_REJECTION)
             validated = outcome
 
+        def report_endpoint_failure(event: InterpreterEndpointFailed) -> None:
+            _report_endpoint_failure(
+                event,
+                execution_attempt_ref=execution_attempt_ref,
+            )
+
         async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
             endpoints = bind_openai_chat_endpoints(
                 self.endpoint_specs,
@@ -117,16 +126,29 @@ class InputInterpreter:
                 http_client=client,
             )
             try:
-                result = await interpret(
-                    source_text=source_text,
-                    capability=capability,
-                    endpoints=endpoints.endpoints,
-                    interpretation_timeout_seconds=(
-                        self.policy.interpretation_timeout_seconds
-                    ),
-                    report_endpoint_failure=_report_endpoint_failure,
-                    admit_interpretation=admit_interpretation,
-                )
+                try:
+                    result = await interpret(
+                        source_text=source_text,
+                        capability=capability,
+                        endpoints=endpoints.endpoints,
+                        interpretation_timeout_seconds=(
+                            self.policy.interpretation_timeout_seconds
+                        ),
+                        report_endpoint_failure=report_endpoint_failure,
+                        admit_interpretation=admit_interpretation,
+                    )
+                except InterpreterUnavailable as unavailable:
+                    attempted = ",".join(
+                        unavailable.attempted_configuration_ids
+                    ) or "none"
+                    _LOG.warning(
+                        "Cannot interpret Attempt %s: %s; attempted endpoints: %s. "
+                        "No runner request was validated.",
+                        execution_attempt_ref,
+                        unavailable.reason.value,
+                        attempted,
+                    )
+                    raise
             finally:
                 await endpoints.join_response_releases()
         if type(validated) is not ValidatedRunnerRequest:
@@ -185,10 +207,15 @@ def _admit_source_text(source: bytes) -> UserProvidedText:
     return UserProvidedText(text)
 
 
-def _report_endpoint_failure(event: object) -> None:
+def _report_endpoint_failure(
+    event: InterpreterEndpointFailed,
+    *,
+    execution_attempt_ref: str,
+) -> None:
     _LOG.warning(
-        "Interpreter endpoint %s failed: %s/%s%s",
+        "Interpreter endpoint %s failed while preparing Attempt %s: %s/%s%s",
         event.configuration_id,
+        execution_attempt_ref,
         event.failure_kind,
         event.failure_reason,
         f"/{event.failure_state}" if event.failure_state is not None else "",

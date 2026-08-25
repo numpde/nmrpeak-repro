@@ -62,7 +62,10 @@ class ProductInputTests(unittest.TestCase):
             parse_job_input(raw, offering)
         self.assertEqual(reason, raised.exception.reason)
         self.assertEqual(
-            "The Job input is not supported by this NMRPeak analysis.",
+            "The input could not be validated, so this Job did not run the analysis. "
+            "Check the molecular formula and the peak lists required for this "
+            "analysis. Because this Job is terminal, submit corrected input as a new "
+            "Job.",
             str(raised.exception),
         )
 

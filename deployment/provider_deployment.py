@@ -94,6 +94,8 @@ _DOCKER = Path("/usr/bin/docker")
 _SETFACL = Path("/usr/bin/setfacl")
 _GETFACL = Path("/usr/bin/getfacl")
 _MAX_FILE_BYTES = 262_144
+_MAX_DOCKER_DIAGNOSTIC_CHARS = 512
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _PRIVATE_DIRECTORY_ACL = ("user::rwx", "group::---", "other::---")
 _PROVIDER_DIRECTORY_ACL = (
     "user::rwx",
@@ -870,31 +872,49 @@ def _admit_interpreter_configs(state_root: Path) -> None:
         entries = tuple(root.iterdir())
     except OSError as error:
         raise DeploymentOperationRejected(
-            "Interpreter endpoint configuration is unavailable"
+            f"Cannot read the interpreter endpoint directory: {root}"
         ) from error
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or not 1 <= len(entries) <= 4
-    ):
+    if not stat.S_ISDIR(metadata.st_mode):
         raise DeploymentOperationRejected(
-            "Interpreter endpoint configuration must contain one to four private files"
+            f"Cannot admit interpreter endpoints from {root}: expected a non-symlink "
+            "directory"
+        )
+    if metadata.st_uid != os.geteuid():
+        raise DeploymentOperationRejected(
+            f"Cannot admit interpreter endpoints from {root}: the directory must be "
+            f"owned by operator UID {os.geteuid()}, found UID {metadata.st_uid}"
+        )
+    if not 1 <= len(entries) <= 4:
+        raise DeploymentOperationRejected(
+            f"Cannot admit interpreter endpoints from {root}: found {len(entries)} "
+            "entries; expected one to four .toml files"
         )
     for path in entries:
         try:
             entry = path.stat(follow_symlinks=False)
         except OSError as error:
             raise DeploymentOperationRejected(
-                "Interpreter endpoint configuration contains an unreadable entry"
+                f"Cannot inspect interpreter endpoint file: {path}"
             ) from error
-        if (
-            path.suffix != ".toml"
-            or not stat.S_ISREG(entry.st_mode)
-            or entry.st_uid != os.geteuid()
-            or entry.st_size > 64 * 1024
-        ):
+        if path.suffix != ".toml":
             raise DeploymentOperationRejected(
-                "Interpreter endpoint configuration contains an invalid file"
+                f"Cannot admit interpreter endpoint file {path}: the filename must end "
+                "in .toml"
+            )
+        if not stat.S_ISREG(entry.st_mode):
+            raise DeploymentOperationRejected(
+                f"Cannot admit interpreter endpoint file {path}: expected a non-symlink "
+                "regular file"
+            )
+        if entry.st_uid != os.geteuid():
+            raise DeploymentOperationRejected(
+                f"Cannot admit interpreter endpoint file {path}: it must be owned by "
+                f"operator UID {os.geteuid()}, found UID {entry.st_uid}"
+            )
+        if entry.st_size > 64 * 1024:
+            raise DeploymentOperationRejected(
+                f"Cannot admit interpreter endpoint file {path}: its {entry.st_size} "
+                "bytes exceed the 65536-byte limit"
             )
         access = _read_acl(path, "Interpreter endpoint configuration")
         if access not in {
@@ -902,7 +922,11 @@ def _admit_interpreter_configs(state_root: Path) -> None:
             _PROVIDER_READONLY_FILE_ACL,
         }:
             raise DeploymentOperationRejected(
-                "Interpreter endpoint configuration must remain operator-owned"
+                f"Cannot admit interpreter endpoint file {path}: its permissions match "
+                "neither an operator-installed mode-0600 file nor the admitted "
+                "provider-read-only ACL. Reinstall it through the documented endpoint "
+                f"step as a non-symlink regular file owned by operator UID {os.geteuid()}; "
+                "startup will grant provider read access"
             )
     _grant_provider_tree_access(root)
 
@@ -1559,7 +1583,11 @@ def _run_compose_plan(
             )
     except DeploymentOperationRejected as error:
         raise DeploymentOperationRejected(
-            "Docker Compose startup was rejected; runtime state may be partial"
+            f"Cannot confirm provider deployment {deployment!r} is ready because "
+            "Docker Compose did not report all required services ready. Containers and "
+            "session volumes may remain. Run `make provider/deployment/status "
+            f"DEPLOYMENT={deployment}` and `make provider/logs DEPLOYMENT={deployment}` "
+            "before deciding whether to stop or retry."
         ) from error
 
 
@@ -1618,7 +1646,10 @@ def _run_compose_down(
             )
     except DeploymentOperationRejected as error:
         raise DeploymentOperationRejected(
-            "Docker Compose teardown was rejected; runtime state may be partial"
+            f"Cannot confirm provider deployment {deployment!r} is stopped because "
+            "Docker Compose did not complete teardown. Containers, the project network, "
+            "or session volumes may remain. Run `make provider/deployment/status "
+            f"DEPLOYMENT={deployment}` before retrying shutdown."
         ) from error
 
 
@@ -1877,19 +1908,48 @@ def _docker_command(
             },
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except OSError as error:
         raise DeploymentOperationRejected(
-            "Docker provider deployment operation did not complete"
+            "Cannot run the Docker provider deployment operation: the Docker client "
+            "could not start"
         ) from error
-    if (
-        result.returncode != 0
-        or len(result.stdout) > 1_048_576
-        or len(result.stderr) > 1_048_576
-    ):
+    except subprocess.TimeoutExpired as error:
         raise DeploymentOperationRejected(
-            "Docker provider deployment operation was rejected"
+            f"The Docker provider deployment operation did not finish within {timeout} "
+            "seconds; its effects are unknown"
+        ) from error
+    if len(result.stdout) > 1_048_576 or len(result.stderr) > 1_048_576:
+        raise DeploymentOperationRejected(
+            "The Docker provider deployment operation produced more than 1048576 bytes "
+            "of output, so its result was not accepted"
+        )
+    if result.returncode != 0:
+        diagnostic = _bounded_docker_diagnostic(result.stderr)
+        detail = f": {diagnostic}" if diagnostic is not None else ""
+        raise DeploymentOperationRejected(
+            "The Docker provider deployment operation exited with status "
+            f"{result.returncode}{detail}"
         )
     return result
+
+
+def _bounded_docker_diagnostic(raw: bytes) -> str | None:
+    """Return Docker's final printable line without terminal control bytes."""
+
+    text = raw.decode("utf-8", errors="replace")
+    lines = []
+    for line in text.splitlines():
+        line = _ANSI_ESCAPE.sub("", line)
+        printable = "".join(character for character in line if character.isprintable())
+        collapsed = " ".join(printable.split())
+        if collapsed:
+            lines.append(collapsed)
+    if not lines:
+        return None
+    diagnostic = lines[-1]
+    if len(diagnostic) > _MAX_DOCKER_DIAGNOSTIC_CHARS:
+        return diagnostic[: _MAX_DOCKER_DIAGNOSTIC_CHARS - 3] + "..."
+    return diagnostic
 
 
 def _json_output(raw: bytes, operation: str) -> object:
@@ -2622,7 +2682,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 def main(arguments: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Operate one named NMRPeak deployment.")
+    parser = argparse.ArgumentParser(description="Operate one named provider deployment.")
     parser.add_argument(
         "operation",
         choices=(
@@ -2644,16 +2704,10 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--confirm")
     parser.add_argument("--localhost-ca-certificate", type=Path)
     options = parser.parse_args(arguments)
+    _validate_operation_options(parser, options)
     repository = Path(__file__).resolve().parents[1]
     try:
         if options.operation == "credential-install":
-            if (
-                options.nmr_api_v1 is None
-                or options.frozen_generation is not None
-                or options.confirm is not None
-                or options.localhost_ca_certificate is not None
-            ):
-                parser.error("credential-install requires --nmr-api-v1")
             installed = install_provider_credential(
                 repository,
                 options.deployment,
@@ -2662,16 +2716,6 @@ def main(arguments: list[str] | None = None) -> int:
             )
             print(f"Installed provider credential: {installed}")
         elif options.operation == "generation-remove":
-            if (
-                options.frozen_generation is None
-                or options.confirm is None
-                or options.nmr_api_v1 is not None
-                or options.replace
-                or options.localhost_ca_certificate is not None
-            ):
-                parser.error(
-                    "generation-remove requires --frozen-generation and --confirm"
-                )
             remove_frozen_generation(
                 repository,
                 options.deployment,
@@ -2683,14 +2727,6 @@ def main(arguments: list[str] | None = None) -> int:
                 f"{options.deployment} {options.frozen_generation}"
             )
         elif options.operation == "journal-retire":
-            if (
-                options.confirm is None
-                or options.nmr_api_v1 is not None
-                or options.replace
-                or options.frozen_generation is not None
-                or options.localhost_ca_certificate is not None
-            ):
-                parser.error("journal-retire requires --confirm")
             removed = retire_provider_journal(
                 repository,
                 options.deployment,
@@ -2700,14 +2736,6 @@ def main(arguments: list[str] | None = None) -> int:
                 f"Retired provider journal volume: {removed}. "
                 "Docker volume deletion is not secure erasure of underlying storage."
             )
-        elif options.operation not in {"config", "up"} and (
-            options.nmr_api_v1 is not None
-            or options.replace
-            or options.frozen_generation is not None
-            or options.confirm is not None
-            or options.localhost_ca_certificate is not None
-        ):
-            parser.error("operation-specific options do not match the operation")
         elif options.operation == "init":
             initialized = initialize_deployment(repository, options.deployment)
             print(f"Initialized deployment {options.deployment}: {initialized}")
@@ -2748,11 +2776,104 @@ def main(arguments: list[str] | None = None) -> int:
         ValueError,
     ) as error:
         print(
-            f"Cannot {options.operation} NMRPeak deployment: {error}",
+            _render_deployment_failure(
+                options.operation,
+                options.deployment,
+                error,
+            ),
             file=sys.stderr,
         )
         return 2
     return 0
+
+
+_OPERATION_OPTION_POLICY = {
+    "config": (frozenset(), frozenset({"localhost_ca_certificate"})),
+    "credential-install": (
+        frozenset({"nmr_api_v1"}),
+        frozenset({"nmr_api_v1", "replace"}),
+    ),
+    "down": (frozenset(), frozenset()),
+    "generation-remove": (
+        frozenset({"frozen_generation", "confirm"}),
+        frozenset({"frozen_generation", "confirm"}),
+    ),
+    "init": (frozenset(), frozenset()),
+    "journal-retire": (frozenset({"confirm"}), frozenset({"confirm"})),
+    "logs": (frozenset(), frozenset()),
+    "status": (frozenset(), frozenset()),
+    "up": (frozenset(), frozenset({"localhost_ca_certificate"})),
+}
+_OPTION_NAMES = {
+    "nmr_api_v1": "--nmr-api-v1",
+    "replace": "--replace",
+    "frozen_generation": "--frozen-generation",
+    "confirm": "--confirm",
+    "localhost_ca_certificate": "--localhost-ca-certificate",
+}
+_OPERATION_FAILURE_HEADLINES = {
+    "config": "Provider deployment preview failed",
+    "credential-install": "Provider credential installation failed",
+    "down": "Provider deployment shutdown failed",
+    "generation-remove": "Frozen deployment generation removal failed",
+    "init": "Provider deployment initialization failed",
+    "journal-retire": "Provider journal retirement failed",
+    "logs": "Provider log read failed",
+    "status": "Provider deployment status read failed",
+    "up": "Provider deployment startup failed",
+}
+
+
+def _validate_operation_options(
+    parser: argparse.ArgumentParser,
+    options: argparse.Namespace,
+) -> None:
+    required, allowed = _OPERATION_OPTION_POLICY[options.operation]
+    supplied = {
+        name
+        for name in _OPTION_NAMES
+        if getattr(options, name) not in {None, False}
+    }
+    missing = [name for name in _OPTION_NAMES if name in required - supplied]
+    unexpected = [name for name in _OPTION_NAMES if name in supplied - allowed]
+    failures = []
+    if missing:
+        failures.append(
+            "requires " + " and ".join(_OPTION_NAMES[name] for name in missing)
+        )
+    if unexpected:
+        failures.append(
+            "does not accept "
+            + ", ".join(_OPTION_NAMES[name] for name in unexpected)
+        )
+    if failures:
+        parser.error(f"{options.operation} " + "; ".join(failures))
+
+
+def _render_deployment_failure(
+    operation: str,
+    deployment: str,
+    error: Exception,
+) -> str:
+    """Render one operator headline plus a safe owned causal layer."""
+
+    lines = [
+        f"{_OPERATION_FAILURE_HEADLINES[operation]} for {deployment!r}: {error}"
+    ]
+    cause = error.__cause__
+    if isinstance(
+        cause,
+        (
+            CheckpointOperationRejected,
+            DeploymentOperationRejected,
+            LocalImageRejected,
+            ProviderVolumeOperationRejected,
+        ),
+    ) and str(cause) != str(error):
+        lines.append(f"Cause: {cause}")
+    for note in getattr(error, "__notes__", ()):
+        lines.append(f"Additional failure: {note}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

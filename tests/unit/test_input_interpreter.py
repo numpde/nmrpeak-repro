@@ -101,7 +101,10 @@ class InputInterpreterTests(unittest.TestCase):
         ) as logged, self.assertRaises(InterpreterUnavailable):
             run_with_endpoint(call)
         rendered = "\n".join(logged.output)
-        self.assertIn("fake failed: transport/connect_failed", rendered)
+        self.assertIn("endpoint fake failed while preparing Attempt", rendered)
+        self.assertIn("transport/connect_failed", rendered)
+        self.assertIn("endpoints_exhausted", rendered)
+        self.assertIn("No runner request was validated", rendered)
         self.assertNotIn(SOURCE.decode(), rendered)
 
 

@@ -64,11 +64,12 @@ from nmrpeak_provider.attempt_lifecycle import (
     start_attempt,
 )
 from nmrpeak_provider.interpreter import (
+    InterpretationRejected,
     InterpreterUnavailable,
     InterpreterUnavailableReason,
     ReportedInputProblem,
 )
-from nmrpeak_provider.text_provenance import ModelGeneratedText
+from nmrpeak_provider.text_provenance import ModelGeneratedText, ProviderDiagnosticText
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
     CHF_RUNNER_CONTRACT_ID,
@@ -183,6 +184,17 @@ class ReportingInterpreter:
     def validate_freeform_input(self, **_values: object) -> object:
         raise ReportedInputProblem(
             ModelGeneratedText("The molecular formula contains unsupported sulfur."),
+            configuration_id="fake",
+            attempted_configuration_ids=("fake",),
+        )
+
+
+class RepairExhaustedInterpreter:
+    def validate_freeform_input(self, **_values: object) -> object:
+        raise InterpretationRejected(
+            ProviderDiagnosticText(
+                "Call submit_interpretation with one corrected complete document."
+            ),
             configuration_id="fake",
             attempted_configuration_ids=("fake",),
         )
@@ -654,6 +666,33 @@ class AttemptLifecycleTests(unittest.TestCase):
             terminal_body["failure_message"],
             "The molecular formula contains unsupported sulfur.",
         )
+
+    def test_exhausted_interpreter_repair_does_not_publish_model_instructions(
+        self,
+    ) -> None:
+        canonical_input = b"Formula C2H6O with incomplete peak data."
+        active = active_attempt(canonical_input)
+        api = CapturingApi(success_response(progress_receipt()))
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
+                    api=api,
+                    journal=journal,
+                    session=UnusedSession(),
+                    interpreter=RepairExhaustedInterpreter(),
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+        self.assertIs(type(outcome), InputFailurePending)
+        terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(
+            terminal_body["failure_message"],
+            InputRejected.public_message,
+        )
+        self.assertNotIn("submit_interpretation", terminal_body["failure_message"])
 
     def test_runner_rejection_uses_the_same_durable_failure_policy(self) -> None:
         canonical_input = valid_chf_input()
