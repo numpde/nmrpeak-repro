@@ -899,7 +899,7 @@ def _admit_interpreter_configs(state_root: Path) -> None:
         access = _read_acl(path, "Interpreter endpoint configuration")
         if access not in {
             _PRIVATE_WRITABLE_FILE_ACL,
-            _PROVIDER_WRITABLE_FILE_ACL,
+            _PROVIDER_READONLY_FILE_ACL,
         }:
             raise DeploymentOperationRejected(
                 "Interpreter endpoint configuration must remain operator-owned"

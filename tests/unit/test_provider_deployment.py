@@ -568,6 +568,20 @@ class ProviderDeploymentTests(unittest.TestCase):
                 provider_deployment._admit_interpreter_configs(state)
             grant.assert_called_once_with(directory)
 
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_read_acl",
+                    return_value=provider_deployment._PROVIDER_READONLY_FILE_ACL,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_grant_provider_tree_access",
+                ) as grant,
+            ):
+                provider_deployment._admit_interpreter_configs(state)
+            grant.assert_called_once_with(directory)
+
             (directory / "README").write_text("unexpected", encoding="utf-8")
             with (
                 patch.object(
