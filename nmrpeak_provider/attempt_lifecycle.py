@@ -29,6 +29,7 @@ from .attempt_journal import (
     validate_frozen_generation_id,
 )
 from .attempt_journal_store import AttemptJournalStore
+from .generation_runtime import GenerationRuntime
 from .lifecycle_lane import LifecycleLane
 from .runner_session import (
     RunnerInputRejected,
@@ -675,37 +676,35 @@ def deliver_terminal(
 
 def reconcile_record(
     *,
-    lane: LifecycleLane,
+    runtime: GenerationRuntime,
     api: ProviderApiClient,
     journal: AttemptJournalStore,
-    generation: RunGenerationIdentity,
-    frozen_generation_id: str,
     record: StartPending | ActiveAttempt | TerminalPending,
 ) -> RecoveryOutcome:
     """Apply the existing restart decision to one durable NMRPeak obligation."""
 
     if type(record) not in {StartPending, ActiveAttempt, TerminalPending}:
         raise TypeError("NMRPeak recovery requires an exact journal record")
+    resolved = runtime.resolve(record)
     if type(record) is StartPending:
         decision = decide_restart(record, None)
         if type(decision) is not ReplayStart:
             raise AssertionError("Pending NMRPeak start produced an unsupported restart action")
         return start_attempt(
-            lane=lane,
+            lane=resolved.lane,
             api=api,
             journal=journal,
-            generation=generation,
-            frozen_generation_id=frozen_generation_id,
+            generation=resolved.generation,
+            frozen_generation_id=runtime.frozen_generation_id,
             record=decision.record,
         )
 
-    _require_generation(lane, record, generation, frozen_generation_id)
     observed = observe_attempt(api=api, record=record)
     if type(observed) is AttemptObservationFailed:
         return observed
     decision = decide_restart(record, observed.snapshot)
     if type(decision) is ResumePreExecution:
-        return _recover_input(lane, api, decision.record)
+        return _recover_input(resolved.lane, api, decision.record)
     if type(decision) is PublishInterruptedFailure:
         prepared = prepare_execution_attempt_fail(
             execution_attempt_ref=decision.record.execution_attempt_ref,

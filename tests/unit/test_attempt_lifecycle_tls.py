@@ -36,6 +36,7 @@ from nmrpeak_provider.hf_runner_protocol import (
     HF_RUNNER_CODEC,
     HF_RUNNER_CONTRACT_ID,
 )
+from nmrpeak_provider.generation_runtime import GenerationLane, GenerationRuntime
 from nmrpeak_provider.lifecycle_lane import (
     CHF_LIFECYCLE_LANE,
     HF_LIFECYCLE_LANE,
@@ -224,6 +225,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                     CHF_LIFECYCLE_LANE.offering.analysis_kind_ref,
                     CHF_LIFECYCLE_LANE.offering.implementation_ref,
                 )
+                runtime = _generation_runtime(chf=generation)
                 with AttemptJournalStore(journal_root, maximum_records=1) as journal:
                     admitted = admit_next_job(
                         lane=CHF_LIFECYCLE_LANE,
@@ -247,11 +249,9 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
 
                 with AttemptJournalStore(journal_root, maximum_records=1) as journal:
                     resumed = reconcile_record(
-                        lane=CHF_LIFECYCLE_LANE,
+                        runtime=runtime,
                         api=api,
                         journal=journal,
-                        generation=generation,
-                        frozen_generation_id=_FROZEN_GENERATION_ID,
                         record=journal.records()[0],
                     )
                     self.assertIs(type(resumed), StartContinues, repr(resumed))
@@ -294,11 +294,9 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
 
                 with AttemptJournalStore(journal_root, maximum_records=1) as journal:
                     recovered = reconcile_record(
-                        lane=CHF_LIFECYCLE_LANE,
+                        runtime=runtime,
                         api=api,
                         journal=journal,
-                        generation=generation,
-                        frozen_generation_id=_FROZEN_GENERATION_ID,
                         record=journal.records()[0],
                     )
                     self.assertIs(type(recovered), TerminalDelivered, repr(recovered))
@@ -333,6 +331,27 @@ def _generation(
         scope=CreatedAtWindow(
             datetime(2026, 8, 24, tzinfo=UTC),
             datetime(2026, 8, 26, tzinfo=UTC),
+        ),
+    )
+
+
+def _generation_runtime(*, chf: RunGenerationIdentity) -> GenerationRuntime:
+    return GenerationRuntime(
+        frozen_generation_id=_FROZEN_GENERATION_ID,
+        hf=GenerationLane(
+            lane=HF_LIFECYCLE_LANE,
+            generation=_generation(
+                HF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                HF_LIFECYCLE_LANE.offering.implementation_ref,
+            ),
+            result_facts=_HF_RUNNER_FACTS,
+            runner_codec=HF_RUNNER_CODEC,
+        ),
+        chf=GenerationLane(
+            lane=CHF_LIFECYCLE_LANE,
+            generation=chf,
+            result_facts=_CHF_RUNNER_FACTS,
+            runner_codec=CHF_RUNNER_CODEC,
         ),
     )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, UTC
 from hashlib import sha256
 import json
@@ -63,6 +64,12 @@ from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
     CHF_RUNNER_CONTRACT_ID,
 )
+from nmrpeak_provider.generation_runtime import (
+    GenerationLane,
+    GenerationRuntime,
+    GenerationRuntimeRejected,
+)
+from nmrpeak_provider.hf_runner_protocol import HF_RUNNER_CODEC, HF_RUNNER_CONTRACT_ID
 from nmrpeak_provider.runner_protocol import (
     ReadyFrame,
     ValidateFrame,
@@ -85,6 +92,7 @@ from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.product_input import InputRejected
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
+    HF_RESULT_IDENTITY,
     NMRPEAK_SOURCE_CLOSURE_REF,
     ProviderResultFacts,
     RESULT_SCHEMA_ID,
@@ -122,6 +130,12 @@ RUNNER_FACTS = ProviderResultFacts(
     runner_contract_id=CHF_RUNNER_CONTRACT_ID,
     checkpoint_ref="sha256:" + "5" * 64,
     image_input_ref="sha256:" + "6" * 64,
+)
+HF_RUNNER_FACTS = ProviderResultFacts(
+    identity=HF_RESULT_IDENTITY,
+    runner_contract_id=HF_RUNNER_CONTRACT_ID,
+    checkpoint_ref="sha256:" + "7" * 64,
+    image_input_ref="sha256:" + "8" * 64,
 )
 
 
@@ -1061,11 +1075,9 @@ class AttemptLifecycleTests(unittest.TestCase):
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
                 outcome = reconcile_record(
-                    lane=CHF_LIFECYCLE_LANE,
+                    runtime=generation_runtime(),
                     api=api,
                     journal=journal,
-                    generation=chf_generation(),
-                    frozen_generation_id=FROZEN_GENERATION_ID,
                     record=active,
                 )
                 self.assertEqual(journal.records(), (active,))
@@ -1091,11 +1103,9 @@ class AttemptLifecycleTests(unittest.TestCase):
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
                 outcome = reconcile_record(
-                    lane=HF_LIFECYCLE_LANE,
+                    runtime=generation_runtime(),
                     api=api,
                     journal=journal,
-                    generation=generation,
-                    frozen_generation_id=FROZEN_GENERATION_ID,
                     record=active,
                 )
 
@@ -1113,16 +1123,32 @@ class AttemptLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(record)
                 outcome = reconcile_record(
-                    lane=CHF_LIFECYCLE_LANE,
+                    runtime=generation_runtime(),
                     api=api,
                     journal=journal,
-                    generation=chf_generation(),
-                    frozen_generation_id=FROZEN_GENERATION_ID,
                     record=record,
                 )
                 self.assertIs(type(outcome), StartContinues)
                 self.assertEqual(outcome.record.provider_attempt_key, record.provider_attempt_key)
                 self.assertEqual(journal.records(), (outcome.record,))
+
+    def test_restart_rejects_an_unowned_pending_start_before_any_effect(self) -> None:
+        record = pending_start(
+            replace(chf_generation(), generation_id="unadmitted-generation")
+        )
+        api = CapturingApi()
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(record)
+                with self.assertRaises(GenerationRuntimeRejected):
+                    reconcile_record(
+                        runtime=generation_runtime(),
+                        api=api,
+                        journal=journal,
+                        record=record,
+                    )
+                self.assertEqual(journal.records(), (record,))
+        self.assertEqual(api.requests, [])
 
     def test_restart_converts_entered_execution_to_one_durable_failure(self) -> None:
         entered = entered_attempt(valid_chf_input())
@@ -1141,11 +1167,9 @@ class AttemptLifecycleTests(unittest.TestCase):
                 journal.admit(pending_from_active(entered))
                 journal.replace(pending_from_active(entered), entered)
                 outcome = reconcile_record(
-                    lane=CHF_LIFECYCLE_LANE,
+                    runtime=generation_runtime(),
                     api=api,
                     journal=journal,
-                    generation=chf_generation(),
-                    frozen_generation_id=FROZEN_GENERATION_ID,
                     record=entered,
                 )
                 self.assertIs(type(outcome), InterruptedFailurePending)
@@ -1193,11 +1217,9 @@ class AttemptLifecycleTests(unittest.TestCase):
                         journal.admit(pending_from_active(record))
                         journal.replace(pending_from_active(record), record)
                     outcome = reconcile_record(
-                        lane=CHF_LIFECYCLE_LANE,
+                        runtime=generation_runtime(),
                         api=api,
                         journal=journal,
-                        generation=chf_generation(),
-                        frozen_generation_id=FROZEN_GENERATION_ID,
                         record=record,
                     )
                     self.assertIs(type(outcome), expected_type)
@@ -1237,11 +1259,9 @@ class AttemptLifecycleTests(unittest.TestCase):
                         journal.admit(pending_from_active(record))
                         journal.replace(pending_from_active(record), record)
                     outcome = reconcile_record(
-                        lane=CHF_LIFECYCLE_LANE,
+                        runtime=generation_runtime(),
                         api=api,
                         journal=journal,
-                        generation=chf_generation(),
-                        frozen_generation_id=FROZEN_GENERATION_ID,
                         record=record,
                     )
                     self.assertIs(type(outcome), expected_type)
@@ -1268,6 +1288,24 @@ def hf_generation() -> RunGenerationIdentity:
         scope=CreatedAtWindow(
             datetime(2026, 8, 24, tzinfo=UTC),
             datetime(2026, 8, 26, tzinfo=UTC),
+        ),
+    )
+
+
+def generation_runtime() -> GenerationRuntime:
+    return GenerationRuntime(
+        frozen_generation_id=FROZEN_GENERATION_ID,
+        hf=GenerationLane(
+            lane=HF_LIFECYCLE_LANE,
+            generation=hf_generation(),
+            result_facts=HF_RUNNER_FACTS,
+            runner_codec=HF_RUNNER_CODEC,
+        ),
+        chf=GenerationLane(
+            lane=CHF_LIFECYCLE_LANE,
+            generation=chf_generation(),
+            result_facts=RUNNER_FACTS,
+            runner_codec=CHF_RUNNER_CODEC,
         ),
     )
 
