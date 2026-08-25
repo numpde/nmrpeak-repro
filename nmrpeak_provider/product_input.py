@@ -29,7 +29,6 @@ _PROTON_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?")
 _CARBON_OR_COUPLING_DECIMAL = re.compile(
     r"-?(?:0|[1-9][0-9]*)(?:\.[0-9])?"
 )
-_SUPPORTED_ELEMENTS = frozenset({"C", "H", "N", "O"})
 SUPPORTED_MULTIPLICITIES = frozenset(
     {
         "AA'BB'",
@@ -175,16 +174,6 @@ SUPPORTED_MULTIPLICITIES = frozenset(
     }
 )
 
-MAX_TOKENS_PER_PROTON_PEAK = 3 + MAX_COUPLINGS_PER_PEAK
-MAX_FORMULA_TOKENS = 2 * len(_SUPPORTED_ELEMENTS)
-MAX_PROJECTED_TOKENS = (
-    MAX_CARBON_PEAKS
-    + 1
-    + MAX_PROTON_PEAKS * MAX_TOKENS_PER_PROTON_PEAK
-    + 1
-    + MAX_FORMULA_TOKENS
-)
-
 
 class InputRejectionReason(StrEnum):
     """Safe internal classification for a rejected scientific document."""
@@ -195,7 +184,6 @@ class InputRejectionReason(StrEnum):
     INVALID_STRUCTURE = "invalid_structure"
     WRONG_SPECTRA = "wrong_spectra"
     INVALID_FORMULA = "invalid_formula"
-    UNSUPPORTED_ELEMENT = "unsupported_element"
     DECIMAL_OUT_OF_RANGE = "decimal_out_of_range"
     MIDPOINT_NOT_REPRESENTABLE = "midpoint_not_representable"
     UNSUPPORTED_MULTIPLICITY = "unsupported_multiplicity"
@@ -359,8 +347,6 @@ def _parse_formula(value: object) -> str:
         element, raw_count = match.groups()
         if element in composition:
             _reject(InputRejectionReason.INVALID_FORMULA)
-        if element not in _SUPPORTED_ELEMENTS:
-            _reject(InputRejectionReason.UNSUPPORTED_ELEMENT)
         count = int(raw_count) if raw_count is not None else 1
         if count > MAX_FORMULA_ATOMS:
             _reject(InputRejectionReason.INVALID_FORMULA)
@@ -368,7 +354,14 @@ def _parse_formula(value: object) -> str:
         position = match.end()
     if sum(composition.values()) > MAX_FORMULA_ATOMS:
         _reject(InputRejectionReason.INVALID_FORMULA)
-    order = [element for element in ("C", "H", "N", "O") if element in composition]
+    if "C" in composition:
+        order = ["C"]
+        if "H" in composition:
+            order.append("H")
+        order.extend(sorted(set(composition) - {"C", "H"}))
+    else:
+        order = ["H"] if "H" in composition else []
+        order.extend(sorted(set(composition) - {"H"}))
     return "".join(
         element + (str(composition[element]) if composition[element] != 1 else "")
         for element in order

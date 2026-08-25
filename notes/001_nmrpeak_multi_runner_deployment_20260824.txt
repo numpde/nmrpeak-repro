@@ -504,11 +504,14 @@ consumes `delta (ppm)`. Frequency and solvent are absent from v1 because the
 pinned generation path does not consume them.
 
 The provider admits one full-string neutral element/count grammar with explicit
-element and total-atom bounds, then canonicalizes the parsed composition to
-Hill order. V1 rejects charges, isotopes, adduct dots,
-parentheses, zero counts, duplicate element tokens, and unsupported elements.
-Exact limits, accepted multiplicities, peak counts, coupling counts, decimal
-ranges, and per-runner beam choices come from checked-in contract evidence.
+per-element and total-atom bounds, then canonicalizes the parsed composition to
+the pinned NMRPeak order: C, H, then other elements alphabetically, with H still
+first when C is absent. V1 rejects charges, isotopes, adduct dots, parentheses,
+zero counts, and duplicate element tokens. The runner's loaded NMRPeak tokenizer
+and model dictionary own element-token support; the provider does not maintain a
+narrower element allowlist. Exact limits, accepted multiplicities, peak counts,
+coupling counts, decimal ranges, and per-runner beam choices come from checked-in
+contract evidence.
 
 HF requires exactly formula plus 1H. CHF requires exactly formula plus 1H and
 13C. Extra or missing spectra fail; no spectrum or duplicate observation is

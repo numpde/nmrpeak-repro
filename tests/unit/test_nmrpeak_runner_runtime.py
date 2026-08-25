@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 from families.nmrpeak.runner_runtime import (
     LoadedNmrpeakStack,
+    NmrpeakRuntime,
+    NmrpeakRuntimeInputRejected,
     TokenizerMode,
     load_nmrpeak_runtime,
 )
@@ -18,6 +20,33 @@ from nmrpeak_provider.product_decode import HF_DECODE_POLICY
 
 
 class NmrpeakRunnerRuntimeTests(unittest.TestCase):
+    def test_loaded_dictionary_owns_model_token_admission(self) -> None:
+        dictionary = RecordingDictionary({"formula_ele_Cl"})
+        model = RecordingModel()
+        stack = LoadedNmrpeakStack(
+            RecordingTokenizer(("formula_ele_Cl",)),
+            dictionary,
+            model,
+            HF_DECODE_POLICY,
+        )
+
+        NmrpeakRuntime(stack, lambda document: document).validate(
+            {"molecular_formula": "Cl"}
+        )
+
+        stack = LoadedNmrpeakStack(
+            RecordingTokenizer(("formula_unk",)),
+            dictionary,
+            model,
+            HF_DECODE_POLICY,
+        )
+        with self.assertRaises(NmrpeakRuntimeInputRejected):
+            NmrpeakRuntime(stack, lambda document: document).validate(
+                {"molecular_formula": "Xx"}
+            )
+        self.assertFalse(hasattr(dictionary, "tokens"))
+        self.assertEqual(model.generate_calls, [])
+
     def test_loaded_stack_builds_the_pinned_sample_and_decode_call(self) -> None:
         torch = RecordingTensorOperations()
         data_utils = ModuleType("unicore.data.data_utils")
@@ -165,7 +194,22 @@ class RecordingCollate:
         return "padded-source"
 
 
+class RecordingTokenizer:
+    def __init__(self, tokens: tuple[str, ...]) -> None:
+        self.tokens = tokens
+
+    def tokenize_item(self, document: dict[str, object]) -> tuple[str, ...]:
+        self.document = document
+        return self.tokens
+
+
 class RecordingDictionary:
+    def __init__(self, supported: set[str] | None = None) -> None:
+        self.supported = set() if supported is None else supported
+
+    def __contains__(self, token: str) -> bool:
+        return token in self.supported
+
     def vec_index(self, tokens: tuple[str, ...]) -> tuple[int, ...]:
         self.tokens = tokens
         return (11, 12)

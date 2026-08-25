@@ -12,7 +12,6 @@ from nmrpeak_provider.product_input import (
     HfModelInput,
     InputRejected,
     InputRejectionReason,
-    MAX_PROJECTED_TOKENS,
     ProtonPeak,
     parse_job_input,
 )
@@ -167,9 +166,24 @@ class ProductInputTests(unittest.TestCase):
             offering=CHF,
         )
 
-    def test_formula_grammar_and_supported_elements_are_closed(self) -> None:
+    def test_formula_grammar_is_closed_without_narrowing_model_elements(self) -> None:
+        chlorinated = parse_job_input(
+            encoded(document(formula="O3ClH16C17N2")),
+            HF,
+        )
+        self.assertEqual(chlorinated.formula, "C17H16ClN2O3")
+        sodium_chloride = parse_job_input(
+            encoded(document(formula="NaCl")),
+            HF,
+        )
+        self.assertEqual(sodium_chloride.formula, "ClNa")
+        hydrogen_chloride = parse_job_input(
+            encoded(document(formula="ClH")),
+            HF,
+        )
+        self.assertEqual(hydrogen_chloride.formula, "HCl")
+
         cases = (
-            ("C2H6Cl", InputRejectionReason.UNSUPPORTED_ELEMENT),
             ("C2C3H6", InputRejectionReason.INVALID_FORMULA),
             ("C0H6", InputRejectionReason.INVALID_FORMULA),
             ("C101", InputRejectionReason.INVALID_FORMULA),
@@ -308,7 +322,7 @@ class ProductInputTests(unittest.TestCase):
                     reason,
                 )
 
-    def test_peak_counts_are_bounded_below_the_tokenizer_limit(self) -> None:
+    def test_peak_counts_are_bounded(self) -> None:
         proton = {
             "shift_lo": "1.0",
             "shift_hi": "1.0",
@@ -322,7 +336,6 @@ class ProductInputTests(unittest.TestCase):
             carbon_peaks=[carbon] * 64,
         )
         parse_job_input(encoded(accepted), CHF)
-        self.assertLess(MAX_PROJECTED_TOKENS, 512)
 
         self.assert_rejected(
             encoded(document(proton_peaks=[proton] * 33)),

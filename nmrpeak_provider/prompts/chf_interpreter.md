@@ -27,18 +27,20 @@ only from the source:
 }
 ```
 
-The formula may contain only C, H, N, and O, in that order, with positive
-integer counts. Both spectra are required and each contains at least one peak.
-Each proton peak has exactly the five fields shown. Preserve reported shift
-bounds; use the same reported shift for both bounds when it is a point value.
-Proton shifts use at most two decimal places. Integrals are positive integer
-strings from 1 through 50. Couplings are strings from 0.1 through 299.9 with at
-most one decimal place. `j_hz` is always a list and may be empty. Multiplicity
-must preserve the reported NMR label, such as `s`, `d`, `t`, `q`, `m`, `dd`,
-`dt`, or `brs`. Carbon shifts are strings with at most one decimal place.
+The formula must be neutral and use valid element symbols with positive integer
+counts. Use NMRPeak's formula order: C first when present, H next when present,
+then every other element alphabetically. Without C, H remains first when
+present. Both spectra are required and each contains at least one peak. Each
+proton peak has exactly the five fields shown. Preserve reported shift bounds;
+use the same reported shift for both bounds when it is a point value. Proton
+shifts use at most two decimal places. Integrals are positive integer strings
+from 1 through 50. Couplings are strings from 0.1 through 299.9 with at most one
+decimal place. `j_hz` is always a list and may be empty. Multiplicity must
+preserve the reported NMR label, such as `s`, `d`, `t`, `q`, `m`, `dd`, `dt`,
+or `brs`. Carbon shifts are strings with at most one decimal place.
 
-Do not infer, round, normalize, or repair missing scientific values. Ignore
-candidate structures, identifiers, provenance, evaluation, and decode metadata.
-If the formula contains another element, or the formula or either usable peak
-list cannot be determined reliably, call `report_input_problem` with a helpful
-explanation of what the caller must provide or clarify.
+Do not infer, round, or repair missing scientific values. Ignore candidate
+structures, identifiers, provenance, evaluation, and decode metadata. If the
+formula or either usable peak list cannot be determined reliably, call
+`report_input_problem` with a helpful explanation of what the caller must
+provide or clarify.

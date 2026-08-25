@@ -80,7 +80,10 @@ class LoadedNmrpeakStack:
 
     def tokenize(self, document: dict[str, object]) -> tuple[str, ...]:
         tokens = self._tokenizer.tokenize_item(document)
-        return tuple(str(token) for token in tokens)
+        model_tokens = tuple(str(token) for token in tokens)
+        if any(token not in self._dictionary for token in model_tokens):
+            raise NmrpeakRuntimeInputRejected()
+        return model_tokens
 
     def generate(self, tokens: tuple[str, ...]) -> JsonValue:
         import torch
