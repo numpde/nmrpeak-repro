@@ -2,7 +2,7 @@ NMRPeak multi-runner NMR API provider
 =====================================
 
 Status: implemented; checkpoint-free validation passes, release materialization
-and real-checkpoint/runtime proof remain operator-gated
+and real-checkpoint/runtime proof remain outstanding operator actions
 Date: 2026-08-24
 
 
@@ -220,9 +220,9 @@ The provider has no inbound listener and publishes no host port. It alone
 receives the signing credential, API origin/CA configuration, frozen
 configuration, durable journal volume, and ambient outbound egress. Ordinary
 Compose networking does not restrict that egress to the configured API
-destination. The public-HTTPS deployment accepts that provider-process grant; a
-separate localhost overlay adds only the reviewed host-gateway mapping and CA
-mount needed to reach the same-host edge. Runners remain networkless.
+destination. The supported deployment therefore targets a public HTTPS edge;
+same-host edge access would require a separately reviewed host-gateway and CA
+overlay. Runners remain networkless.
 
 The provider handles API unavailability in-process with bounded timeouts and
 backoff; it does not turn transport retries into a local work queue. Compose
@@ -891,7 +891,6 @@ The host Makefile is the operator index:
     make provider/image/build
     make provider/credential/install DEPLOYMENT=<name> \
         NMR_API_V1_DIR=/absolute/checkout
-    make runner/list
     make runner/lock/check RUNNER=<runner> TARGET=<target>
     make runner/lock/stage RUNNER=<runner> TARGET=<target>
     make runner/lock/apply RUNNER=<runner> TARGET=<target>
@@ -907,11 +906,7 @@ The host Makefile is the operator index:
     make checkpoint/recover VOLUME=<full-volume-name> \
         CONFIRM=<full-volume-name>
     make provider/deployment/config DEPLOYMENT=<name>
-    make provider/deployment/config/localhost DEPLOYMENT=<name> \
-        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
     make provider/deployment/up DEPLOYMENT=<name>
-    make provider/deployment/up/localhost DEPLOYMENT=<name> \
-        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
     make provider/deployment/status DEPLOYMENT=<name>
     make provider/logs DEPLOYMENT=<name>
     make provider/deployment/down DEPLOYMENT=<name>
@@ -921,8 +916,6 @@ The host Makefile is the operator index:
         CONFIRM=<full-journal-volume-name>
     make provider/identity-lock/remove PROVIDER_REF=<provider-ref> \
         CONFIRM=<full-volume-name>
-    make provider/test/runtime DEPLOYMENT=<name>
-    make runner/test/runtime RUNNER=<runner> TARGET=<target> RELEASE=<name>
 
 NMR API credential issuance, server-side registration state, and server secrets
 remain owned by `nmr-api-v1`; this repository installs only the matching private
@@ -1050,20 +1043,15 @@ cgroups/swap, routes/no runner egress, session-volume ENOSPC behavior, sockets,
 log driver, image identity, restart behavior, stop bounds, volume attachments,
 and teardown ownership.
 
-Real checkpoint proofs remain explicit:
-
-    make runner/test/runtime RUNNER=nmrpeak_hf_v1 \
-        TARGET=cpu-x86_64 RELEASE=<name>
-    make runner/test/runtime RUNNER=nmrpeak_chf_v1 \
-        TARGET=cpu-x86_64 RELEASE=<name>
-    make provider/test/runtime DEPLOYMENT=<name>
-
-The runner proof establishes artifact measurement, model readiness, validation,
-one valid request, deterministic rejection followed by reuse, owner loss, and
-bounded teardown. The provider proof uses the production composition, a fake
-TLS Server A, and the real runner/release to establish one complete signed
-Attempt lifecycle per implementation. Real API credentials and public API
-calls are excluded.
+Real-checkpoint proof is not implemented as a public operation in this
+checkpoint-free repository lane. Before deployment, a separately reviewed,
+opt-in runner proof must establish artifact measurement, model readiness,
+validation, one valid request, deterministic rejection followed by reuse, owner
+loss, and bounded teardown. A production-composition proof must then use a fake
+TLS Server A and the real runners/releases to establish one complete signed
+Attempt lifecycle per implementation without real API credentials or public API
+calls. `provider/deployment/up` is an operator deployment action, not a
+substitute for either proof.
 
 The CHF vector retains duplicate 109.4 and 70.4 observations. The real-checkpoint
 proof requires bounded candidate generation, not a formula match or a particular
