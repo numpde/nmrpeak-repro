@@ -52,6 +52,7 @@ class NmrpeakWeightsTests(unittest.TestCase):
         self.assertEqual(observed[-1], self.declared_url)
         self.assertEqual(observed[observed.index("--interface") + 1], "wlp1s0")
         self.assertIn("--continue-at", observed)
+        self.assertIn("--retry-all-errors", observed)
 
     def test_download_uses_normal_routing_when_no_interface_is_selected(self) -> None:
         observed: list[str] = []

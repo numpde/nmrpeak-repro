@@ -211,6 +211,7 @@ def _curl_arguments(
         "-",
         "--retry",
         "5",
+        "--retry-all-errors",
         "--retry-delay",
         "2",
         "--connect-timeout",
