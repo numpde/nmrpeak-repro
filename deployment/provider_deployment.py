@@ -499,6 +499,53 @@ def install_provider_credential(
     return destination
 
 
+def show_provider_logs(
+    repository: Path,
+    deployment: str,
+    *,
+    docker: Path = _DOCKER,
+) -> None:
+    """Hand the terminal to the exact provider container's bounded log tail."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    provider = _inspect_project_containers(docker, root, deployment).get("provider")
+    if provider is None:
+        raise DeploymentOperationRejected(
+            f"Deployment has no provider container: {deployment}"
+        )
+    state = provider.get("State")
+    if type(state) is not dict or type(state.get("Running")) is not bool:
+        raise DeploymentOperationRejected(
+            "Docker provider log selection has an invalid state record"
+        )
+    arguments = [
+        str(docker),
+        "--context",
+        "default",
+        "logs",
+        "--timestamps",
+        "--tail",
+        "200",
+    ]
+    if state["Running"]:
+        arguments.append("--follow")
+    arguments.append(provider["Id"])
+    os.execve(
+        str(docker),
+        arguments,
+        {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/tmp",
+            "DOCKER_CONTEXT": "default",
+        },
+    )
+
+
 def stop_deployment(
     repository: Path,
     deployment: str,
@@ -1617,7 +1664,15 @@ def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Operate one named NMRPeak deployment.")
     parser.add_argument(
         "operation",
-        choices=("config", "credential-install", "down", "init", "status", "up"),
+        choices=(
+            "config",
+            "credential-install",
+            "down",
+            "init",
+            "logs",
+            "status",
+            "up",
+        ),
     )
     parser.add_argument("deployment")
     parser.add_argument("--nmr-api-v1", type=Path)
@@ -1651,6 +1706,8 @@ def main(arguments: list[str] | None = None) -> int:
             )
         elif options.operation == "status":
             print(deployment_status_bytes(repository, options.deployment).decode("utf-8"))
+        elif options.operation == "logs":
+            show_provider_logs(repository, options.deployment)
         else:
             stop_deployment(repository, options.deployment)
             print(

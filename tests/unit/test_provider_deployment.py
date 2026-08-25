@@ -25,6 +25,7 @@ from deployment.provider_deployment import (
     install_provider_credential,
     materialize_deployment_plan,
     render_deployment_plan,
+    show_provider_logs,
     start_deployment,
     stop_deployment,
 )
@@ -560,6 +561,58 @@ class ProviderDeploymentTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_logs_follow_only_a_running_owned_provider(self) -> None:
+        provider = {
+            "Id": "a" * 64,
+            "State": {"Running": True},
+        }
+        with (
+            patch.object(
+                provider_deployment,
+                "_inspect_project_containers",
+                return_value={"provider": provider},
+            ),
+            patch.object(provider_deployment.os, "execve") as execute,
+        ):
+            show_provider_logs(ROOT, "production")
+
+        executable, arguments, environment = execute.call_args.args
+        self.assertEqual(executable, "/usr/bin/docker")
+        self.assertEqual(
+            arguments,
+            [
+                "/usr/bin/docker",
+                "--context",
+                "default",
+                "logs",
+                "--timestamps",
+                "--tail",
+                "200",
+                "--follow",
+                "a" * 64,
+            ],
+        )
+        self.assertEqual(
+            environment,
+            {
+                "PATH": "/usr/bin:/bin",
+                "HOME": "/tmp",
+                "DOCKER_CONTEXT": "default",
+            },
+        )
+
+        provider["State"] = {"Running": False}
+        with (
+            patch.object(
+                provider_deployment,
+                "_inspect_project_containers",
+                return_value={"provider": provider},
+            ),
+            patch.object(provider_deployment.os, "execve") as execute,
+        ):
+            show_provider_logs(ROOT, "production")
+        self.assertNotIn("--follow", execute.call_args.args[1])
 
     def test_down_refuses_foreign_resources_before_compose(self) -> None:
         with TemporaryDirectory() as temporary:
