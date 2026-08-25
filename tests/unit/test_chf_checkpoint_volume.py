@@ -12,10 +12,8 @@ import unittest
 from unittest.mock import patch
 
 
-_MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "docker/chf_checkpoint_volume.py"
-)
-_SPEC = importlib.util.spec_from_file_location("chf_checkpoint_volume", _MODULE_PATH)
+_MODULE_PATH = Path(__file__).resolve().parents[2] / "docker/checkpoint_volume.py"
+_SPEC = importlib.util.spec_from_file_location("checkpoint_volume", _MODULE_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 volume_worker = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(volume_worker)

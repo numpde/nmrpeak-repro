@@ -32,7 +32,7 @@ IMPORTER_IMAGE = (
     "docker.io/library/python:3.12.12-slim-bookworm@"
     "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c"
 )
-IMPORTER_SCRIPT = "docker/chf_checkpoint_volume.py"
+IMPORTER_SCRIPT = "docker/checkpoint_volume.py"
 VOLUME_SCHEMA_ID = "nmrpeak.checkpoint_volume.chf.v1"
 VOLUME_PREFIX = "nmrpeak-chf-checkpoint-"
 OWNER_LABEL = "io.github.numpde.nmrpeak.owner"
@@ -479,10 +479,10 @@ def _helper_command(
         "--mount",
         mount,
         "--mount",
-        f"type=bind,src={helper_mount_source},dst=/tool/chf_checkpoint_volume.py,readonly",
+        f"type=bind,src={helper_mount_source},dst=/tool/checkpoint_volume.py,readonly",
         IMPORTER_IMAGE,
         "python",
-        "/tool/chf_checkpoint_volume.py",
+        "/tool/checkpoint_volume.py",
         operation,
     ]
     if operation == "recoverable":

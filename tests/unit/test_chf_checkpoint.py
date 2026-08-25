@@ -87,7 +87,7 @@ class ChfCheckpointOperationTests(unittest.TestCase):
 
     def test_importer_requires_clean_tracked_helper_bytes(self) -> None:
         with CheckpointOperationFixture() as fixture:
-            worker = fixture.repository / "docker/chf_checkpoint_volume.py"
+            worker = fixture.repository / "docker/checkpoint_volume.py"
             worker.write_bytes(worker.read_bytes() + b"\n# drift\n")
             with self.assertRaises(ChfCheckpointOperationRejected):
                 fixture.import_checkpoint()
@@ -114,7 +114,7 @@ class CheckpointOperationFixture:
         self.repository.mkdir()
         source_repository = Path(__file__).resolve().parents[2]
         for relative_path in (
-            "docker/chf_checkpoint_volume.py",
+            "docker/checkpoint_volume.py",
         ):
             destination = self.repository / relative_path
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +218,7 @@ class CheckpointOperationFixture:
 
 
 def fake_docker_source(state: Path) -> str:
-    worker = Path(__file__).resolve().parents[2] / "docker/chf_checkpoint_volume.py"
+    worker = Path(__file__).resolve().parents[2] / "docker/checkpoint_volume.py"
     return f'''#!/usr/bin/env python3
 import importlib.util
 import json
@@ -272,7 +272,7 @@ elif args and args[0] == "run":
         if value.startswith("docker.io/library/python:3.12.12-slim-bookworm@sha256:")
     )
     if args[image_index + 1:image_index + 3] != [
-        "python", "/tool/chf_checkpoint_volume.py"
+        "python", "/tool/checkpoint_volume.py"
     ]:
         raise SystemExit(92)
     helper_args = args[image_index + 3:]

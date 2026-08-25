@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Populate or inspect one CHF checkpoint volume without loading the checkpoint."""
+"""Populate or inspect one NMRPeak checkpoint volume without loading it."""
 
 from __future__ import annotations
 
@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 marker,
             )
     except (CheckpointVolumeRejected, OSError) as error:
-        parser.exit(2, f"CHF checkpoint volume rejected: {error}\n")
+        parser.exit(2, f"Checkpoint volume rejected: {error}\n")
     return 0
 
 
