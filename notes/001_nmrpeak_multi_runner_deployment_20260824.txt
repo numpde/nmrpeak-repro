@@ -1,8 +1,8 @@
 NMRPeak multi-runner NMR API provider
 =====================================
 
-Status: implemented; checkpoint-free validation passes, release materialization
-and real-checkpoint/runtime proof remain outstanding operator actions
+Status: implemented; checkpoint-free validation passes and reviewed release
+declarations are materialized; real-checkpoint/runtime proof remains outstanding
 Date: 2026-08-24
 
 
