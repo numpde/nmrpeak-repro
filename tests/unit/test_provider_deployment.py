@@ -24,6 +24,7 @@ from deployment.provider_deployment import (
     initialize_deployment,
     install_provider_credential,
     materialize_deployment_plan,
+    remove_frozen_generation,
     render_deployment_plan,
     show_provider_logs,
     start_deployment,
@@ -793,6 +794,124 @@ class ProviderDeploymentTests(unittest.TestCase):
             "chf-checkpoint",
         ):
             self.assertNotIn(retained_volume, teardown)
+
+    def test_generation_removal_preserves_referenced_and_neighboring_state(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+            materialize_deployment_plan(repository, "production", plan)
+            generation_id = plan.generation.frozen_generation_id
+            generation = (
+                repository
+                / "secrets/deployments/production/generations"
+                / generation_id
+            )
+            neighbor = generation.parent / ("sha256:" + "f" * 64)
+            neighbor.mkdir(mode=0o700)
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_containers",
+                    return_value={},
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_journal_generation_ids",
+                    return_value=(generation_id,),
+                ),
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "still references",
+                ),
+            ):
+                remove_frozen_generation(
+                    repository,
+                    "production",
+                    generation_id,
+                    generation_id,
+                )
+            self.assertTrue(generation.is_dir())
+
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_containers",
+                    return_value={},
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_journal_generation_ids",
+                    return_value=(),
+                ),
+            ):
+                remove_frozen_generation(
+                    repository,
+                    "production",
+                    generation_id,
+                    generation_id,
+                )
+            self.assertFalse(generation.exists())
+            self.assertTrue(neighbor.is_dir())
+
+    def test_journal_inventory_helper_has_only_read_only_journal_authority(
+        self,
+    ) -> None:
+        image = LocalImage("sha256:" + "1" * 64, "sha256:" + "2" * 64)
+        generation_id = "sha256:" + "3" * 64
+        output = canonical_json_bytes(
+            {
+                "schema_id": "nmrpeak.journal_generation_inventory.v1",
+                "frozen_generation_ids": [generation_id],
+            }
+        ) + b"\n"
+        captured: list[tuple[str, ...]] = []
+
+        def docker_command(
+            _docker: Path,
+            arguments: tuple[str, ...],
+            *,
+            timeout: int,
+        ) -> subprocess.CompletedProcess[bytes]:
+            captured.append(arguments)
+            self.assertEqual(timeout, 300)
+            return subprocess.CompletedProcess((), 0, output, b"")
+
+        with (
+            patch.object(
+                provider_deployment,
+                "inspect_provider_journal_volume",
+                return_value=("nmrpeak-production-journal-v1", ()),
+            ),
+            patch.object(
+                provider_deployment,
+                "_resolve_provider_image",
+                return_value=image,
+            ),
+            patch.object(
+                provider_deployment,
+                "_docker_command",
+                side_effect=docker_command,
+            ),
+        ):
+            references = provider_deployment._journal_generation_ids(
+                Path("/usr/bin/docker"),
+                ROOT,
+                "production",
+                "provider:nmrpeak",
+                {},
+            )
+
+        self.assertEqual(references, (generation_id,))
+        arguments = captured[0]
+        self.assertIn("--network", arguments)
+        self.assertEqual(arguments[arguments.index("--network") + 1], "none")
+        mount = arguments[arguments.index("--mount") + 1]
+        self.assertEqual(
+            mount,
+            "type=volume,src=nmrpeak-production-journal-v1,"
+            "dst=/var/lib/nmrpeak-provider,readonly",
+        )
+        self.assertNotIn("credential", " ".join(arguments))
+        self.assertNotIn("checkpoint", " ".join(arguments))
 
 
 class committed_repository:

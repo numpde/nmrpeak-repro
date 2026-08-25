@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/init provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
+.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
 
 test: test/unit test/contract test/repository
 
@@ -90,6 +90,18 @@ provider/identity-lock/remove:
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_volumes identity-lock-remove \
 		"$$PROVIDER_REF_INPUT" "$$CONFIRM_INPUT"
+
+provider/deployment/generation/remove: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/generation/remove: private export FROZEN_GENERATION_INPUT := $(value FROZEN_GENERATION)
+provider/deployment/generation/remove: private export CONFIRM_INPUT := $(value CONFIRM)
+provider/deployment/generation/remove:
+	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin FROZEN_GENERATION)" = command\ line || { echo 'FROZEN_GENERATION must be set on the make command line' >&2; exit 2; }
+	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment generation-remove \
+		"$$DEPLOYMENT_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT" \
+		--confirm "$$CONFIRM_INPUT"
 
 release/write:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }

@@ -12,6 +12,7 @@ import deployment.provider_volumes as provider_volumes
 from deployment.provider_volumes import (
     ProviderVolumeOperationRejected,
     ensure_provider_state_volumes,
+    inspect_provider_journal_volume,
     remove_provider_identity_lock,
 )
 
@@ -35,6 +36,15 @@ class ProviderVolumesTests(unittest.TestCase):
                 Path(temporary),
                 "production",
                 "provider:nmrpeak",
+            )
+            engine.attachments[first.journal] = ["b" * 64]
+            self.assertEqual(
+                inspect_provider_journal_volume(
+                    Path("/usr/bin/docker"),
+                    "production",
+                    "provider:nmrpeak",
+                ),
+                (first.journal, ("b" * 64,)),
             )
 
         self.assertEqual(first, second)

@@ -176,6 +176,45 @@ def remove_provider_identity_lock(
     return name
 
 
+def inspect_provider_journal_volume(
+    docker: Path,
+    deployment: str,
+    provider_ref: str,
+) -> tuple[str, tuple[str, ...]]:
+    """Prove one journal volume and report every attached container identity."""
+
+    name = provider_journal_volume_name(deployment)
+    spec = _VolumeSpec(
+        name,
+        {
+            OWNER_LABEL: OWNER_LABEL_VALUE,
+            _PROVIDER_LABEL: provider_ref,
+            SCHEMA_LABEL: _JOURNAL_SCHEMA,
+            _DEPLOYMENT_LABEL: deployment,
+        },
+        "journal",
+        None,
+    )
+    if not _inspect_volume(docker, spec):
+        raise ProviderVolumeOperationRejected(
+            "Provider journal volume does not exist"
+        )
+    attachments = _docker(
+        docker,
+        "ps",
+        "--all",
+        "--no-trunc",
+        "--quiet",
+        "--filter",
+        f"volume={name}",
+    ).stdout.decode("ascii", errors="strict").splitlines()
+    if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in attachments):
+        raise ProviderVolumeOperationRejected(
+            "Docker returned malformed provider journal attachments"
+        )
+    return name, tuple(attachments)
+
+
 def _ensure_volume(docker: Path, spec: _VolumeSpec) -> None:
     if _inspect_volume(docker, spec):
         return

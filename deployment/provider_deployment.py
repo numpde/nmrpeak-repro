@@ -27,6 +27,7 @@ from deployment.local_image import (
 from deployment.provider_volumes import (
     ProviderVolumeOperationRejected,
     ensure_provider_state_volumes,
+    inspect_provider_journal_volume,
     provider_identity_lock_volume_name,
     provider_journal_volume_name,
 )
@@ -34,7 +35,11 @@ from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
 )
-from nmrpeak_provider.frozen_generation import frozen_generation_id
+from nmrpeak_provider.attempt_journal import validate_frozen_generation_id
+from nmrpeak_provider.frozen_generation import (
+    frozen_generation_id,
+    load_frozen_generation,
+)
 from nmrpeak_provider.provider_config import decode_provider_runtime_config
 from nmrpeak_provider.provider_credential import (
     PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES,
@@ -546,6 +551,53 @@ def show_provider_logs(
     )
 
 
+def remove_frozen_generation(
+    repository: Path,
+    deployment: str,
+    frozen_generation: str,
+    confirmation: str,
+    *,
+    docker: Path = _DOCKER,
+) -> None:
+    """Remove one stopped deployment generation absent from its journal."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    try:
+        validate_frozen_generation_id(frozen_generation)
+    except (TypeError, ValueError) as error:
+        raise DeploymentOperationRejected(
+            "Frozen generation removal requires one full SHA-256 identity"
+        ) from error
+    if confirmation != frozen_generation:
+        raise DeploymentOperationRejected(
+            "Frozen generation removal confirmation must equal its full identity"
+        )
+    state_root = _existing_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        services = _inspect_project_containers(docker, root, deployment)
+        _require_stopped_services(services, "Frozen generation removal")
+        provider_ref = load_named_deployment(
+            root / "config/deployments" / deployment / "deployment.toml"
+        ).provider_ref
+        references = _journal_generation_ids(
+            docker,
+            root,
+            deployment,
+            provider_ref,
+            services,
+        )
+        if frozen_generation in references:
+            raise DeploymentOperationRejected(
+                "Provider journal still references the frozen generation"
+            )
+        _remove_retained_generation(state_root, frozen_generation)
+
+
 def stop_deployment(
     repository: Path,
     deployment: str,
@@ -714,12 +766,171 @@ def _require_stopped_project(
     deployment: str,
 ) -> None:
     services = _inspect_project_containers(docker, repository, deployment)
+    _require_stopped_services(services, "Provider credential replacement")
+
+
+def _require_stopped_services(
+    services: dict[str, dict[str, object]],
+    operation: str,
+) -> None:
     for record in services.values():
         state = record.get("State")
         if type(state) is not dict or state.get("Running") is not False:
             raise DeploymentOperationRejected(
-                "Provider credential replacement requires a proved-stopped deployment"
+                f"{operation} requires a proved-stopped deployment"
             )
+
+
+def _journal_generation_ids(
+    docker: Path,
+    repository: Path,
+    deployment: str,
+    provider_ref: str,
+    services: dict[str, dict[str, object]],
+) -> tuple[str, ...]:
+    journal_volume, attachments = inspect_provider_journal_volume(
+        docker,
+        deployment,
+        provider_ref,
+    )
+    project_containers = {record["Id"] for record in services.values()}
+    if not set(attachments).issubset(project_containers):
+        raise DeploymentOperationRejected(
+            "Provider journal volume has a foreign container attachment"
+        )
+    provider_image = _resolve_provider_image(docker, repository)
+    result = _docker_command(
+        docker,
+        (
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "--network",
+            "none",
+            "--read-only",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--pids-limit",
+            "32",
+            "--memory",
+            "128m",
+            "--memory-swap",
+            "128m",
+            "--log-driver",
+            "none",
+            "--mount",
+            f"type=volume,src={journal_volume},dst=/var/lib/nmrpeak-provider,readonly",
+            "--entrypoint",
+            "python",
+            provider_image.image_id,
+            "-m",
+            "nmrpeak_provider.journal_inventory",
+        ),
+        timeout=300,
+    )
+    if not result.stdout.endswith(b"\n") or result.stdout.endswith(b"\n\n"):
+        raise DeploymentOperationRejected(
+            "Provider journal inventory returned invalid framing"
+        )
+    try:
+        document = parse_canonical_json_bytes(result.stdout[:-1])
+    except (TypeError, ValueError) as error:
+        raise DeploymentOperationRejected(
+            "Provider journal inventory returned invalid canonical JSON"
+        ) from error
+    if type(document) is not dict or set(document) != {
+        "schema_id",
+        "frozen_generation_ids",
+    }:
+        raise DeploymentOperationRejected(
+            "Provider journal inventory returned an invalid shape"
+        )
+    values = document["frozen_generation_ids"]
+    if (
+        document["schema_id"] != "nmrpeak.journal_generation_inventory.v1"
+        or type(values) is not list
+        or any(type(value) is not str for value in values)
+        or values != sorted(set(values))
+    ):
+        raise DeploymentOperationRejected(
+            "Provider journal inventory returned invalid generation identities"
+        )
+    try:
+        for value in values:
+            validate_frozen_generation_id(value)
+    except (TypeError, ValueError) as error:
+        raise DeploymentOperationRejected(
+            "Provider journal inventory returned invalid generation identities"
+        ) from error
+    return tuple(values)
+
+
+def _remove_retained_generation(
+    state_root: Path,
+    frozen_generation: str,
+) -> None:
+    generations = state_root / "generations"
+    try:
+        generations_status = generations.stat(follow_symlinks=False)
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            "Retained generation directory is unavailable"
+        ) from error
+    if (
+        not stat.S_ISDIR(generations_status.st_mode)
+        or generations_status.st_uid != os.geteuid()
+        or stat.S_IMODE(generations_status.st_mode) != 0o700
+    ):
+        raise DeploymentOperationRejected(
+            "Retained generation directory must be operator-owned mode 0700"
+        )
+    target = generations / frozen_generation
+    frozen_root = target / "frozen"
+    manifest = _read_regular_file(frozen_root / "manifest.json")
+    try:
+        loaded = load_frozen_generation(
+            frozen_root,
+            expected_frozen_generation_id=frozen_generation,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        raise DeploymentOperationRejected(
+            "Retained frozen generation is invalid"
+        ) from error
+    expected = {"frozen/manifest.json": manifest}
+    expected.update(
+        {
+            f"frozen/{frozen_file.path}": frozen_file.content
+            for frozen_file in loaded.files
+        }
+    )
+    _require_retained_tree(target, expected)
+    staged = generations / f".{frozen_generation}.{secrets.token_hex(16)}.removing"
+    renamed = False
+    deleted = False
+    try:
+        os.rename(target, staged)
+        renamed = True
+        _fsync_directory(generations)
+        shutil.rmtree(staged)
+        deleted = True
+        _fsync_directory(generations)
+    except OSError as error:
+        if deleted:
+            raise DeploymentOperationRejected(
+                "Frozen generation was removed, but deletion durability is unconfirmed"
+            ) from error
+        if renamed:
+            raise DeploymentOperationRejected(
+                "Frozen generation removal was incomplete; staged residue remains"
+            ) from error
+        raise DeploymentOperationRejected(
+            "Frozen generation could not be staged for removal"
+        ) from error
 
 
 def _publish_private_credential(
@@ -1427,12 +1638,7 @@ def _image_input_ids(repository: Path, revision: str) -> dict[str, str]:
 
 def _local_images(docker: Path, input_ids: dict[str, str]) -> dict[str, LocalImage]:
     specs = {
-        "provider": LocalImageSpec(
-            "numpde/nmrpeak-provider",
-            input_ids["provider"],
-            (("io.numpde.nmrpeak.provider.contract-id", "nmr.provider.http.v1"),),
-            _PROVIDER_ENTRYPOINT,
-        ),
+        "provider": _provider_image_spec(input_ids["provider"]),
         "hf": LocalImageSpec(
             "numpde/nmrpeak-hf-runner",
             input_ids["hf"],
@@ -1461,6 +1667,29 @@ def _local_images(docker: Path, input_ids: dict[str, str]) -> dict[str, LocalIma
         ),
     }
     return {role: resolve_local_image(docker, spec) for role, spec in specs.items()}
+
+
+def _resolve_provider_image(docker: Path, repository: Path) -> LocalImage:
+    revision = _committed_revision(repository)
+    with TemporaryDirectory() as temporary:
+        context = Path(temporary) / "provider"
+        context.mkdir()
+        input_id = materialize_image_context(
+            repository,
+            revision,
+            context,
+            "provider",
+        )
+    return resolve_local_image(docker, _provider_image_spec(input_id))
+
+
+def _provider_image_spec(input_id: str) -> LocalImageSpec:
+    return LocalImageSpec(
+        "numpde/nmrpeak-provider",
+        input_id,
+        (("io.numpde.nmrpeak.provider.contract-id", "nmr.provider.http.v1"),),
+        _PROVIDER_ENTRYPOINT,
+    )
 
 
 def _compose_environment(
@@ -1668,6 +1897,7 @@ def main(arguments: list[str] | None = None) -> int:
             "config",
             "credential-install",
             "down",
+            "generation-remove",
             "init",
             "logs",
             "status",
@@ -1677,11 +1907,17 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("deployment")
     parser.add_argument("--nmr-api-v1", type=Path)
     parser.add_argument("--replace", action="store_true")
+    parser.add_argument("--frozen-generation")
+    parser.add_argument("--confirm")
     options = parser.parse_args(arguments)
     repository = Path(__file__).resolve().parents[1]
     try:
         if options.operation == "credential-install":
-            if options.nmr_api_v1 is None:
+            if (
+                options.nmr_api_v1 is None
+                or options.frozen_generation is not None
+                or options.confirm is not None
+            ):
                 parser.error("credential-install requires --nmr-api-v1")
             installed = install_provider_credential(
                 repository,
@@ -1690,8 +1926,33 @@ def main(arguments: list[str] | None = None) -> int:
                 replace=options.replace,
             )
             print(f"Installed provider credential: {installed}")
-        elif options.nmr_api_v1 is not None or options.replace:
-            parser.error("credential options require credential-install")
+        elif options.operation == "generation-remove":
+            if (
+                options.frozen_generation is None
+                or options.confirm is None
+                or options.nmr_api_v1 is not None
+                or options.replace
+            ):
+                parser.error(
+                    "generation-remove requires --frozen-generation and --confirm"
+                )
+            remove_frozen_generation(
+                repository,
+                options.deployment,
+                options.frozen_generation,
+                options.confirm,
+            )
+            print(
+                "Removed frozen deployment generation: "
+                f"{options.deployment} {options.frozen_generation}"
+            )
+        elif (
+            options.nmr_api_v1 is not None
+            or options.replace
+            or options.frozen_generation is not None
+            or options.confirm is not None
+        ):
+            parser.error("operation-specific options do not match the operation")
         elif options.operation == "init":
             initialized = initialize_deployment(repository, options.deployment)
             print(f"Initialized deployment {options.deployment}: {initialized}")
