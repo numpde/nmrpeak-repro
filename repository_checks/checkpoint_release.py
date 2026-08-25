@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from hashlib import sha256
+import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import stat
 import sys
 import zipfile
@@ -94,6 +96,81 @@ def verify_release_bytes(
             f"{spec.lane_name} checkpoint bytes do not match the release declaration"
         )
     return declaration
+
+
+def install_release_declaration(
+    spec: CheckpointReleaseSpec,
+    raw: bytes,
+    archive: Path,
+    releases_directory: Path,
+    *,
+    expected_release_name: str,
+    expected_source_revision: str,
+) -> Path:
+    """Verify and install one immutable declaration without replacing a release."""
+
+    verify_release_bytes(
+        spec,
+        raw,
+        archive,
+        expected_release_name=expected_release_name,
+        expected_source_revision=expected_source_revision,
+    )
+    _require_releases_directory(spec, releases_directory)
+    destination = releases_directory / f"{expected_release_name}.json"
+    stage = releases_directory / (
+        f".{expected_release_name}.{secrets.token_hex(16)}.staging"
+    )
+    try:
+        descriptor = os.open(
+            stage,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o644,
+        )
+    except OSError as error:
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} release staging file could not be created"
+        ) from error
+    created = os.fstat(descriptor)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+    except OSError as error:
+        _remove_owned_file(spec, stage, created, "failed release staging file")
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} release staging bytes could not be written durably"
+        ) from error
+    except BaseException:
+        _remove_owned_file(spec, stage, created, "interrupted release staging file")
+        raise
+    try:
+        os.link(stage, destination, follow_symlinks=False)
+    except FileExistsError as error:
+        _remove_owned_file(spec, stage, created, "unused release staging file")
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} release declaration already exists"
+        ) from error
+    except OSError as error:
+        _remove_owned_file(spec, stage, created, "failed release staging file")
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} release declaration could not be installed"
+        ) from error
+    try:
+        _fsync_directory(releases_directory)
+    except OSError as error:
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} release is visible, but its durability could not be confirmed; the staging file remains"
+        ) from error
+    try:
+        stage.unlink()
+        _fsync_directory(releases_directory)
+    except OSError as error:
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} release was installed, but its staging file could not be durably removed"
+        ) from error
+    return destination
 
 
 def parse_release_bytes(
@@ -329,6 +406,53 @@ def _read_declaration_file(spec: CheckpointReleaseSpec, path: Path) -> bytes:
     return path.read_bytes()
 
 
+def _require_releases_directory(
+    spec: CheckpointReleaseSpec,
+    path: Path,
+) -> None:
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as error:
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} releases directory is unavailable"
+        ) from error
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} releases directory must be operator-owned and non-symlinked"
+        )
+
+
+def _remove_owned_file(
+    spec: CheckpointReleaseSpec,
+    path: Path,
+    created: os.stat_result,
+    label: str,
+) -> None:
+    try:
+        current = path.stat(follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
+            raise CheckpointReleaseRejected(
+                f"{spec.lane_name} {label} is no longer owned by this operation"
+            )
+        path.unlink()
+        _fsync_directory(path.parent)
+    except OSError as error:
+        raise CheckpointReleaseRejected(
+            f"{spec.lane_name} {label} could not be removed"
+        ) from error
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _current_source_revision(
     spec: CheckpointReleaseSpec,
     repository_root: Path,
@@ -348,7 +472,7 @@ def run_release_cli(
     argv: list[str] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("write", "check"))
+    parser.add_argument("operation", choices=("write", "check", "install"))
     parser.add_argument("--runner", required=True)
     parser.add_argument("--release", required=True)
     parser.add_argument("--archive", required=True, type=Path)
@@ -361,7 +485,7 @@ def run_release_cli(
         source_revision = _current_source_revision(spec, repository_root)
         if arguments.operation == "write":
             if arguments.declaration is not None:
-                parser.error("--declaration is valid only for check")
+                parser.error("--declaration is valid only for check or install")
             sys.stdout.buffer.write(
                 candidate_release_bytes(
                     spec,
@@ -372,15 +496,25 @@ def run_release_cli(
             )
             return 0
         if arguments.declaration is None:
-            parser.error("--declaration is required for check")
+            parser.error(f"--declaration is required for {arguments.operation}")
         declaration = _read_declaration_file(spec, arguments.declaration)
-        verify_release_bytes(
-            spec,
-            declaration,
-            arguments.archive,
-            expected_release_name=arguments.release,
-            expected_source_revision=source_revision,
-        )
+        if arguments.operation == "install":
+            install_release_declaration(
+                spec,
+                declaration,
+                arguments.archive,
+                repository_root / "models" / spec.runner_ref / "releases",
+                expected_release_name=arguments.release,
+                expected_source_revision=source_revision,
+            )
+        else:
+            verify_release_bytes(
+                spec,
+                declaration,
+                arguments.archive,
+                expected_release_name=arguments.release,
+                expected_source_revision=source_revision,
+            )
     except (CheckpointReleaseRejected, OSError) as error:
         parser.exit(2, f"{spec.lane_name} release rejected: {error}\n")
     return 0

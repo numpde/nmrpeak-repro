@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 test: test/unit test/contract test/repository
 
@@ -133,12 +133,17 @@ provider/deployment/journal/retire:
 		$(PYTHON) -m deployment.provider_deployment journal-retire \
 		"$$DEPLOYMENT_INPUT" --confirm "$$CONFIRM_INPUT"
 
+release/write release/check release/install: private export RUNNER_INPUT := $(value RUNNER)
+release/write release/check release/install: private export RELEASE_INPUT := $(value RELEASE)
+release/write release/check release/install: private export ARCHIVE_INPUT := $(value ARCHIVE)
+release/check release/install: private export DECLARATION_INPUT := $(value DECLARATION)
+
 release/write:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
 	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-release.sh" \
-		write "$(RUNNER)" "$(RELEASE)" "$(ARCHIVE)"
+		write "$$RUNNER_INPUT" "$$RELEASE_INPUT" "$$ARCHIVE_INPUT"
 
 release/check:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
@@ -146,7 +151,15 @@ release/check:
 	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin DECLARATION)" = command\ line || { echo 'DECLARATION must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-release.sh" \
-		check "$(RUNNER)" "$(RELEASE)" "$(ARCHIVE)" "$(DECLARATION)"
+		check "$$RUNNER_INPUT" "$$RELEASE_INPUT" "$$ARCHIVE_INPUT" "$$DECLARATION_INPUT"
+
+release/install:
+	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
+	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin DECLARATION)" = command\ line || { echo 'DECLARATION must be set on the make command line' >&2; exit 2; }
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-release.sh" \
+		install "$$RUNNER_INPUT" "$$RELEASE_INPUT" "$$ARCHIVE_INPUT" "$$DECLARATION_INPUT"
 
 checkpoint/import:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }

@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import stat
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 import warnings
 import zipfile
 
 from nmrpeak_provider.canonical_json import canonical_json_bytes, parse_canonical_json_bytes
 from repository_checks.chf_release import (
     ARCHIVE_MEMBER,
+    CHF_RELEASE_SPEC,
     ChfReleaseRejected,
     candidate_release_bytes,
     parse_release_bytes,
     verify_release_bytes,
 )
+from repository_checks.checkpoint_release import install_release_declaration
+import repository_checks.checkpoint_release as checkpoint_release
 
 
 _CHECKPOINT = b"checkpoint fixture bytes"
@@ -47,6 +53,108 @@ class ChfReleaseTests(unittest.TestCase):
             ),
             release,
         )
+
+    def test_install_adds_one_verified_immutable_release(self) -> None:
+        with ReleaseArchive() as archive, TemporaryDirectory() as temporary:
+            releases = Path(temporary).resolve()
+            neighbor = releases / "neighbor.json"
+            neighbor.write_bytes(b"preserve")
+            raw = candidate_release_bytes(
+                archive,
+                "chf-test-v1",
+                source_revision=_SOURCE_REVISION,
+            )
+
+            installed = install_release_declaration(
+                CHF_RELEASE_SPEC,
+                raw,
+                archive,
+                releases,
+                expected_release_name="chf-test-v1",
+                expected_source_revision=_SOURCE_REVISION,
+            )
+
+            self.assertEqual(installed.read_bytes(), raw)
+            self.assertEqual(neighbor.read_bytes(), b"preserve")
+            with self.assertRaisesRegex(ChfReleaseRejected, "already exists"):
+                install_release_declaration(
+                    CHF_RELEASE_SPEC,
+                    raw,
+                    archive,
+                    releases,
+                    expected_release_name="chf-test-v1",
+                    expected_source_revision=_SOURCE_REVISION,
+                )
+            self.assertEqual(installed.read_bytes(), raw)
+
+    def test_install_validates_before_creating_the_destination(self) -> None:
+        with ReleaseArchive() as archive, TemporaryDirectory() as temporary:
+            releases = Path(temporary).resolve()
+            raw = candidate_release_bytes(
+                archive,
+                "chf-test-v1",
+                source_revision=_SOURCE_REVISION,
+            )
+            document = parse_canonical_json_bytes(raw)
+            changed = dict(document)
+            changed["checkpoint"] = dict(document["checkpoint"]) | {
+                "sha256": "sha256:" + "0" * 64
+            }
+
+            with self.assertRaises(ChfReleaseRejected):
+                install_release_declaration(
+                    CHF_RELEASE_SPEC,
+                    canonical_json_bytes(changed),
+                    archive,
+                    releases,
+                    expected_release_name="chf-test-v1",
+                    expected_source_revision=_SOURCE_REVISION,
+                )
+
+            self.assertFalse((releases / "chf-test-v1.json").exists())
+
+    def test_failed_staging_is_invisible_and_install_can_retry(self) -> None:
+        with ReleaseArchive() as archive, TemporaryDirectory() as temporary:
+            releases = Path(temporary).resolve()
+            raw = candidate_release_bytes(
+                archive,
+                "chf-test-v1",
+                source_revision=_SOURCE_REVISION,
+            )
+            real_fsync = checkpoint_release.os.fsync
+            failed = False
+
+            def fail_staging_fsync(descriptor: int) -> None:
+                nonlocal failed
+                if stat.S_ISREG(os.fstat(descriptor).st_mode) and not failed:
+                    failed = True
+                    raise OSError("injected staging fsync failure")
+                real_fsync(descriptor)
+
+            with patch.object(
+                checkpoint_release.os,
+                "fsync",
+                side_effect=fail_staging_fsync,
+            ), self.assertRaisesRegex(ChfReleaseRejected, "staging bytes"):
+                install_release_declaration(
+                    CHF_RELEASE_SPEC,
+                    raw,
+                    archive,
+                    releases,
+                    expected_release_name="chf-test-v1",
+                    expected_source_revision=_SOURCE_REVISION,
+                )
+
+            self.assertEqual(list(releases.iterdir()), [])
+            installed = install_release_declaration(
+                CHF_RELEASE_SPEC,
+                raw,
+                archive,
+                releases,
+                expected_release_name="chf-test-v1",
+                expected_source_revision=_SOURCE_REVISION,
+            )
+            self.assertEqual(installed.read_bytes(), raw)
 
     def test_malformed_missing_and_duplicate_archives_are_rejected(self) -> None:
         with TemporaryDirectory() as temporary:

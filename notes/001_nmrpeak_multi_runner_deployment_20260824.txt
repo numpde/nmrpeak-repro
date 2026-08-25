@@ -754,10 +754,11 @@ Release preparation has two operations:
         ARCHIVE=/absolute/weights.zip
 
 `release/write` runs the exact-member reader without network or checkpoint
-loading and emits one canonical candidate declaration. The host validates the
-pre-existing releases directory and absent destination file, then applies it
-offline with a collision-safe no-replace operation, file and directory fsync,
-and no symlink following. Review and commit the declaration before import.
+loading and emits one canonical candidate declaration without changing the
+checkout. After review, `release/install` revalidates that candidate against
+the archive, then applies it to the fixed lane release directory with a
+collision-safe no-replace operation, file and directory fsync, and no symlink
+following. Review and commit the declaration before import.
 
 `checkpoint/import` admits the declaration bytes from HEAD, or proves the
 working-tree bytes equal HEAD, before engine mutation. It validates canonical
@@ -963,9 +964,12 @@ The host Makefile is the operator index:
     make runner/lock/stage RUNNER=<runner> TARGET=<target>
     make runner/lock/apply RUNNER=<runner> TARGET=<target>
     make runner/image/build RUNNER=<runner> TARGET=<target>
-    make release/check RUNNER=<runner> RELEASE=<name>
+    make release/check RUNNER=<runner> RELEASE=<name> \
+        ARCHIVE=/absolute/weights.zip DECLARATION=/absolute/candidate.json
     make release/write RUNNER=<runner> RELEASE=<name> \
         ARCHIVE=/absolute/weights.zip
+    make release/install RUNNER=<runner> RELEASE=<name> \
+        ARCHIVE=/absolute/weights.zip DECLARATION=/absolute/candidate.json
     make checkpoint/import RUNNER=<runner> RELEASE=<name> \
         ARCHIVE=/absolute/weights.zip
     make checkpoint/recover VOLUME=<full-volume-name> \
