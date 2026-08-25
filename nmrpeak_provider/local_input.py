@@ -173,8 +173,8 @@ def _read_open_file(descriptor: int, *, maximum_bytes: int) -> bytes:
     read_succeeded = False
     try:
         raw = source.read(maximum_bytes + 1)
-    except OSError:
-        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from None
+    except OSError as error:
+        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from error
     else:
         read_succeeded = True
     finally:
@@ -189,8 +189,8 @@ def _open_regular_source(descriptor: int) -> BinaryIO:
         source = os.fdopen(descriptor, "rb")
         descriptor = -1
         return source
-    except OSError:
-        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from None
+    except OSError as error:
+        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from error
     finally:
         if descriptor >= 0:
             _close_owned(lambda: os.close(descriptor), preserve_failure=True)
@@ -204,9 +204,9 @@ def _close_owned(
 ) -> None:
     try:
         close()
-    except OSError:
+    except OSError as error:
         if not preserve_failure:
-            raise LocalInputSnapshotError(failure_reason) from None
+            raise LocalInputSnapshotError(failure_reason) from error
 
 
 def _open_file(path: Path) -> int:
@@ -215,8 +215,8 @@ def _open_file(path: Path) -> int:
             path,
             os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
         )
-    except OSError:
-        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from None
+    except OSError as error:
+        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from error
 
 
 def _open_directory(path: Path) -> int:
@@ -225,10 +225,10 @@ def _open_directory(path: Path) -> int:
             path,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
         )
-    except OSError:
+    except OSError as error:
         raise LocalInputSnapshotError(
             LocalInputFailureReason.DIRECTORY_UNREADABLE
-        ) from None
+        ) from error
 
 
 def _read_selected_names(
@@ -240,10 +240,10 @@ def _read_selected_names(
 ) -> tuple[str, ...]:
     try:
         entries = os.scandir(descriptor)
-    except OSError:
+    except OSError as error:
         raise LocalInputSnapshotError(
             LocalInputFailureReason.DIRECTORY_UNREADABLE
-        ) from None
+        ) from error
     return _select_and_close(
         entries,
         suffix,
@@ -291,10 +291,10 @@ def _select_names_or_unreadable(
             maximum_entries=maximum_entries,
             maximum_files=maximum_files,
         )
-    except OSError:
+    except OSError as error:
         raise LocalInputSnapshotError(
             LocalInputFailureReason.DIRECTORY_UNREADABLE
-        ) from None
+        ) from error
 
 
 def _select_names(
@@ -330,10 +330,10 @@ def _read_directory_file(
             dir_fd=descriptor,
         )
         raw = _read_open_file(file_descriptor, maximum_bytes=maximum_bytes)
-    except (OSError, LocalInputSnapshotError):
+    except (OSError, LocalInputSnapshotError) as error:
         raise LocalInputSnapshotError(
             LocalInputFailureReason.INVALID_SELECTED_FILE
-        ) from None
+        ) from error
     if len(raw) > maximum_bytes:
         raise LocalInputSnapshotError(
             LocalInputFailureReason.INVALID_SELECTED_FILE
