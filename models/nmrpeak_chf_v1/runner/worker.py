@@ -31,10 +31,8 @@ from nmrpeak_provider.product_result import (
 from models.nmrpeak_chf_v1.runner.checkpoint_file import (
     open_verified_chf_checkpoint,
 )
-from models.nmrpeak_chf_v1.runner.runtime import (
-    ChfRuntimeInputRejected,
-    load_nmrpeak_chf_runtime,
-)
+from families.nmrpeak.runner_runtime import NmrpeakRuntimeInputRejected
+from models.nmrpeak_chf_v1.runner.runtime import load_nmrpeak_chf_runtime
 
 
 class LoadedChfRuntime(Protocol):
@@ -71,7 +69,7 @@ def serve_loaded_chf_runtime(
                 )
             try:
                 runtime.validate(command.model_input)
-            except ChfRuntimeInputRejected:
+            except NmrpeakRuntimeInputRejected:
                 connection.sendall(
                     encode_chf_runner_frame(RejectedFrame(command.correlation))
                 )

@@ -9,8 +9,8 @@ from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
     ChfRunnerInput,
-    ChfRunnerProtonPeak,
 )
+from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
     MAX_CHF_FRAME_PAYLOAD_BYTES,
@@ -43,7 +43,7 @@ CORRELATION = AttemptCorrelation(
 )
 MODEL_INPUT = ChfRunnerInput(
     molecular_formula="C2H6O",
-    proton_peaks=(ChfRunnerProtonPeak("1.25", 3, "t", "7.1_"),),
+    proton_peaks=(RunnerProtonPeak("1.25", 3, "t", "7.1_"),),
     carbon_peaks=(ChfRunnerCarbonPeak("70.4"),),
 )
 

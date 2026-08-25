@@ -13,8 +13,8 @@ import unittest
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
     ChfRunnerInput,
-    ChfRunnerProtonPeak,
 )
+from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
     ReadyFrame,
@@ -53,7 +53,7 @@ FACTS = ProviderResultFacts(
 DEADLINES = ChfRunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1)
 MODEL_INPUT = ChfRunnerInput(
     "C2H6O",
-    (ChfRunnerProtonPeak("1.25", 3, "t", "7.1_"),),
+    (RunnerProtonPeak("1.25", 3, "t", "7.1_"),),
     (ChfRunnerCarbonPeak("70.4"),),
 )
 

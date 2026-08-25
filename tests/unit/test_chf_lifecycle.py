@@ -73,8 +73,8 @@ from nmrpeak_provider.chf_runner_session import (
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
     ChfRunnerInput,
-    ChfRunnerProtonPeak,
 )
+from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.product_input import InputRejected
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
@@ -1342,7 +1342,7 @@ def validated_execution(
         provider_attempt_key=active.provider_attempt_key,
         model_input=ChfRunnerInput(
             "C2H6O",
-            (ChfRunnerProtonPeak("1.25", 3, "t", "7.1_"),),
+            (RunnerProtonPeak("1.25", 3, "t", "7.1_"),),
             (ChfRunnerCarbonPeak("70.4"),),
         ),
     )
@@ -1360,7 +1360,7 @@ def generated_candidates(
         provider_attempt_key=active.provider_attempt_key,
         model_input=ChfRunnerInput(
             "C2H6O",
-            (ChfRunnerProtonPeak("1.25", 3, "t", "7.1_"),),
+            (RunnerProtonPeak("1.25", 3, "t", "7.1_"),),
             (ChfRunnerCarbonPeak("70.4"),),
         ),
     )

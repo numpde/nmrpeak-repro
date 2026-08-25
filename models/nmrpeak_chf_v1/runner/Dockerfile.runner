@@ -38,10 +38,12 @@ COPY --chown=0:0 nmrpeak-upstream/nmrpeak/ nmrpeak/
 COPY --chown=0:0 unicore-upstream/LICENSE /opt/unicore/LICENSE
 COPY --chown=0:0 unicore-upstream/unicore/ /opt/unicore/unicore/
 COPY --chown=0:0 families/nmrpeak/bart-base/config.json bart-base/config.json
+COPY --chown=0:0 families/nmrpeak/runner_runtime.py /opt/nmrpeak/families/nmrpeak/runner_runtime.py
 COPY --chown=0:0 nmrpeak_provider/__init__.py \
     nmrpeak_provider/canonical_json.py \
     nmrpeak_provider/chf_binding.py \
     nmrpeak_provider/chf_runner_protocol.py \
+    nmrpeak_provider/nmrpeak_binding.py \
     nmrpeak_provider/owner_session_endpoint.py \
     nmrpeak_provider/owner_session_supervisor.py \
     nmrpeak_provider/product.py \

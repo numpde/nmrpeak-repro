@@ -1,5 +1,6 @@
 families/nmrpeak/bart-base/config.json
 families/nmrpeak/bart-base/source.json
+families/nmrpeak/runner_runtime.py
 families/nmrpeak/source-closure.paths
 families/nmrpeak/source-closure.sha256
 families/nmrpeak/targets/cpu-x86_64/requirements.lock
@@ -15,6 +16,7 @@ nmrpeak_provider/__init__.py
 nmrpeak_provider/canonical_json.py
 nmrpeak_provider/chf_binding.py
 nmrpeak_provider/chf_runner_protocol.py
+nmrpeak_provider/nmrpeak_binding.py
 nmrpeak_provider/owner_session_endpoint.py
 nmrpeak_provider/owner_session_supervisor.py
 nmrpeak_provider/product.py

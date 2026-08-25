@@ -9,12 +9,13 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 
+from families.nmrpeak.runner_runtime import NmrpeakRuntimeInputRejected
 from nmrpeak_provider.canonical_json import JsonValue
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
     ChfRunnerInput,
-    ChfRunnerProtonPeak,
 )
+from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CONTRACT_ID,
     AttemptCorrelation,
@@ -72,7 +73,7 @@ READY = ReadyFrame(
 )
 MODEL_INPUT = ChfRunnerInput(
     "C2H6O",
-    (ChfRunnerProtonPeak("1.25", 3, "t", "7.1_"),),
+    (RunnerProtonPeak("1.25", 3, "t", "7.1_"),),
     (ChfRunnerCarbonPeak("70.4"),),
 )
 CORRELATION = AttemptCorrelation(BOOT, "request:" + "6" * 32, ATTEMPT_REF, ATTEMPT_KEY)
@@ -221,7 +222,7 @@ class RecordingRuntime:
             raise self.validation_failure
         if self.rejections:
             self.rejections -= 1
-            raise worker_module.ChfRuntimeInputRejected()
+            raise NmrpeakRuntimeInputRejected()
 
     def generate(self, model_input: ChfRunnerInput) -> JsonValue:
         self.generated.append(model_input)
