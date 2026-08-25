@@ -46,9 +46,3 @@ make test
 `make test` is networkless, credential-free, and checkpoint-free. It exercises
 the provider and both runner protocols with inert fixtures. It neither loads
 the released checkpoints nor proves a live deployment.
-
-## Design and operations reference
-
-[`notes/001_nmrpeak_multi_runner_deployment_20260824.txt`](notes/001_nmrpeak_multi_runner_deployment_20260824.txt)
-records the design rationale and lifecycle boundaries. Checked-in code and
-`make help` remain authoritative for current behavior and commands.
