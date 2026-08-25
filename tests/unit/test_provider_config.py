@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from nmrpeak_provider.provider_config import (
+    CA_PATH,
     CHF_SOCKET_PATH,
     CREDENTIAL_PATH,
     FROZEN_ROOT,
@@ -56,6 +57,16 @@ class ProviderConfigTests(unittest.TestCase):
         self.assertEqual(configured.journal_maximum_records, 2)
         self.assertEqual(configured.process.hello_interval_seconds, 3600)
         self.assertEqual(configured.runner.generate_seconds, 300)
+
+    def test_private_ca_is_selected_without_loading_runtime_trust(self) -> None:
+        configured = decode_provider_runtime_config(
+            CONFIG.replace(
+                b'[server_a]\n',
+                b'[server_a]\nuse_private_ca = true\n',
+            )
+        )
+
+        self.assertEqual(configured.endpoint.ca_file, CA_PATH)
 
     def test_unknown_missing_and_invalid_values_are_rejected(self) -> None:
         invalid = (

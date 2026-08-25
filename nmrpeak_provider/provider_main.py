@@ -82,7 +82,7 @@ def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
         ):
             try:
                 api = ProviderApiClient(
-                    configured.endpoint,
+                    configured.endpoint.materialize(),
                     credential.credential_ref,
                     credential.private_key,
                 )

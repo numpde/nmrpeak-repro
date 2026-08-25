@@ -31,9 +31,11 @@ from nmrpeak_provider.run_generation import (
     parse_canonical_utc_timestamp,
 )
 from repository_checks.chf_release import (
+    ChfCheckpointRelease,
     parse_release_bytes as parse_chf_release_bytes,
 )
 from repository_checks.hf_release import (
+    HfCheckpointRelease,
     parse_release_bytes as parse_hf_release_bytes,
 )
 
@@ -75,6 +77,14 @@ class RenderedGeneration:
     provider_config: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class DeploymentReleases:
+    """The two declarations admitted once for one deployment render."""
+
+    hf: HfCheckpointRelease
+    chf: ChfCheckpointRelease
+
+
 def load_named_deployment(path: Path) -> NamedDeployment:
     """Decode one closed deployment TOML without inferring a lane or target."""
 
@@ -89,13 +99,36 @@ def load_named_deployment(path: Path) -> NamedDeployment:
     return NamedDeployment(provider_ref, hf, chf)
 
 
-def render_generation(
+def admit_deployment_releases(
     selection: NamedDeployment,
     *,
-    provider_config_template: bytes,
     hf_release_declaration: bytes,
     chf_release_declaration: bytes,
     upstream_revision: str,
+) -> DeploymentReleases:
+    """Parse both selected canonical release declarations exactly once."""
+
+    if type(selection) is not NamedDeployment:
+        raise TypeError("Release admission requires one named deployment")
+    return DeploymentReleases(
+        parse_hf_release_bytes(
+            hf_release_declaration,
+            expected_release_name=selection.hf.release_name,
+            expected_source_revision=upstream_revision,
+        ),
+        parse_chf_release_bytes(
+            chf_release_declaration,
+            expected_release_name=selection.chf.release_name,
+            expected_source_revision=upstream_revision,
+        ),
+    )
+
+
+def render_generation(
+    selection: NamedDeployment,
+    releases: DeploymentReleases,
+    *,
+    provider_config_template: bytes,
     hf_image_input_id: str,
     chf_image_input_id: str,
     hf_hello: bytes,
@@ -106,16 +139,8 @@ def render_generation(
 
     if type(selection) is not NamedDeployment:
         raise TypeError("Generation rendering requires one named deployment")
-    hf_release = parse_hf_release_bytes(
-        hf_release_declaration,
-        expected_release_name=selection.hf.release_name,
-        expected_source_revision=upstream_revision,
-    )
-    chf_release = parse_chf_release_bytes(
-        chf_release_declaration,
-        expected_release_name=selection.chf.release_name,
-        expected_source_revision=upstream_revision,
-    )
+    if type(releases) is not DeploymentReleases:
+        raise TypeError("Generation rendering requires admitted releases")
     topology_document = parse_canonical_json_bytes(topology)
     if (
         type(topology_document) is not dict
@@ -125,8 +150,8 @@ def render_generation(
         raise NamedDeploymentRejected("Deployment topology projection is invalid")
     _require_topology_generation(
         topology_document,
-        hf_checkpoint=hf_release.checkpoint_sha256,
-        chf_checkpoint=chf_release.checkpoint_sha256,
+        hf_checkpoint=releases.hf.checkpoint_sha256,
+        chf_checkpoint=releases.chf.checkpoint_sha256,
         hf_image_input=hf_image_input_id,
         chf_image_input=chf_image_input_id,
     )
@@ -143,7 +168,7 @@ def render_generation(
             ProviderResultFacts(
                 HF_RESULT_IDENTITY,
                 HF_RUNNER_CONTRACT_ID,
-                hf_release.checkpoint_sha256,
+                releases.hf.checkpoint_sha256,
                 hf_image_input_id,
             ),
             HF_RUNNER_CODEC,
@@ -154,7 +179,7 @@ def render_generation(
             ProviderResultFacts(
                 CHF_RESULT_IDENTITY,
                 CHF_RUNNER_CONTRACT_ID,
-                chf_release.checkpoint_sha256,
+                releases.chf.checkpoint_sha256,
                 chf_image_input_id,
             ),
             CHF_RUNNER_CODEC,

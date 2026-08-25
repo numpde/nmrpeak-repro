@@ -193,7 +193,7 @@ def _provider_posture(service: dict[str, object]) -> None:
         "timeout": "2s",
         "interval": "5s",
         "retries": 3,
-        "start_period": "1m0s",
+        "start_period": "10m0s",
     }:
         raise DeploymentTopologyRejected("Provider readiness policy has drifted")
     if service.get("tmpfs") != [

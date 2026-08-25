@@ -44,6 +44,11 @@ def resolve_local_image(docker: Path, spec: LocalImageSpec) -> LocalImage:
     try:
         result = subprocess.run(
             (str(docker), "image", "inspect", tag),
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": "/tmp",
+                "DOCKER_CONTEXT": "default",
+            },
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=30,

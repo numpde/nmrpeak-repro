@@ -55,12 +55,18 @@ class ProviderMainTests(unittest.TestCase):
         frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
         credential_raw = credential_bytes(Ed25519PrivateKey.generate())
         credential = parse_provider_signing_credential(credential_raw)
+
+        class EndpointConfig:
+            def materialize(self) -> object:
+                events.append("tls_materialized")
+                return object()
+
         configured = SimpleNamespace(
             frozen_generation_id=frozen.frozen_generation_id,
             runner=object(),
             journal_maximum_records=2,
             journal_filesystem_reserve_bytes=1024,
-            endpoint=object(),
+            endpoint=EndpointConfig(),
             process=object(),
         )
         hf = FakeSession("hf", events)
@@ -168,6 +174,7 @@ class ProviderMainTests(unittest.TestCase):
                 "generation_loaded",
                 "lock_acquired",
                 "lock_entered",
+                "tls_materialized",
                 "api_created",
                 "hf_opened",
                 "chf_opened",

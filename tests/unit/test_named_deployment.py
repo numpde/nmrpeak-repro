@@ -16,6 +16,7 @@ from repository_checks.hf_release import ARCHIVE_MEMBER as HF_MEMBER
 from repository_checks.hf_release import candidate_release_bytes as hf_release_bytes
 from repository_checks.named_deployment import (
     NamedDeploymentRejected,
+    admit_deployment_releases,
     load_named_deployment,
     render_generation,
 )
@@ -64,10 +65,13 @@ class NamedDeploymentTests(unittest.TestCase):
             compose["services"]["chf-runner"]["command"][1] = checkpoints.chf
             rendered = render_generation(
                 selection,
+                admit_deployment_releases(
+                    selection,
+                    hf_release_declaration=hf_declaration,
+                    chf_release_declaration=chf_declaration,
+                    upstream_revision=SOURCE_REVISION,
+                ),
                 provider_config_template=(ROOT / "config/provider.toml.example").read_bytes(),
-                hf_release_declaration=hf_declaration,
-                chf_release_declaration=chf_declaration,
-                upstream_revision=SOURCE_REVISION,
                 hf_image_input_id=HF_IMAGE_INPUT,
                 chf_image_input_id=CHF_IMAGE_INPUT,
                 hf_hello=b"HF description",
@@ -138,3 +142,4 @@ not_before = "2026-08-25T00:00:00Z"
 
 if __name__ == "__main__":
     unittest.main()
+    admit_deployment_releases,

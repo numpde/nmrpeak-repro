@@ -123,7 +123,7 @@ def compose_document() -> dict[str, object]:
             "timeout": "2s",
             "interval": "5s",
             "retries": 3,
-            "start_period": "1m0s",
+            "start_period": "10m0s",
         },
         "networks": {"default": None},
     }

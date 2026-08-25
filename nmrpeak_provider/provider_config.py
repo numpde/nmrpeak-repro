@@ -8,7 +8,10 @@ import tomllib
 
 from .attempt_journal import validate_frozen_generation_id
 from .attempt_lifecycle import ObservationPolicy
-from .provider_https import ProviderHttpsEndpoint
+from .provider_https import (
+    ProviderHttpsEndpoint,
+    validate_provider_https_endpoint_config,
+)
 from .provider_process import ProviderProcessPolicy
 from .runner_session import RunnerDeadlines
 
@@ -25,11 +28,41 @@ CHF_SOCKET_PATH = "/run/nmrpeak-provider/chf/session.sock"
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderEndpointConfig:
+    """Validated Server A facts that do not acquire TLS trust material."""
+
+    origin: str
+    expected_topology: str
+    connect_timeout_seconds: float
+    io_deadline_seconds: float
+    ca_file: Path | None
+
+    def __post_init__(self) -> None:
+        validate_provider_https_endpoint_config(
+            self.origin,
+            self.expected_topology,
+            self.connect_timeout_seconds,
+            self.io_deadline_seconds,
+        )
+
+    def materialize(self) -> ProviderHttpsEndpoint:
+        """Load configured TLS trust at the runtime transport boundary."""
+
+        return ProviderHttpsEndpoint(
+            origin=self.origin,
+            expected_topology=self.expected_topology,
+            connect_timeout_seconds=self.connect_timeout_seconds,
+            io_deadline_seconds=self.io_deadline_seconds,
+            ca_file=self.ca_file,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderRuntimeConfig:
     """Validated mutable facts that remain outside frozen execution identity."""
 
     frozen_generation_id: str
-    endpoint: ProviderHttpsEndpoint
+    endpoint: ProviderEndpointConfig
     journal_maximum_records: int
     journal_filesystem_reserve_bytes: int
     process: ProviderProcessPolicy
@@ -63,7 +96,7 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
     use_private_ca = server.get("use_private_ca", False)
     if type(use_private_ca) is not bool:
         raise ValueError("Provider runtime private-CA selection must be a boolean")
-    endpoint = ProviderHttpsEndpoint(
+    endpoint = ProviderEndpointConfig(
         origin=server["origin"],
         expected_topology=server["topology"],
         connect_timeout_seconds=server["connect_timeout_seconds"],

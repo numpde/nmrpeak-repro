@@ -231,22 +231,14 @@ class ProviderHttpsEndpoint:
     tls_context: ssl.SSLContext = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        prefix = "https://"
-        if type(self.origin) is not str or not self.origin.startswith(prefix):
-            raise ValueError("Provider API origin must be canonical HTTPS")
-        authority = self.origin[len(prefix):]
-        if not is_canonical_https_authority(authority):
-            raise ValueError("Provider API origin must contain a canonical authority")
-        if self.expected_topology not in {"dev-local", "dev", "web"}:
-            raise ValueError("Provider API topology must be dev-local, dev, or web")
-        _require_positive_finite_timeout(
+        validate_provider_https_endpoint_config(
+            self.origin,
+            self.expected_topology,
             self.connect_timeout_seconds,
-            name="Provider API connect timeout",
-        )
-        _require_positive_finite_timeout(
             self.io_deadline_seconds,
-            name="Provider API I/O deadline",
         )
+        prefix = "https://"
+        authority = self.origin[len(prefix):]
         host, separator, port_text = authority.rpartition(":")
         if not separator:
             host = authority
@@ -261,6 +253,31 @@ class ProviderHttpsEndpoint:
         object.__setattr__(self, "host", host)
         object.__setattr__(self, "port", port)
         object.__setattr__(self, "tls_context", context)
+
+
+def validate_provider_https_endpoint_config(
+    origin: str,
+    expected_topology: str,
+    connect_timeout_seconds: float,
+    io_deadline_seconds: float,
+) -> None:
+    """Validate endpoint facts without reading configured TLS trust."""
+
+    prefix = "https://"
+    if type(origin) is not str or not origin.startswith(prefix):
+        raise ValueError("Provider API origin must be canonical HTTPS")
+    if not is_canonical_https_authority(origin[len(prefix):]):
+        raise ValueError("Provider API origin must contain a canonical authority")
+    if expected_topology not in {"dev-local", "dev", "web"}:
+        raise ValueError("Provider API topology must be dev-local, dev, or web")
+    _require_positive_finite_timeout(
+        connect_timeout_seconds,
+        name="Provider API connect timeout",
+    )
+    _require_positive_finite_timeout(
+        io_deadline_seconds,
+        name="Provider API I/O deadline",
+    )
 
 
 def send_provider_request(
