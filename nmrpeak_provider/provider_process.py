@@ -34,8 +34,22 @@ from .provider_outcomes import (
     AttemptMutationCommitPossible,
     AttemptMutationNotCommitted,
 )
-from .provider_problems import ProviderProblem
-from .provider_https import ProviderRequestUnavailable
+from .provider_problems import (
+    ProviderProblem,
+    ProviderProblemRejected,
+    parse_provider_problem,
+)
+from .provider_https import (
+    ProviderHttpResponse,
+    ProviderOperation,
+    ProviderRequestUnavailable,
+)
+from .provider_requests import _PreparedProviderRequest
+from .provider_success import (
+    ProviderHelloAccepted,
+    ProviderSuccessRejected,
+    parse_provider_hello_success,
+)
 from .runner_session import RunnerSession, RunnerSessionRetired
 
 
@@ -64,6 +78,7 @@ class ProviderProcessPolicy:
     """The bounded waits and inventory extent owned by one provider process."""
 
     feed_interval_seconds: float
+    hello_interval_seconds: float
     shutdown_drain_seconds: float
     forced_join_seconds: float
     inventory_maximum_pages: int
@@ -73,6 +88,7 @@ class ProviderProcessPolicy:
     def __post_init__(self) -> None:
         for value in (
             self.feed_interval_seconds,
+            self.hello_interval_seconds,
             self.shutdown_drain_seconds,
             self.forced_join_seconds,
         ):
@@ -132,6 +148,7 @@ def run_provider_process(
     journal: AttemptJournalStore,
     hf_session: RunnerSession,
     chf_session: RunnerSession,
+    hello: _PreparedProviderRequest,
     policy: ProviderProcessPolicy,
     stop: Event,
 ) -> None:
@@ -143,6 +160,11 @@ def run_provider_process(
         raise TypeError("NMRPeak process requires both admitted runner sessions")
     if type(policy) is not ProviderProcessPolicy:
         raise TypeError("NMRPeak process requires an admitted process policy")
+    if (
+        type(hello) is not _PreparedProviderRequest
+        or hello.operation is not ProviderOperation.PROVIDER_HELLO
+    ):
+        raise TypeError("NMRPeak process requires one prepared hello snapshot")
     if not isinstance(stop, Event):
         raise TypeError("NMRPeak process requires one stop event")
 
@@ -172,6 +194,10 @@ def run_provider_process(
         )
         if stop.is_set():
             return
+
+        provider_ref = runtime.hf.generation.provider_ref
+        _publish_hello(api=api, prepared=hello, provider_ref=provider_ref)
+        next_hello_at = time.monotonic() + policy.hello_interval_seconds
 
         finished = Event()
         works = tuple(_LaneWork(owner, finished) for owner in owners)
@@ -216,8 +242,25 @@ def run_provider_process(
             raise
         started = True
 
-        while not stop.is_set() and not finished.wait(policy.feed_interval_seconds):
-            pass
+        hello_error: BaseException | None = None
+        while not stop.is_set():
+            until_hello = max(0.0, next_hello_at - time.monotonic())
+            if finished.wait(min(policy.feed_interval_seconds, until_hello)):
+                break
+            if stop.is_set():
+                break
+            if time.monotonic() >= next_hello_at:
+                try:
+                    _publish_hello(
+                        api=api,
+                        prepared=hello,
+                        provider_ref=provider_ref,
+                    )
+                except BaseException as error:
+                    hello_error = error
+                    stop.set()
+                    break
+                next_hello_at = time.monotonic() + policy.hello_interval_seconds
         if finished.is_set() and not stop.is_set():
             stop.set()
 
@@ -232,6 +275,22 @@ def run_provider_process(
                     cancellation_errors.append(error)
             _join_threads(threads, policy.forced_join_seconds)
         live = tuple(thread for thread in threads if thread.is_alive())
+        if hello_error is not None:
+            if live:
+                raise ProviderShutdownFailed(
+                    "NMRPeak lane threads did not stop after session cancellation"
+                ) from hello_error
+            if cancellation_errors:
+                raise ProviderShutdownFailed(
+                    "NMRPeak forced shutdown could not confirm every session closure"
+                ) from cancellation_errors[0]
+            for work in works:
+                if work.error is not None:
+                    lane = work.owner.generation.lane.offering.implementation_ref
+                    hello_error.add_note(
+                        f"The {lane} lane also failed during hello-triggered shutdown."
+                    )
+            raise hello_error
         for work in works:
             if work.error is not None:
                 lane = work.owner.generation.lane.offering.implementation_ref
@@ -271,6 +330,46 @@ def run_provider_process(
                 primary_error.add_note(
                     "Provider startup failure was followed by a runner retirement failure."
                 )
+
+
+def _publish_hello(
+    *,
+    api: ProviderApiClient,
+    prepared: _PreparedProviderRequest,
+    provider_ref: str,
+) -> None:
+    """Publish once, treating only transport and service outage as best-effort."""
+
+    outcome = api.send(prepared)
+    if type(outcome) is ProviderRequestUnavailable:
+        return
+    if type(outcome) is not ProviderHttpResponse:
+        raise ProviderProtocolFailed(
+            "NMRPeak hello failed without an admitted HTTP response"
+        )
+    if outcome.status == 200:
+        receipt = parse_provider_hello_success(
+            prepared,
+            outcome,
+            expected_provider_ref=provider_ref,
+        )
+        if type(receipt) is ProviderHelloAccepted:
+            return
+        if type(receipt) is ProviderSuccessRejected:
+            raise ProviderProtocolFailed(
+                "NMRPeak hello receipt did not bind to this provider"
+            )
+        raise AssertionError("NMRPeak hello parser returned an unknown outcome")
+    problem = parse_provider_problem(prepared.operation, outcome)
+    if type(problem) is ProviderProblem and problem.status in {408, 500, 503}:
+        return
+    if type(problem) is ProviderProblemRejected:
+        raise ProviderProtocolFailed(
+            "NMRPeak hello response violated the pinned problem contract"
+        )
+    raise ProviderProtocolFailed(
+        f"NMRPeak hello was rejected with HTTP status {outcome.status}"
+    )
 
 
 def _recover_startup(

@@ -53,11 +53,14 @@ from nmrpeak_provider.provider_https import (
 from nmrpeak_provider.provider_process import (
     ProviderLaneFailed,
     ProviderProcessPolicy,
+    ProviderProtocolFailed,
     ProviderShutdownFailed,
     run_provider_process,
 )
 from nmrpeak_provider.provider_requests import (
+    HelloOffering,
     prepare_execution_attempt_complete,
+    prepare_provider_hello,
 )
 from nmrpeak_provider.run_generation import (
     CreatedAtWindow,
@@ -106,6 +109,8 @@ class ConcurrentProviderApi:
     def send(self, request: object) -> object:
         with self._lock:
             self.requests.append(request)
+        if request.operation is ProviderOperation.PROVIDER_HELLO:
+            return hello_response()
         if request.operation is ProviderOperation.EXECUTION_ATTEMPTS_LIST:
             attempts = () if self.terminal is None else (self.terminal,)
             return inventory_response(attempts)
@@ -151,12 +156,37 @@ class BlockingFeedApi:
         self.feed_barrier = Barrier(2)
 
     def send(self, request: object) -> object:
+        if request.operation is ProviderOperation.PROVIDER_HELLO:
+            return hello_response()
         if request.operation is ProviderOperation.EXECUTION_ATTEMPTS_LIST:
             return inventory_response(())
         if request.operation is ProviderOperation.JOBS_LIST:
             self.feed_barrier.wait(timeout=1)
             self.stop.set()
             self.release.wait()
+            return jobs_response(query_value(request.query, "analysis_kind_ref"))
+        raise AssertionError(f"unexpected provider operation {request.operation}")
+
+
+class PeriodicHelloApi:
+    def __init__(self, stop: Event, *, fatal_second_hello: bool) -> None:
+        self.stop = stop
+        self.fatal_second_hello = fatal_second_hello
+        self.hello_count = 0
+
+    def send(self, request: object) -> object:
+        if request.operation is ProviderOperation.EXECUTION_ATTEMPTS_LIST:
+            return inventory_response(())
+        if request.operation is ProviderOperation.PROVIDER_HELLO:
+            self.hello_count += 1
+            if self.hello_count == 1 and not self.fatal_second_hello:
+                return ProviderRequestUnavailable(RequestDelivery.NOT_SENT)
+            if self.hello_count == 2:
+                if self.fatal_second_hello:
+                    return response({"schema_id": "wrong"})
+                self.stop.set()
+            return hello_response()
+        if request.operation is ProviderOperation.JOBS_LIST:
             return jobs_response(query_value(request.query, "analysis_kind_ref"))
         raise AssertionError(f"unexpected provider operation {request.operation}")
 
@@ -179,6 +209,7 @@ class ProviderProcessTests(unittest.TestCase):
                     journal=journal,
                     hf_session=hf_session,
                     chf_session=chf_session,
+                    hello=hello_request(),
                     policy=process_policy(),
                     stop=stop,
                 )
@@ -192,6 +223,7 @@ class ProviderProcessTests(unittest.TestCase):
                 ProviderOperation.EXECUTION_ATTEMPTS_LIST,
                 ProviderOperation.EXECUTION_ATTEMPT_READ,
                 ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
+                ProviderOperation.PROVIDER_HELLO,
             ],
         )
         self.assertEqual(
@@ -220,6 +252,7 @@ class ProviderProcessTests(unittest.TestCase):
                         journal=journal,
                         hf_session=hf_session,
                         chf_session=chf_session,
+                        hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
                     )
@@ -245,6 +278,7 @@ class ProviderProcessTests(unittest.TestCase):
                     journal=journal,
                     hf_session=hf_session,
                     chf_session=chf_session,
+                    hello=hello_request(),
                     policy=process_policy(),
                     stop=stop,
                 )
@@ -285,6 +319,7 @@ class ProviderProcessTests(unittest.TestCase):
                         journal=journal,
                         hf_session=hf_session,
                         chf_session=chf_session,
+                        hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
                     )
@@ -311,6 +346,7 @@ class ProviderProcessTests(unittest.TestCase):
                         journal=journal,
                         hf_session=chf_session,
                         chf_session=hf_session,
+                        hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
                     )
@@ -334,6 +370,7 @@ class ProviderProcessTests(unittest.TestCase):
                         journal=journal,
                         hf_session=hf_session,
                         chf_session=chf_session,
+                        hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
                     )
@@ -357,6 +394,7 @@ class ProviderProcessTests(unittest.TestCase):
                         journal=journal,
                         hf_session=hf_session,
                         chf_session=chf_session,
+                        hello=hello_request(),
                         policy=process_policy(),
                         stop=stop,
                     )
@@ -371,6 +409,62 @@ class ProviderProcessTests(unittest.TestCase):
         ]
         self.assertEqual(len(hf_feeds), 2)
 
+    def test_periodic_hello_retries_unavailability_without_gating_lanes(self) -> None:
+        runtime = generation_runtime()
+        stop = Event()
+        api = PeriodicHelloApi(stop, fatal_second_hello=False)
+        hf_session, hf_channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
+        chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
+
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=2) as journal:
+                run_provider_process(
+                    runtime=runtime,
+                    api=api,
+                    journal=journal,
+                    hf_session=hf_session,
+                    chf_session=chf_session,
+                    hello=hello_request(),
+                    policy=process_policy(hello_interval_seconds=0.005),
+                    stop=stop,
+                )
+
+        self.assertEqual(api.hello_count, 2)
+        self.assertTrue(hf_channel.closed)
+        self.assertTrue(chf_channel.closed)
+
+    def test_periodic_fatal_hello_stops_and_joins_both_lanes(self) -> None:
+        runtime = generation_runtime()
+        stop = Event()
+        api = PeriodicHelloApi(stop, fatal_second_hello=True)
+        hf_session, hf_channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
+        chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
+
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=2) as journal:
+                with self.assertRaisesRegex(
+                    ProviderProtocolFailed,
+                    "hello receipt did not bind",
+                ):
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(hello_interval_seconds=0.005),
+                        stop=stop,
+                    )
+
+        self.assertEqual(api.hello_count, 2)
+        self.assertTrue(stop.is_set())
+        self.assertFalse(
+            any(thread.name.startswith("nmrpeak-") for thread in threads())
+        )
+        self.assertTrue(hf_channel.closed)
+        self.assertTrue(chf_channel.closed)
+
     def test_forced_shutdown_cancels_sessions_and_reports_live_lanes(self) -> None:
         runtime = generation_runtime()
         stop = Event()
@@ -380,6 +474,7 @@ class ProviderProcessTests(unittest.TestCase):
         chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
         policy = ProviderProcessPolicy(
             feed_interval_seconds=0.001,
+            hello_interval_seconds=0.1,
             shutdown_drain_seconds=0.005,
             forced_join_seconds=0.005,
             inventory_maximum_pages=1,
@@ -396,6 +491,7 @@ class ProviderProcessTests(unittest.TestCase):
                             journal=journal,
                             hf_session=hf_session,
                             chf_session=chf_session,
+                            hello=hello_request(),
                             policy=policy,
                             stop=stop,
                         )
@@ -560,6 +656,33 @@ def jobs_response(analysis_kind_ref: str) -> ProviderHttpResponse:
     )
 
 
+def hello_response() -> ProviderHttpResponse:
+    return response(
+        {
+            "schema_id": "nmr.provider.hello_response.v1",
+            "provider_ref": "provider:nmrpeak",
+            "accepted_at": "2026-08-24T12:00:00Z",
+        }
+    )
+
+
+def hello_request():
+    return prepare_provider_hello(
+        display_name="NMRPeak",
+        description="NMRPeak structure generation from structured NMR input.",
+        analysis_offerings=(
+            HelloOffering(
+                HF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                "Requires structured molecular formula and 1H NMR input.",
+            ),
+            HelloOffering(
+                CHF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                "Requires structured molecular formula, 1H NMR, and 13C NMR input.",
+            ),
+        ),
+    )
+
+
 def response(document: dict[str, object]) -> ProviderHttpResponse:
     return ProviderHttpResponse(
         200,
@@ -578,9 +701,13 @@ def query_value(query: str, name: str) -> str:
     raise AssertionError(f"missing query field {name}")
 
 
-def process_policy() -> ProviderProcessPolicy:
+def process_policy(
+    *,
+    hello_interval_seconds: float = 0.1,
+) -> ProviderProcessPolicy:
     return ProviderProcessPolicy(
         feed_interval_seconds=0.001,
+        hello_interval_seconds=hello_interval_seconds,
         shutdown_drain_seconds=0.2,
         forced_join_seconds=0.2,
         inventory_maximum_pages=1,
