@@ -369,7 +369,7 @@ def _require_bounded_text(value: object, name: str, maximum_characters: int) -> 
         raise TypeError(f"{name} must be a string")
     try:
         value.encode("utf-8", errors="strict")
-    except UnicodeEncodeError:
-        raise ValueError(f"{name} must contain Unicode scalar text") from None
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{name} must contain Unicode scalar text") from error
     if not value or len(value) > maximum_characters or "\0" in value:
         raise ValueError(f"{name} must be non-empty bounded text without NUL")

@@ -494,4 +494,4 @@ def _validate_reported_problem(message: str) -> None:
     """Apply the public failure contract before accepting a model report."""
 
     if not is_failure_message(message):
-        raise InterpreterProtocolError("invalid_reported_input_problem") from None
+        raise InterpreterProtocolError("invalid_reported_input_problem")

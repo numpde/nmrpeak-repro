@@ -282,16 +282,16 @@ def _decode_document(raw: bytes) -> object:
             parse_float=_reject_json_number,
             parse_constant=_reject_json_number,
         )
-    except _DuplicateField:
-        _reject(InputRejectionReason.DUPLICATE_FIELD)
+    except _DuplicateField as error:
+        raise InputRejected(InputRejectionReason.DUPLICATE_FIELD) from error
     except (
         UnicodeDecodeError,
         json.JSONDecodeError,
         _InvalidJsonNumber,
         RecursionError,
         ValueError,
-    ):
-        _reject(InputRejectionReason.INVALID_JSON)
+    ) as error:
+        raise InputRejected(InputRejectionReason.INVALID_JSON) from error
 
 
 def _object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -462,4 +462,4 @@ def _decimal(
 
 
 def _reject(reason: InputRejectionReason) -> Never:
-    raise InputRejected(reason) from None
+    raise InputRejected(reason)

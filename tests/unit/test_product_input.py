@@ -144,6 +144,13 @@ class ProductInputTests(unittest.TestCase):
         raw = ("[" * 10_000 + "]" * 10_000).encode("ascii")
         self.assert_rejected(raw, InputRejectionReason.INVALID_JSON)
 
+    def test_invalid_json_retains_the_decoder_failure(self) -> None:
+        with self.assertRaises(InputRejected) as raised:
+            parse_job_input(b"\xff", HF)
+
+        self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_JSON)
+        self.assertIsInstance(raised.exception.__cause__, UnicodeDecodeError)
+
     def test_only_the_product_owned_offering_objects_select_a_lane(self) -> None:
         forged_hf = AnalysisOffering("hf", "mol_from_1h_peaks")
         with self.assertRaisesRegex(AssertionError, "product-owned offering"):

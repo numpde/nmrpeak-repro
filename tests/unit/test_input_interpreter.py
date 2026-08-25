@@ -156,6 +156,16 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_FORMULA)
         self.assertEqual(str(raised.exception), "invalid_formula")
 
+    def test_invalid_freeform_utf8_retains_the_decoder_failure(self) -> None:
+        async def call(_prompt: object) -> InterpreterTurn:
+            raise AssertionError("Invalid source text must not reach an endpoint")
+
+        with self.assertRaises(InputRejected) as raised:
+            run_with_endpoint(call, source=b"\xff")
+
+        self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_JSON)
+        self.assertIsInstance(raised.exception.__cause__, UnicodeDecodeError)
+
     def test_runner_rejection_does_not_ask_the_model_to_explain_it(self) -> None:
         prompts: list[InterpreterPrompt] = []
 

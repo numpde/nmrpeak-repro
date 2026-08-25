@@ -277,10 +277,10 @@ def _acquire_supervisor_lock(parent_fd: int) -> int:
             )
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        except BlockingIOError as error:
             raise RuntimeError(
                 "another owner-session supervisor owns this runtime directory"
-            ) from None
+            ) from error
         return lock_fd
     except BaseException:
         os.close(lock_fd)
@@ -332,8 +332,8 @@ def _unlink_owned_socket(
 def _read_shutdown_signal(shutdown_fd: int) -> int:
     try:
         signal_bytes = os.read(shutdown_fd, 4096)
-    except BlockingIOError:
-        raise RuntimeError("shutdown event contained no signal") from None
+    except BlockingIOError as error:
+        raise RuntimeError("shutdown event contained no signal") from error
     for signal_number in signal_bytes:
         if signal_number in (signal.SIGINT, signal.SIGTERM):
             return signal_number

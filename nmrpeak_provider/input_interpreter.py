@@ -173,8 +173,8 @@ def _admit_source_text(source: bytes) -> UserProvidedText:
         raise InputRejected(InputRejectionReason.DOCUMENT_TOO_LARGE)
     try:
         text = source.decode("utf-8", errors="strict")
-    except UnicodeDecodeError:
-        raise InputRejected(InputRejectionReason.INVALID_JSON) from None
+    except UnicodeDecodeError as error:
+        raise InputRejected(InputRejectionReason.INVALID_JSON) from error
     if any(
         character == "\x00"
         or (

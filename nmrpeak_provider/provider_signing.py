@@ -166,8 +166,8 @@ def _validate_request_inputs(
         raise TypeError("Provider request path must be a string")
     try:
         path.encode("ascii")
-    except UnicodeEncodeError:
-        raise ValueError("Provider request path must contain only ASCII") from None
+    except UnicodeEncodeError as error:
+        raise ValueError("Provider request path must contain only ASCII") from error
     segments = path.split("/")
     if (
         not path.startswith("/")
@@ -182,8 +182,8 @@ def _validate_request_inputs(
         raise TypeError("Provider request query must be a string")
     try:
         query.encode("ascii")
-    except UnicodeEncodeError:
-        raise ValueError("Provider request query must contain only ASCII") from None
+    except UnicodeEncodeError as error:
+        raise ValueError("Provider request query must contain only ASCII") from error
     if _RAW_QUERY.fullmatch(query) is None:
         raise ValueError("Provider request query is not an admitted raw query")
     if body is not None and type(body) is not bytes:
