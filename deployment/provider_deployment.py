@@ -87,6 +87,7 @@ class DeploymentPlan:
 
     compose: dict[str, object]
     generation: RenderedGeneration
+    runtime_config_id: str
 
 
 def initialize_deployment(repository: Path, deployment: str) -> Path:
@@ -208,14 +209,14 @@ def render_deployment_plan(
         input_ids["chf"],
     )
     state_root = root / "secrets/deployments" / deployment
-    provisional = state_root / "generations/pending"
     environment = _compose_environment(
         root,
         deployment,
         selection.provider_ref,
         images,
         checkpoints,
-        provisional,
+        provider_config=state_root / "runtime-configs/pending/provider.toml",
+        frozen_generation=state_root / "generations/pending/frozen",
     )
     provisional_compose = _render_compose(root, deployment, environment, docker)
     topology = project_deployment_topology(
@@ -246,21 +247,26 @@ def render_deployment_plan(
         raise DeploymentOperationRejected(
             "Runner ready timeout exceeds the Compose health start window"
         )
-    retained = state_root / "generations" / generation.frozen_generation_id
+    runtime_config_id = _runtime_config_id(generation.provider_config)
     environment = _compose_environment(
         root,
         deployment,
         selection.provider_ref,
         images,
         checkpoints,
-        retained,
+        provider_config=(
+            state_root / "runtime-configs" / runtime_config_id / "provider.toml"
+        ),
+        frozen_generation=(
+            state_root / "generations" / generation.frozen_generation_id / "frozen"
+        ),
     )
     compose = _render_compose(root, deployment, environment, docker)
     if project_deployment_topology(compose, images, checkpoints) != topology:
         raise DeploymentOperationRejected(
             "Final retained paths changed the effective deployment topology"
         )
-    return DeploymentPlan(compose, generation)
+    return DeploymentPlan(compose, generation, runtime_config_id)
 
 
 def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
@@ -283,6 +289,7 @@ def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
             "schema_id": "nmrpeak.deployment_plan.v1",
             "kind": "read_only_preview",
             "frozen_generation_id": plan.generation.frozen_generation_id,
+            "runtime_config_id": plan.runtime_config_id,
             "compose": plan.compose,
             "artifacts": {
                 "provider.toml": provider_config,
@@ -307,6 +314,13 @@ def _release_declaration(directory: Path, release_name: str) -> bytes:
     if candidate.parent != directory:
         raise DeploymentOperationRejected("Checkpoint release name escapes its lane")
     return _read_regular_file(candidate)
+
+
+def _runtime_config_id(provider_config: bytes) -> str:
+    if type(provider_config) is not bytes:
+        raise TypeError("Runtime config identity requires exact bytes")
+    digest = sha256(b"nmrpeak.provider_runtime_config.v1\0" + provider_config)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _read_regular_file(path: Path) -> bytes:
@@ -412,7 +426,9 @@ def _compose_environment(
     provider_ref: str,
     images: DeploymentImages,
     checkpoints: DeploymentCheckpoints,
-    generation: Path,
+    *,
+    provider_config: Path,
+    frozen_generation: Path,
 ) -> dict[str, str]:
     state_root = repository / "secrets/deployments" / deployment
     lock_digest = sha256(
@@ -426,9 +442,9 @@ def _compose_environment(
         "PROVIDER_IMAGE_REF": images.provider,
         "HF_RUNNER_IMAGE_REF": images.hf,
         "CHF_RUNNER_IMAGE_REF": images.chf,
-        "PROVIDER_CONFIG_PATH": str(generation / "provider.toml"),
+        "PROVIDER_CONFIG_PATH": str(provider_config),
         "PROVIDER_CREDENTIAL_PATH": str(state_root / "signing.private.json"),
-        "FROZEN_GENERATION_PATH": str(generation / "frozen"),
+        "FROZEN_GENERATION_PATH": str(frozen_generation),
         "PROVIDER_IDENTITY_LOCK_VOLUME": f"nmrpeak-provider-lock-{lock_digest}",
         "PROVIDER_JOURNAL_VOLUME": f"nmrpeak-{deployment}-journal-v1",
         "HF_CHECKPOINT_VOLUME": hf_volume_name(checkpoints.hf),

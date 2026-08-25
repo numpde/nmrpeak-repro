@@ -166,6 +166,36 @@ class ProviderDeploymentTests(unittest.TestCase):
                 provider_config = repository / "config/deployments/production/provider.toml"
                 provider_config.write_bytes(
                     provider_config.read_bytes().replace(
+                        b"feed_interval_seconds = 5",
+                        b"feed_interval_seconds = 6",
+                    )
+                )
+                with patch.object(
+                    provider_deployment,
+                    "_require_clean_checkout",
+                ):
+                    changed_config_plan = render_deployment_plan(
+                        repository,
+                        "production",
+                    )
+                self.assertEqual(
+                    changed_config_plan.generation.frozen_generation_id,
+                    plan.generation.frozen_generation_id,
+                )
+                self.assertNotEqual(
+                    changed_config_plan.runtime_config_id,
+                    plan.runtime_config_id,
+                )
+                self.assertNotEqual(
+                    renders[1]["PROVIDER_CONFIG_PATH"],
+                    renders[3]["PROVIDER_CONFIG_PATH"],
+                )
+                self.assertEqual(
+                    renders[1]["FROZEN_GENERATION_PATH"],
+                    renders[3]["FROZEN_GENERATION_PATH"],
+                )
+                provider_config.write_bytes(
+                    provider_config.read_bytes().replace(
                         b"[server_a]\n",
                         b"[server_a]\nuse_private_ca = true\n",
                     )
@@ -188,6 +218,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 preview["frozen_generation_id"],
                 plan.generation.frozen_generation_id,
             )
+            self.assertEqual(preview["runtime_config_id"], plan.runtime_config_id)
             self.assertEqual(
                 set(preview["artifacts"]),
                 {"provider.toml", "frozen/manifest.json", "frozen/files"},
@@ -195,6 +226,10 @@ class ProviderDeploymentTests(unittest.TestCase):
             self.assertIn(
                 plan.generation.frozen_generation_id,
                 renders[1]["FROZEN_GENERATION_PATH"],
+            )
+            self.assertIn(
+                plan.runtime_config_id,
+                renders[1]["PROVIDER_CONFIG_PATH"],
             )
             self.assertFalse((repository / "secrets").exists())
 
