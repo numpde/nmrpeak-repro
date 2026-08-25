@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import select
 import shutil
 import stat
 import subprocess
@@ -27,9 +28,17 @@ from deployment.local_image import (
 from deployment.provider_volumes import (
     ProviderVolumeOperationRejected,
     ensure_provider_state_volumes,
+    inspect_provider_identity_lock_volume,
     inspect_provider_journal_volume,
     provider_identity_lock_volume_name,
     provider_journal_volume_name,
+    remove_provider_journal_volume,
+)
+from nmrpeak_provider.attempt_inventory import (
+    AttemptInventory,
+    AttemptInventoryReadFailed,
+    AttemptInventoryRejected,
+    read_attempt_inventory,
 )
 from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
@@ -40,7 +49,12 @@ from nmrpeak_provider.frozen_generation import (
     frozen_generation_id,
     load_frozen_generation,
 )
-from nmrpeak_provider.provider_config import decode_provider_runtime_config
+from nmrpeak_provider.provider_config import (
+    ProviderRuntimeConfig,
+    decode_provider_runtime_config,
+    server_a_authority_id,
+)
+from nmrpeak_provider.provider_api import ProviderApiClient
 from nmrpeak_provider.provider_credential import (
     PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES,
     ProviderSigningCredential,
@@ -382,6 +396,9 @@ def start_deployment(
             root,
             deployment,
             plan.provider_ref,
+            server_a_authority_id(
+                decode_provider_runtime_config(plan.generation.provider_config).endpoint
+            ),
         )
         _inspect_project_containers(docker, root, deployment)
         _run_compose_plan(docker, root, deployment, plan)
@@ -589,6 +606,9 @@ def remove_frozen_generation(
             root,
             deployment,
             provider_ref,
+            server_a_authority_id(
+                _journal_runtime_config(root, deployment).endpoint
+            ),
             services,
         )
         if frozen_generation in references:
@@ -596,6 +616,98 @@ def remove_frozen_generation(
                 "Provider journal still references the frozen generation"
             )
         _remove_retained_generation(state_root, frozen_generation)
+
+
+def retire_provider_journal(
+    repository: Path,
+    deployment: str,
+    confirmation: str,
+    *,
+    docker: Path = _DOCKER,
+) -> str:
+    """Delete one stopped provider journal after Server A proves it has no live Attempts."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
+        )
+    _require_deployment_name(deployment)
+    journal_name = provider_journal_volume_name(deployment)
+    if confirmation != journal_name:
+        raise DeploymentOperationRejected(
+            "Journal retirement confirmation must equal the full volume name"
+        )
+    state_root = _existing_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        services = _inspect_project_containers(docker, root, deployment)
+        _require_stopped_services(services, "Provider journal retirement")
+        selection = load_named_deployment(
+            root / "config/deployments" / deployment / "deployment.toml"
+        )
+        configured = _journal_runtime_config(root, deployment)
+        authority_id = server_a_authority_id(configured.endpoint)
+        _, credential = _read_owned_private_credential(
+            state_root / "signing.private.json",
+            "Provider journal retirement credential",
+        )
+        if credential.provider_ref != selection.provider_ref:
+            raise DeploymentOperationRejected(
+                "Provider journal retirement credential belongs to another provider"
+            )
+        admitted_journal, attachments = inspect_provider_journal_volume(
+            docker,
+            deployment,
+            selection.provider_ref,
+            authority_id,
+        )
+        if admitted_journal != journal_name or attachments:
+            raise DeploymentOperationRejected(
+                "Provider journal retirement requires one unattached exact volume"
+            )
+        lock_volume = inspect_provider_identity_lock_volume(
+            docker,
+            selection.provider_ref,
+        )
+        provider_image = _resolve_provider_image(docker, root)
+        with _held_provider_identity_lock(
+            docker,
+            lock_volume,
+            selection.provider_ref,
+            provider_image,
+        ):
+            api = ProviderApiClient(
+                configured.endpoint.materialize(),
+                credential.credential_ref,
+                credential.private_key,
+            )
+            try:
+                inventory = read_attempt_inventory(
+                    api=api,
+                    maximum_pages=configured.process.inventory_maximum_pages,
+                )
+            except AttemptInventoryRejected as error:
+                raise DeploymentOperationRejected(
+                    "Provider journal retirement could not prove a complete Attempt inventory"
+                ) from error
+            if type(inventory) is AttemptInventoryReadFailed:
+                raise DeploymentOperationRejected(
+                    "Provider journal retirement could not read a complete Attempt inventory"
+                )
+            if type(inventory) is not AttemptInventory:
+                raise DeploymentOperationRejected(
+                    "Provider journal retirement received an invalid Attempt inventory"
+                )
+            if inventory.attempts:
+                raise DeploymentOperationRejected(
+                    "Provider journal retirement found in-progress Attempts"
+                )
+            return remove_provider_journal_volume(
+                docker,
+                deployment,
+                selection.provider_ref,
+                authority_id,
+            )
 
 
 def stop_deployment(
@@ -781,17 +893,136 @@ def _require_stopped_services(
             )
 
 
+def _journal_runtime_config(
+    repository: Path,
+    deployment: str,
+) -> ProviderRuntimeConfig:
+    try:
+        configured = decode_provider_runtime_config(
+            _read_regular_file(
+                repository / "config/deployments" / deployment / "provider.toml"
+            )
+        )
+    except (OSError, TypeError, ValueError) as error:
+        raise DeploymentOperationRejected(
+            "Provider journal retirement runtime config is invalid"
+        ) from error
+    if configured.endpoint.ca_file is not None:
+        raise DeploymentOperationRejected(
+            "Provider journal retirement does not support a container-only private CA"
+        )
+    return configured
+
+
+@contextmanager
+def _held_provider_identity_lock(
+    docker: Path,
+    lock_volume: str,
+    provider_ref: str,
+    provider_image: LocalImage,
+):
+    arguments = (
+        str(docker),
+        "--context",
+        "default",
+        "run",
+        "--rm",
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "65532:65532",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--pids-limit",
+        "32",
+        "--memory",
+        "128m",
+        "--memory-swap",
+        "128m",
+        "--log-driver",
+        "none",
+        "--mount",
+        f"type=volume,src={lock_volume},dst=/run/nmrpeak-provider-lock,readonly",
+        "--entrypoint",
+        "python",
+        provider_image.image_id,
+        "-m",
+        "nmrpeak_provider.identity_lock_hold",
+        "/run/nmrpeak-provider-lock/provider.lock",
+        provider_ref,
+    )
+    try:
+        process = subprocess.Popen(
+            arguments,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": "/tmp",
+                "DOCKER_CONTEXT": "default",
+            },
+        )
+    except OSError as error:
+        raise DeploymentOperationRejected(
+            "Provider identity-lock holder could not start"
+        ) from error
+    assert process.stdin is not None
+    assert process.stdout is not None
+    primary_error: BaseException | None = None
+    cleanup_error: BaseException | None = None
+    try:
+        readable, _, _ = select.select((process.stdout,), (), (), 30)
+        ready = process.stdout.readline(64) if readable else b""
+        if ready != b"READY\n" or process.poll() is not None:
+            raise DeploymentOperationRejected(
+                "Provider identity-lock holder did not acquire the engine-global lock"
+            )
+        yield
+        if process.poll() is not None:
+            raise DeploymentOperationRejected(
+                "Provider identity-lock holder exited during journal retirement"
+            )
+    except BaseException as error:
+        primary_error = error
+    finally:
+        try:
+            process.stdin.close()
+            returncode = process.wait(timeout=30)
+            if returncode != 0:
+                raise DeploymentOperationRejected(
+                    "Provider identity-lock holder did not stop cleanly"
+                )
+        except BaseException as error:
+            cleanup_error = error
+    if cleanup_error is not None:
+        if primary_error is not None:
+            raise DeploymentOperationRejected(
+                "Provider identity-lock holder cleanup failed after the operation failed"
+            ) from primary_error
+        raise cleanup_error
+    if primary_error is not None:
+        raise primary_error
+
+
 def _journal_generation_ids(
     docker: Path,
     repository: Path,
     deployment: str,
     provider_ref: str,
+    authority_id: str,
     services: dict[str, dict[str, object]],
 ) -> tuple[str, ...]:
     journal_volume, attachments = inspect_provider_journal_volume(
         docker,
         deployment,
         provider_ref,
+        authority_id,
     )
     project_containers = {record["Id"] for record in services.values()}
     if not set(attachments).issubset(project_containers):
@@ -1899,6 +2130,7 @@ def main(arguments: list[str] | None = None) -> int:
             "down",
             "generation-remove",
             "init",
+            "journal-retire",
             "logs",
             "status",
             "up",
@@ -1945,6 +2177,23 @@ def main(arguments: list[str] | None = None) -> int:
             print(
                 "Removed frozen deployment generation: "
                 f"{options.deployment} {options.frozen_generation}"
+            )
+        elif options.operation == "journal-retire":
+            if (
+                options.confirm is None
+                or options.nmr_api_v1 is not None
+                or options.replace
+                or options.frozen_generation is not None
+            ):
+                parser.error("journal-retire requires --confirm")
+            removed = retire_provider_journal(
+                repository,
+                options.deployment,
+                options.confirm,
+            )
+            print(
+                f"Retired provider journal volume: {removed}. "
+                "Docker volume deletion is not secure erasure of underlying storage."
             )
         elif (
             options.nmr_api_v1 is not None

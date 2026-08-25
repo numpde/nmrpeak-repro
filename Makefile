@@ -1,7 +1,7 @@
 PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
+.PHONY: check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit
 
 test: test/unit test/contract test/repository
 
@@ -102,6 +102,15 @@ provider/deployment/generation/remove:
 		$(PYTHON) -m deployment.provider_deployment generation-remove \
 		"$$DEPLOYMENT_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT" \
 		--confirm "$$CONFIRM_INPUT"
+
+provider/deployment/journal/retire: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/journal/retire: private export CONFIRM_INPUT := $(value CONFIRM)
+provider/deployment/journal/retire:
+	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment journal-retire \
+		"$$DEPLOYMENT_INPUT" --confirm "$$CONFIRM_INPUT"
 
 release/write:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }

@@ -13,6 +13,7 @@ from nmrpeak_provider.provider_config import (
     IDENTITY_LOCK_PATH,
     JOURNAL_PATH,
     decode_provider_runtime_config,
+    server_a_authority_id,
 )
 
 
@@ -67,6 +68,24 @@ class ProviderConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(configured.endpoint.ca_file, CA_PATH)
+
+    def test_server_a_authority_excludes_timing_but_includes_namespace(self) -> None:
+        configured = decode_provider_runtime_config(CONFIG)
+        changed_timeout = decode_provider_runtime_config(
+            CONFIG.replace(b"io_deadline_seconds = 30", b"io_deadline_seconds = 60")
+        )
+        changed_origin = decode_provider_runtime_config(
+            CONFIG.replace(b"api.example.test", b"other.example.test")
+        )
+
+        self.assertEqual(
+            server_a_authority_id(configured.endpoint),
+            server_a_authority_id(changed_timeout.endpoint),
+        )
+        self.assertNotEqual(
+            server_a_authority_id(configured.endpoint),
+            server_a_authority_id(changed_origin.endpoint),
+        )
 
     def test_unknown_missing_and_invalid_values_are_rejected(self) -> None:
         invalid = (

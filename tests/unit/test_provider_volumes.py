@@ -12,9 +12,13 @@ import deployment.provider_volumes as provider_volumes
 from deployment.provider_volumes import (
     ProviderVolumeOperationRejected,
     ensure_provider_state_volumes,
+    inspect_provider_identity_lock_volume,
     inspect_provider_journal_volume,
     remove_provider_identity_lock,
+    remove_provider_journal_volume,
 )
+
+AUTHORITY_ID = "sha256:" + "d" * 64
 
 
 class ProviderVolumesTests(unittest.TestCase):
@@ -30,12 +34,14 @@ class ProviderVolumesTests(unittest.TestCase):
                 Path(temporary),
                 "production",
                 "provider:nmrpeak",
+                AUTHORITY_ID,
             )
             second = ensure_provider_state_volumes(
                 Path("/usr/bin/docker"),
                 Path(temporary),
                 "production",
                 "provider:nmrpeak",
+                AUTHORITY_ID,
             )
             engine.attachments[first.journal] = ["b" * 64]
             self.assertEqual(
@@ -43,8 +49,16 @@ class ProviderVolumesTests(unittest.TestCase):
                     Path("/usr/bin/docker"),
                     "production",
                     "provider:nmrpeak",
+                    AUTHORITY_ID,
                 ),
                 (first.journal, ("b" * 64,)),
+            )
+            self.assertEqual(
+                inspect_provider_identity_lock_volume(
+                    Path("/usr/bin/docker"),
+                    "provider:nmrpeak",
+                ),
+                first.identity_lock,
             )
 
         self.assertEqual(first, second)
@@ -72,6 +86,7 @@ class ProviderVolumesTests(unittest.TestCase):
                 Path(temporary),
                 "production",
                 "provider:nmrpeak",
+                AUTHORITY_ID,
             )
             engine.volumes[admitted.identity_lock]["Labels"]["foreign"] = "true"
             before = len([command for command in engine.commands if command[0] == "run"])
@@ -84,9 +99,36 @@ class ProviderVolumesTests(unittest.TestCase):
                     Path(temporary),
                     "production",
                     "provider:nmrpeak",
+                    AUTHORITY_ID,
                 )
             after = len([command for command in engine.commands if command[0] == "run"])
         self.assertEqual(after, before)
+
+    def test_journal_authority_drift_is_rejected(self) -> None:
+        engine = FakeEngine()
+        with TemporaryDirectory() as temporary, patch.object(
+            provider_volumes,
+            "_committed_helper_path",
+            return_value=Path(temporary) / "provider_volume.py",
+        ), patch.object(provider_volumes, "_docker", side_effect=engine):
+            admitted = ensure_provider_state_volumes(
+                Path("/usr/bin/docker"),
+                Path(temporary),
+                "production",
+                "provider:nmrpeak",
+                AUTHORITY_ID,
+            )
+            with self.assertRaisesRegex(
+                ProviderVolumeOperationRejected,
+                "ownership has drifted",
+            ):
+                inspect_provider_journal_volume(
+                    Path("/usr/bin/docker"),
+                    "production",
+                    "provider:nmrpeak",
+                    "sha256:" + "e" * 64,
+                )
+            self.assertIn(admitted.journal, engine.volumes)
 
     def test_identity_lock_removal_requires_confirmation_and_no_residue(self) -> None:
         engine = FakeEngine()
@@ -100,6 +142,7 @@ class ProviderVolumesTests(unittest.TestCase):
                 Path(temporary),
                 "production",
                 "provider:nmrpeak",
+                AUTHORITY_ID,
             )
             with self.assertRaisesRegex(
                 ProviderVolumeOperationRejected,
@@ -135,6 +178,45 @@ class ProviderVolumesTests(unittest.TestCase):
 
         self.assertNotIn(admitted.identity_lock, engine.volumes)
         self.assertIn(admitted.journal, engine.volumes)
+
+    def test_journal_removal_reproves_no_late_attachment(self) -> None:
+        engine = FakeEngine()
+        with TemporaryDirectory() as temporary, patch.object(
+            provider_volumes,
+            "_committed_helper_path",
+            return_value=Path(temporary) / "provider_volume.py",
+        ), patch.object(provider_volumes, "_docker", side_effect=engine):
+            admitted = ensure_provider_state_volumes(
+                Path("/usr/bin/docker"),
+                Path(temporary),
+                "production",
+                "provider:nmrpeak",
+                AUTHORITY_ID,
+            )
+            engine.attachments[admitted.journal] = ["c" * 64]
+            with self.assertRaisesRegex(
+                ProviderVolumeOperationRejected,
+                "attachments",
+            ):
+                remove_provider_journal_volume(
+                    Path("/usr/bin/docker"),
+                    "production",
+                    "provider:nmrpeak",
+                    AUTHORITY_ID,
+                )
+            self.assertIn(admitted.journal, engine.volumes)
+
+            engine.attachments[admitted.journal] = []
+            self.assertEqual(
+                remove_provider_journal_volume(
+                    Path("/usr/bin/docker"),
+                    "production",
+                    "provider:nmrpeak",
+                    AUTHORITY_ID,
+                ),
+                admitted.journal,
+            )
+            self.assertNotIn(admitted.journal, engine.volumes)
 
 
 class FakeEngine:

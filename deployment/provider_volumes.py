@@ -26,8 +26,10 @@ from repository_checks.checkpoint import (
 
 _DEPLOYMENT_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _PROVIDER_REF = re.compile(r"provider:[A-Za-z0-9_.-]{1,119}")
+_SERVER_A_AUTHORITY_ID = re.compile(r"sha256:[0-9a-f]{64}")
 _PROVIDER_LABEL = "io.github.numpde.nmrpeak.provider"
 _DEPLOYMENT_LABEL = "io.github.numpde.nmrpeak.deployment"
+_SERVER_A_AUTHORITY_LABEL = "io.github.numpde.nmrpeak.server-a-authority"
 _LOCK_SCHEMA = "nmrpeak.provider_identity_lock_volume.v1"
 _JOURNAL_SCHEMA = "nmrpeak.provider_journal_volume.v1"
 _HELPER = Path("docker/provider_volume.py")
@@ -79,9 +81,11 @@ def ensure_provider_state_volumes(
     repository: Path,
     deployment: str,
     provider_ref: str,
+    server_a_authority_id: str,
 ) -> ProviderStateVolumes:
     """Create or reprove the lock and journal volumes, then admit their roots."""
 
+    _require_server_a_authority_id(server_a_authority_id)
     helper = _committed_helper_path(repository)
     lock_name = provider_identity_lock_volume_name(provider_ref)
     journal_name = provider_journal_volume_name(deployment)
@@ -102,6 +106,7 @@ def ensure_provider_state_volumes(
             | {
                 SCHEMA_LABEL: _JOURNAL_SCHEMA,
                 _DEPLOYMENT_LABEL: deployment,
+                _SERVER_A_AUTHORITY_LABEL: server_a_authority_id,
             },
             "journal",
             None,
@@ -180,9 +185,11 @@ def inspect_provider_journal_volume(
     docker: Path,
     deployment: str,
     provider_ref: str,
+    server_a_authority_id: str,
 ) -> tuple[str, tuple[str, ...]]:
     """Prove one journal volume and report every attached container identity."""
 
+    _require_server_a_authority_id(server_a_authority_id)
     name = provider_journal_volume_name(deployment)
     spec = _VolumeSpec(
         name,
@@ -191,6 +198,7 @@ def inspect_provider_journal_volume(
             _PROVIDER_LABEL: provider_ref,
             SCHEMA_LABEL: _JOURNAL_SCHEMA,
             _DEPLOYMENT_LABEL: deployment,
+            _SERVER_A_AUTHORITY_LABEL: server_a_authority_id,
         },
         "journal",
         None,
@@ -213,6 +221,82 @@ def inspect_provider_journal_volume(
             "Docker returned malformed provider journal attachments"
         )
     return name, tuple(attachments)
+
+
+def _require_server_a_authority_id(value: str) -> None:
+    if type(value) is not str or _SERVER_A_AUTHORITY_ID.fullmatch(value) is None:
+        raise ProviderVolumeOperationRejected(
+            "Provider journal volume requires one Server A authority identity"
+        )
+
+
+def inspect_provider_identity_lock_volume(
+    docker: Path,
+    provider_ref: str,
+) -> str:
+    """Prove the exact engine-global lock volume for one provider."""
+
+    name = provider_identity_lock_volume_name(provider_ref)
+    spec = _VolumeSpec(
+        name,
+        {
+            OWNER_LABEL: OWNER_LABEL_VALUE,
+            _PROVIDER_LABEL: provider_ref,
+            SCHEMA_LABEL: _LOCK_SCHEMA,
+        },
+        "identity-lock",
+        provider_ref,
+    )
+    if not _inspect_volume(docker, spec):
+        raise ProviderVolumeOperationRejected(
+            "Provider identity-lock volume does not exist"
+        )
+    return name
+
+
+def remove_provider_journal_volume(
+    docker: Path,
+    deployment: str,
+    provider_ref: str,
+    server_a_authority_id: str,
+) -> str:
+    """Remove one unattached journal after reproving its exact ownership."""
+
+    name, attachments = inspect_provider_journal_volume(
+        docker,
+        deployment,
+        provider_ref,
+        server_a_authority_id,
+    )
+    if attachments:
+        raise ProviderVolumeOperationRejected(
+            "Provider journal volume still has container attachments"
+        )
+    if _docker(docker, "volume", "rm", name).stdout.decode(
+        "ascii", errors="strict"
+    ).strip() != name:
+        raise ProviderVolumeOperationRejected(
+            "Docker did not confirm the exact provider journal removal"
+        )
+    if _inspect_volume(
+        docker,
+        _VolumeSpec(
+            name,
+            {
+                OWNER_LABEL: OWNER_LABEL_VALUE,
+                _PROVIDER_LABEL: provider_ref,
+                SCHEMA_LABEL: _JOURNAL_SCHEMA,
+                _DEPLOYMENT_LABEL: deployment,
+                _SERVER_A_AUTHORITY_LABEL: server_a_authority_id,
+            },
+            "journal",
+            None,
+        ),
+    ):
+        raise ProviderVolumeOperationRejected(
+            "Provider journal volume remains after removal"
+        )
+    return name
 
 
 def _ensure_volume(docker: Path, spec: _VolumeSpec) -> None:

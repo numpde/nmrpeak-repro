@@ -904,6 +904,12 @@ journal volume; the operation reports that volume deletion is not secure
 erasure. This is the sole path for retiring an empty, obsolete, or irrecoverably
 corrupt journal.
 
+The journal volume is bound when created to a content identity of the Server A
+origin and topology. Mutable timeouts do not enter that identity. Later startup,
+generation cleanup, and journal retirement must present a config with the same
+Server A identity; changing an editable config cannot redirect durable Attempt
+proof to another API authority.
+
 
 Public operations
 -----------------

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 import tomllib
 
 from .attempt_journal import validate_frozen_generation_id
 from .attempt_lifecycle import ObservationPolicy
+from .canonical_json import canonical_json_bytes
 from .provider_https import (
     ProviderHttpsEndpoint,
     validate_provider_https_endpoint_config,
@@ -68,6 +70,24 @@ class ProviderRuntimeConfig:
     journal_filesystem_reserve_bytes: int
     process: ProviderProcessPolicy
     runner: RunnerDeadlines
+
+
+def server_a_authority_id(endpoint: ProviderEndpointConfig) -> str:
+    """Identify the Server A namespace to which durable Attempts belong."""
+
+    if type(endpoint) is not ProviderEndpointConfig:
+        raise TypeError("Server A authority identity requires endpoint config")
+    if endpoint.ca_file is not None:
+        raise ValueError(
+            "Server A authority identity requires the public trust configuration"
+        )
+    material = canonical_json_bytes(
+        {
+            "origin": endpoint.origin,
+            "topology": endpoint.expected_topology,
+        }
+    )
+    return "sha256:" + sha256(b"nmrpeak.server_a_authority.v1\0" + material).hexdigest()
 
 
 def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:

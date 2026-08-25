@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import stat
@@ -25,10 +26,15 @@ from deployment.provider_deployment import (
     install_provider_credential,
     materialize_deployment_plan,
     remove_frozen_generation,
+    retire_provider_journal,
     render_deployment_plan,
     show_provider_logs,
     start_deployment,
     stop_deployment,
+)
+from nmrpeak_provider.attempt_inventory import (
+    AttemptInventory,
+    AttemptInventoryReadFailed,
 )
 from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
@@ -897,6 +903,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 ROOT,
                 "production",
                 "provider:nmrpeak",
+                "sha256:" + "d" * 64,
                 {},
             )
 
@@ -912,6 +919,133 @@ class ProviderDeploymentTests(unittest.TestCase):
         )
         self.assertNotIn("credential", " ".join(arguments))
         self.assertNotIn("checkpoint", " ".join(arguments))
+
+    def test_journal_retirement_requires_exact_confirmation_before_engine_use(
+        self,
+    ) -> None:
+        with render_repository() as repository, patch.object(
+            provider_deployment,
+            "_inspect_project_containers",
+        ) as inspect:
+            with self.assertRaisesRegex(
+                DeploymentOperationRejected,
+                "full volume name",
+            ):
+                retire_provider_journal(repository, "production", "wrong")
+        inspect.assert_not_called()
+
+    def test_journal_retirement_removes_only_after_empty_complete_inventory(
+        self,
+    ) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+            materialize_deployment_plan(repository, "production", plan)
+            credential = (
+                repository
+                / "secrets/deployments/production/signing.private.json"
+            )
+            credential.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
+            credential.chmod(0o600)
+            journal = "nmrpeak-production-journal-v1"
+            image = LocalImage("sha256:" + "1" * 64, "sha256:" + "2" * 64)
+
+            for inventory, message in (
+                (AttemptInventoryReadFailed(object()), "complete Attempt inventory"),
+                (AttemptInventory((object(),)), "in-progress Attempts"),
+            ):
+                with (
+                    patch.object(
+                        provider_deployment,
+                        "_inspect_project_containers",
+                        return_value={},
+                    ),
+                    patch.object(
+                        provider_deployment,
+                        "inspect_provider_journal_volume",
+                        return_value=(journal, ()),
+                    ),
+                    patch.object(
+                        provider_deployment,
+                        "inspect_provider_identity_lock_volume",
+                        return_value="nmrpeak-provider-lock-test",
+                    ),
+                    patch.object(
+                        provider_deployment,
+                        "_resolve_provider_image",
+                        return_value=image,
+                    ),
+                    patch.object(
+                        provider_deployment,
+                        "_held_provider_identity_lock",
+                        return_value=nullcontext(),
+                    ),
+                    patch.object(
+                        provider_deployment,
+                        "read_attempt_inventory",
+                        return_value=inventory,
+                    ),
+                    patch.object(
+                        provider_deployment,
+                        "remove_provider_journal_volume",
+                    ) as remove,
+                    self.assertRaisesRegex(DeploymentOperationRejected, message),
+                ):
+                    retire_provider_journal(repository, "production", journal)
+                remove.assert_not_called()
+
+            with (
+                patch.object(
+                    provider_deployment,
+                    "_inspect_project_containers",
+                    return_value={},
+                ),
+                patch.object(
+                    provider_deployment,
+                    "inspect_provider_journal_volume",
+                    return_value=(journal, ()),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "inspect_provider_identity_lock_volume",
+                    return_value="nmrpeak-provider-lock-test",
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_resolve_provider_image",
+                    return_value=image,
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_held_provider_identity_lock",
+                    return_value=nullcontext(),
+                ) as held,
+                patch.object(
+                    provider_deployment,
+                    "read_attempt_inventory",
+                    return_value=AttemptInventory(()),
+                ),
+                patch.object(
+                    provider_deployment,
+                    "remove_provider_journal_volume",
+                    return_value=journal,
+                ) as remove,
+            ):
+                self.assertEqual(
+                    retire_provider_journal(repository, "production", journal),
+                    journal,
+                )
+            held.assert_called_once_with(
+                Path("/usr/bin/docker"),
+                "nmrpeak-provider-lock-test",
+                "provider:nmrpeak",
+                image,
+            )
+            remove.assert_called_once_with(
+                Path("/usr/bin/docker"),
+                "production",
+                "provider:nmrpeak",
+                "sha256:1961d55ea350b47586f7208f5ab84a2be2214bdfe3700033d41c3a07e11d05ce",
+            )
 
 
 class committed_repository:
