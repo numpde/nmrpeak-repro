@@ -51,8 +51,8 @@ make weights/download INTERFACE=wlp1s0
 ```
 
 The command writes the ignored `weights/weights.zip.part` and renames it to
-`weights/weights.zip` only after authentication. Recheck a complete local copy
-without network access with `make weights/check`.
+`weights/weights.zip` only after its size and MD5 match the declaration. Recheck
+a complete local copy without network access with `make weights/check`.
 
 ## Review checkpoint releases
 
