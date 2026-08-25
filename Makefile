@@ -122,17 +122,26 @@ upstream-contracts/check upstream-contracts/write:
 		$(PYTHON) -m repository_checks.nmr_api_projection "$(@F)" \
 		"$(REPOSITORY_ROOT)" "$$NMR_API_V1_DIR_INPUT" "$$RELEASE_INPUT"
 
+runner/lock/stage runner/lock/check runner/lock/apply: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 runner/lock/stage runner/lock/check runner/lock/apply:
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
-	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$(TARGET)"
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
+	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$(TARGET)"
 
+runner/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 runner/image/build:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
-	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" "$(RUNNER)" "$(TARGET)"
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
+	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" "$(RUNNER)" "$(TARGET)"
 
+provider/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 provider/image/build:
-	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
+	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"
 
 provider/deployment/init: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/init:
