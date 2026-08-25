@@ -53,5 +53,5 @@ Original code in this repository is licensed under the Apache License 2.0.
 Third-party components retain their own licenses.
 The pinned NMRPeak source is distributed under CC BY-NC-SA 4.0 and is restricted to non-commercial use.
 Uni-Core, the PyTorch model framework used by NMRPeak, is distributed under the MIT License.
-The NMRPeak checkpoints are downloaded separately from [Zenodo record 19122815](https://zenodo.org/records/19122815) and are not relicensed by this repository.
-As of August 25, 2026, the Zenodo record does not state a checkpoint license.
+The NMRPeak checkpoints are downloaded from [Zenodo record 19122815](https://zenodo.org/records/19122815), whose metadata identifies the deposit's license as [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/).
+This repository does not relicense those files.
