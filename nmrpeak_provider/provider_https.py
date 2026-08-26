@@ -29,6 +29,8 @@ _JOB_REF = r"job:[A-Za-z0-9_.-]{1,124}"
 _ATTEMPT_REF = r"execution_attempt:sha256:[0-9a-f]{64}"
 _VISIBLE_ASCII = re.compile(r"[\x21-\x7e]{1,128}")
 _MAX_QUERY_BYTES = 2_048
+# Edge-generated failures do not carry the API envelope they replaced.
+_EDGE_UNAVAILABLE_STATUSES = frozenset({502, 504})
 
 
 class ProviderOperation(Enum):
@@ -383,8 +385,10 @@ def _read_response(
     profile: _OperationProfile,
     expected_topology: str,
     deadline: float,
-) -> ProviderHttpResponse | ProviderResponseRejected:
+) -> ProviderHttpResponse | ProviderRequestUnavailable | ProviderResponseRejected:
     status = response.status
+    if status in _EDGE_UNAVAILABLE_STATUSES:
+        return ProviderRequestUnavailable(RequestDelivery.RESPONSE_RECEIVED)
     if status not in profile.statuses:
         return ProviderResponseRejected(ResponseRejection.UNDECLARED_STATUS, status)
     headers = response.getheaders()

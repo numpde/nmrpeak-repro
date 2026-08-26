@@ -52,7 +52,6 @@ from nmrpeak_provider.provider_https import (
 )
 from nmrpeak_provider.provider_process import (
     ProviderLaneFailed,
-    ProviderLaneUnavailable,
     ProviderProcessPolicy,
     ProviderProtocolFailed,
     ProviderShutdownFailed,
@@ -97,6 +96,7 @@ class ConcurrentProviderApi:
         failing_analysis: str | None = None,
         fatal_analysis: str | None = None,
         unavailable_analysis: str | None = None,
+        unavailable_attempts: int | None = None,
         unavailable_cause: BaseException | None = None,
     ) -> None:
         self.stop = stop
@@ -104,9 +104,11 @@ class ConcurrentProviderApi:
         self.failing_analysis = failing_analysis
         self.fatal_analysis = fatal_analysis
         self.unavailable_analysis = unavailable_analysis
+        self.unavailable_attempts = unavailable_attempts
         self.unavailable_cause = unavailable_cause
         self.feed_barrier = Barrier(2)
         self.requests: list[object] = []
+        self._unavailable_feed_count = 0
         self._lock = Lock()
 
     def send(self, request: object) -> object:
@@ -132,6 +134,10 @@ class ConcurrentProviderApi:
             return completion_receipt(request)
         if request.operation is ProviderOperation.JOBS_LIST:
             analysis_kind = query_value(request.query, "analysis_kind_ref")
+            with self._lock:
+                if analysis_kind == self.unavailable_analysis:
+                    self._unavailable_feed_count += 1
+                unavailable_feed_count = self._unavailable_feed_count
             try:
                 self.feed_barrier.wait(timeout=1)
             except BrokenBarrierError as error:
@@ -147,10 +153,15 @@ class ConcurrentProviderApi:
                     b"{",
                 )
             if analysis_kind == self.unavailable_analysis:
-                return ProviderRequestUnavailable(
-                    RequestDelivery.NOT_SENT,
-                    self.unavailable_cause,
-                )
+                if (
+                    self.unavailable_attempts is None
+                    or unavailable_feed_count <= self.unavailable_attempts
+                ):
+                    return ProviderRequestUnavailable(
+                        RequestDelivery.NOT_SENT,
+                        self.unavailable_cause,
+                    )
+                self.stop.set()
             if (
                 self.failing_analysis is None
                 and self.fatal_analysis is None
@@ -462,39 +473,33 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertIsInstance(cause.__cause__, ValueError)
         self.assertNotIn("authentication or contract evidence", str(cause))
 
-    def test_lane_stops_after_its_bounded_unavailability_budget(self) -> None:
+    def test_job_feed_retries_past_the_operation_unavailability_budget(self) -> None:
         runtime = generation_runtime()
         stop = Event()
         transport_failure = OSError("provider test transport failure")
         api = ConcurrentProviderApi(
             stop=stop,
             unavailable_analysis=HF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+            unavailable_attempts=3,
             unavailable_cause=transport_failure,
         )
         hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=2) as journal:
-                with self.assertRaises(ProviderLaneFailed) as raised:
-                    run_provider_process(
-                        runtime=runtime,
-                        api=api,
-                        journal=journal,
-                        interpreter=self._unused_interpreter,
-                        hf_session=hf_session,
-                        chf_session=chf_session,
-                        hello=hello_request(),
-                        policy=process_policy(),
-                        stop=stop,
-                        on_ready=lambda: None,
-                    )
+                run_provider_process(
+                    runtime=runtime,
+                    api=api,
+                    journal=journal,
+                    interpreter=self._unused_interpreter,
+                    hf_session=hf_session,
+                    chf_session=chf_session,
+                    hello=hello_request(),
+                    policy=process_policy(),
+                    stop=stop,
+                    on_ready=lambda: None,
+                )
 
-        cause = raised.exception.__cause__
-        self.assertIs(type(cause), ProviderLaneUnavailable)
-        self.assertIn("hf lane", str(cause))
-        self.assertIn("2 consecutive unavailable operations", str(cause))
-        self.assertIn("inspect the failure evidence before restarting", str(cause))
-        self.assertIs(cause.__cause__, transport_failure)
         hf_feeds = [
             request
             for request in api.requests
@@ -502,7 +507,7 @@ class ProviderProcessTests(unittest.TestCase):
             and query_value(request.query, "analysis_kind_ref")
             == HF_LIFECYCLE_LANE.offering.analysis_kind_ref
         ]
-        self.assertEqual(len(hf_feeds), 2)
+        self.assertGreaterEqual(len(hf_feeds), 4)
 
     def test_periodic_hello_retries_unavailability_without_gating_lanes(self) -> None:
         runtime = generation_runtime()

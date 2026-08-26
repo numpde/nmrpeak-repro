@@ -499,6 +499,7 @@ def _run_lane(
     try:
         while not stop.is_set():
             unavailable = False
+            feed_unavailable = False
             unavailable_cause: BaseException | None = None
             records = tuple(
                 record
@@ -551,11 +552,14 @@ def _run_lane(
                     cursor = admitted.next_cursor
                 elif admitted is not None:
                     unavailable = _outcome_is_unavailable(admitted)
+                    feed_unavailable = unavailable and type(admitted) is FeedReadFailed
                     unavailable_cause = _outcome_failure_cause(admitted)
             if unavailable:
-                consecutive_unavailable += 1
+                if not feed_unavailable:
+                    consecutive_unavailable += 1
                 if (
-                    consecutive_unavailable
+                    not feed_unavailable
+                    and consecutive_unavailable
                     >= policy.maximum_consecutive_unavailable
                 ):
                     failure = ProviderLaneUnavailable(

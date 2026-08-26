@@ -239,6 +239,33 @@ class ProviderHttpsTests(unittest.TestCase):
         self.assertEqual(outcome.request_id, "request-test-1")
         self.assertEqual(len(server.requests), 1)
 
+    def test_edge_gateway_failures_are_unavailable_without_api_envelope(self) -> None:
+        for status in (502, 504):
+            with self.subTest(status=status):
+                with _tls_server(
+                    self._certificate_directory,
+                    status=status,
+                    response_headers={"Content-Type": "text/html"},
+                    response_body=b"gateway failure",
+                ) as server:
+                    outcome = self._send_inventory(server.port)
+                self.assertEqual(
+                    outcome,
+                    ProviderRequestUnavailable(RequestDelivery.RESPONSE_RECEIVED),
+                )
+
+    def test_other_undeclared_status_remains_fatal(self) -> None:
+        with _tls_server(
+            self._certificate_directory,
+            status=501,
+            response_headers={"Content-Type": "text/html"},
+        ) as server:
+            outcome = self._send_inventory(server.port)
+        self.assertEqual(
+            outcome,
+            ProviderResponseRejected(ResponseRejection.UNDECLARED_STATUS, 501),
+        )
+
     def test_response_body_limit_accepts_exactly_the_cap_and_rejects_one_more(self) -> None:
         for length, expected_type in (
             (131_072, ProviderHttpResponse),
