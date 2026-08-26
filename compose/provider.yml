@@ -5,7 +5,7 @@ services:
     image: "${PROVIDER_IMAGE_REF:?set PROVIDER_IMAGE_REF through make}"
     pull_policy: never
     platform: "${IMAGE_PLATFORM:?set IMAGE_PLATFORM through make}"
-    restart: "no"
+    restart: unless-stopped
     stop_grace_period: 600s
     user: "65532:65532"
     init: true
@@ -71,7 +71,7 @@ services:
     image: "${HF_RUNNER_IMAGE_REF:?set HF_RUNNER_IMAGE_REF through make}"
     pull_policy: never
     platform: "${IMAGE_PLATFORM:?set IMAGE_PLATFORM through make}"
-    restart: "no"
+    restart: unless-stopped
     stop_grace_period: 20s
     command:
       - --checkpoint-ref
@@ -108,7 +108,7 @@ services:
     image: "${CHF_RUNNER_IMAGE_REF:?set CHF_RUNNER_IMAGE_REF through make}"
     pull_policy: never
     platform: "${IMAGE_PLATFORM:?set IMAGE_PLATFORM through make}"
-    restart: "no"
+    restart: unless-stopped
     stop_grace_period: 20s
     command:
       - --checkpoint-ref
