@@ -52,6 +52,7 @@ from nmrpeak_provider.provider_https import (
 )
 from nmrpeak_provider.provider_process import (
     ProviderLaneFailed,
+    ProviderLaneUnavailable,
     ProviderProcessPolicy,
     ProviderProtocolFailed,
     ProviderShutdownFailed,
@@ -96,19 +97,19 @@ class ConcurrentProviderApi:
         failing_analysis: str | None = None,
         fatal_analysis: str | None = None,
         unavailable_analysis: str | None = None,
-        unavailable_attempts: int | None = None,
-        unavailable_cause: BaseException | None = None,
+        unavailable_input_analysis: str | None = None,
+        unavailable_feed_failures: int | None = None,
     ) -> None:
         self.stop = stop
         self.terminal = terminal
         self.failing_analysis = failing_analysis
         self.fatal_analysis = fatal_analysis
         self.unavailable_analysis = unavailable_analysis
-        self.unavailable_attempts = unavailable_attempts
-        self.unavailable_cause = unavailable_cause
+        self.unavailable_input_analysis = unavailable_input_analysis
+        self.unavailable_feed_failures = unavailable_feed_failures
         self.feed_barrier = Barrier(2)
         self.requests: list[object] = []
-        self._unavailable_feed_count = 0
+        self._unavailable_feed_reads = 0
         self._lock = Lock()
 
     def send(self, request: object) -> object:
@@ -136,8 +137,8 @@ class ConcurrentProviderApi:
             analysis_kind = query_value(request.query, "analysis_kind_ref")
             with self._lock:
                 if analysis_kind == self.unavailable_analysis:
-                    self._unavailable_feed_count += 1
-                unavailable_feed_count = self._unavailable_feed_count
+                    self._unavailable_feed_reads += 1
+                unavailable_feed_reads = self._unavailable_feed_reads
             try:
                 self.feed_barrier.wait(timeout=1)
             except BrokenBarrierError as error:
@@ -154,21 +155,32 @@ class ConcurrentProviderApi:
                 )
             if analysis_kind == self.unavailable_analysis:
                 if (
-                    self.unavailable_attempts is None
-                    or unavailable_feed_count <= self.unavailable_attempts
+                    self.unavailable_feed_failures is None
+                    or unavailable_feed_reads <= self.unavailable_feed_failures
                 ):
                     return ProviderRequestUnavailable(
-                        RequestDelivery.NOT_SENT,
-                        self.unavailable_cause,
+                        RequestDelivery.RESPONSE_RECEIVED,
+                        status=502,
                     )
                 self.stop.set()
             if (
                 self.failing_analysis is None
                 and self.fatal_analysis is None
                 and self.unavailable_analysis is None
+                and self.unavailable_input_analysis is None
             ):
                 self.stop.set()
+            if analysis_kind == self.unavailable_input_analysis:
+                return jobs_response(analysis_kind, job_item(analysis_kind))
             return jobs_response(analysis_kind)
+        if request.operation is ProviderOperation.JOB_INPUT_READ:
+            analysis_kind = query_value(request.query, "analysis_kind_ref")
+            if analysis_kind != self.unavailable_input_analysis:
+                raise AssertionError("unexpected Job input read")
+            return ProviderRequestUnavailable(
+                RequestDelivery.RESPONSE_RECEIVED,
+                status=502,
+            )
         raise AssertionError(f"unexpected provider operation {request.operation}")
 
 
@@ -476,29 +488,31 @@ class ProviderProcessTests(unittest.TestCase):
     def test_job_feed_retries_past_the_operation_unavailability_budget(self) -> None:
         runtime = generation_runtime()
         stop = Event()
-        transport_failure = OSError("provider test transport failure")
         api = ConcurrentProviderApi(
             stop=stop,
             unavailable_analysis=HF_LIFECYCLE_LANE.offering.analysis_kind_ref,
-            unavailable_attempts=3,
-            unavailable_cause=transport_failure,
+            unavailable_feed_failures=3,
         )
         hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
-        with journal_directory() as root:
-            with AttemptJournalStore(root, maximum_records=2) as journal:
-                run_provider_process(
-                    runtime=runtime,
-                    api=api,
-                    journal=journal,
-                    interpreter=self._unused_interpreter,
-                    hf_session=hf_session,
-                    chf_session=chf_session,
-                    hello=hello_request(),
-                    policy=process_policy(),
-                    stop=stop,
-                    on_ready=lambda: None,
-                )
+        with self.assertLogs(
+            "nmrpeak_provider.provider_process",
+            level="WARNING",
+        ) as captured:
+            with journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as journal:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
 
         hf_feeds = [
             request
@@ -507,7 +521,48 @@ class ProviderProcessTests(unittest.TestCase):
             and query_value(request.query, "analysis_kind_ref")
             == HF_LIFECYCLE_LANE.offering.analysis_kind_ref
         ]
-        self.assertGreaterEqual(len(hf_feeds), 4)
+        self.assertEqual(len(hf_feeds), 4)
+        self.assertEqual(len(captured.output), 1)
+        self.assertIn("HTTP 502", captured.output[0])
+
+    def test_required_job_work_stops_at_the_unavailability_budget(self) -> None:
+        runtime = generation_runtime()
+        stop = Event()
+        api = ConcurrentProviderApi(
+            stop=stop,
+            unavailable_input_analysis=(
+                HF_LIFECYCLE_LANE.offering.analysis_kind_ref
+            ),
+        )
+        hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
+        chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=2) as journal:
+                with self.assertRaises(ProviderLaneFailed) as raised:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
+
+        failure = raised.exception.__cause__
+        self.assertIs(type(failure), ProviderLaneUnavailable)
+        self.assertIn("2 consecutive unavailable operations", str(failure))
+        self.assertIn("HTTP 502", str(failure))
+        self.assertEqual(
+            sum(
+                request.operation is ProviderOperation.JOB_INPUT_READ
+                for request in api.requests
+            ),
+            2,
+        )
 
     def test_periodic_hello_retries_unavailability_without_gating_lanes(self) -> None:
         runtime = generation_runtime()
@@ -750,13 +805,27 @@ def completion_receipt(request: object) -> ProviderHttpResponse:
     )
 
 
-def jobs_response(analysis_kind_ref: str) -> ProviderHttpResponse:
+def job_item(analysis_kind_ref: str) -> dict[str, object]:
+    return {
+        "job_ref": "job:selected",
+        "analysis_kind_ref": analysis_kind_ref,
+        "input_fingerprint": "sha256:" + "6" * 64,
+        "input_schema_id": "nmr.job.specification.text.v1",
+        "input_byte_length": 2,
+        "created_at": "2026-08-24T12:00:00Z",
+    }
+
+
+def jobs_response(
+    analysis_kind_ref: str,
+    *jobs: dict[str, object],
+) -> ProviderHttpResponse:
     return response(
         {
             "schema_id": "nmr.provider.jobs.list.response.v1",
             "analysis_kind_ref": analysis_kind_ref,
             "has_provider_execution_attempt": False,
-            "jobs": [],
+            "jobs": list(jobs),
             "next_cursor": None,
         }
     )

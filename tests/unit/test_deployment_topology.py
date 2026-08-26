@@ -28,12 +28,16 @@ class DeploymentTopologyTests(unittest.TestCase):
             [item["role"] for item in topology["services"]],
             ["provider", "hf", "chf"],
         )
+        self.assertEqual(
+            [item["restart"] for item in topology["services"]],
+            ["unless-stopped", "unless-stopped", "unless-stopped"],
+        )
         self.assertEqual(topology["checkpoint_releases"], {"hf": SHA("7"), "chf": SHA("8")})
         encoded = str(topology)
         for excluded in ("deployment-name", "/host/credential", "engine-volume"):
             self.assertNotIn(excluded, encoded)
 
-    def test_network_mount_and_inventory_drift_are_rejected(self) -> None:
+    def test_network_mount_restart_and_inventory_drift_are_rejected(self) -> None:
         mutations = []
         changed = compose_document()
         changed["services"]["hf-runner"]["network_mode"] = "default"
@@ -43,6 +47,9 @@ class DeploymentTopologyTests(unittest.TestCase):
         mutations.append(changed)
         changed = compose_document()
         changed["services"]["provider"]["volumes"][5]["source"] = "chf-session"
+        mutations.append(changed)
+        changed = compose_document()
+        changed["services"]["provider"]["restart"] = "on-failure:3"
         mutations.append(changed)
         changed = compose_document()
         changed["services"]["extra"] = {}

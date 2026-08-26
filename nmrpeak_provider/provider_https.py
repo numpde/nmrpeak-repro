@@ -178,10 +178,11 @@ class ProviderHttpResponse:
 
 @dataclass(frozen=True, slots=True)
 class ProviderRequestUnavailable:
-    """No valid response was received for this single send."""
+    """No valid API response was received for this single send."""
 
     delivery: RequestDelivery
     cause: BaseException | None = field(default=None, compare=False, repr=False)
+    status: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,13 +341,16 @@ def send_provider_request(
         except (OSError, TimeoutError, http.client.HTTPException) as error:
             return ProviderRequestUnavailable(RequestDelivery.POSSIBLE, error)
 
-        return _read_response(
-            transport_socket=transport_socket,
-            response=response,
-            profile=_PROFILES[operation],
-            expected_topology=endpoint.expected_topology,
-            deadline=deadline,
-        )
+        try:
+            return _read_response(
+                transport_socket=transport_socket,
+                response=response,
+                profile=_PROFILES[operation],
+                expected_topology=endpoint.expected_topology,
+                deadline=deadline,
+            )
+        finally:
+            response.close()
     finally:
         connection.close()
 
@@ -388,7 +392,10 @@ def _read_response(
 ) -> ProviderHttpResponse | ProviderRequestUnavailable | ProviderResponseRejected:
     status = response.status
     if status in _EDGE_UNAVAILABLE_STATUSES:
-        return ProviderRequestUnavailable(RequestDelivery.RESPONSE_RECEIVED)
+        return ProviderRequestUnavailable(
+            RequestDelivery.RESPONSE_RECEIVED,
+            status=status,
+        )
     if status not in profile.statuses:
         return ProviderResponseRejected(ResponseRejection.UNDECLARED_STATUS, status)
     headers = response.getheaders()

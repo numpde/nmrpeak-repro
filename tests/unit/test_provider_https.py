@@ -251,7 +251,10 @@ class ProviderHttpsTests(unittest.TestCase):
                     outcome = self._send_inventory(server.port)
                 self.assertEqual(
                     outcome,
-                    ProviderRequestUnavailable(RequestDelivery.RESPONSE_RECEIVED),
+                    ProviderRequestUnavailable(
+                        RequestDelivery.RESPONSE_RECEIVED,
+                        status=status,
+                    ),
                 )
 
     def test_other_undeclared_status_remains_fatal(self) -> None:

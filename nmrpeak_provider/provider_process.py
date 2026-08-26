@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+import logging
 import math
 from threading import Event, Thread
 import time
@@ -60,6 +62,9 @@ if TYPE_CHECKING:
     from .input_interpreter import InputInterpreter
 
 
+_LOG = logging.getLogger(__name__)
+
+
 class ProviderStartupUnavailable(RuntimeError):
     """Server A did not yield the complete inventory required for startup."""
 
@@ -77,7 +82,13 @@ class ProviderProtocolFailed(RuntimeError):
 
 
 class ProviderLaneUnavailable(RuntimeError):
-    """One lane exhausted its bounded consecutive API-unavailability budget."""
+    """One lane exhausted its bounded required-work unavailability budget."""
+
+
+class _LaneAvailability(Enum):
+    AVAILABLE = "available"
+    FEED_UNAVAILABLE = "feed_unavailable"
+    WORK_UNAVAILABLE = "work_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,13 +505,13 @@ def _run_lane(
     owner: _LaneOwner,
 ) -> None:
     cursor: str | None = None
-    consecutive_unavailable = 0
+    consecutive_work_unavailable = 0
+    feed_outage_active = False
     primary_error: BaseException | None = None
     try:
         while not stop.is_set():
-            unavailable = False
-            feed_unavailable = False
-            unavailable_cause: BaseException | None = None
+            availability = _LaneAvailability.AVAILABLE
+            unavailable_work: object | None = None
             records = tuple(
                 record
                 for record in journal.records()
@@ -520,8 +531,9 @@ def _run_lane(
                         observation=policy.observation,
                     )
                     unavailable = _outcome_is_unavailable(outcome)
-                    unavailable_cause = _outcome_failure_cause(outcome)
                     if unavailable:
+                        availability = _LaneAvailability.WORK_UNAVAILABLE
+                        unavailable_work = outcome
                         break
             else:
                 try:
@@ -546,20 +558,36 @@ def _run_lane(
                         admitted=admitted,
                         observation=policy.observation,
                     )
-                    unavailable = _outcome_is_unavailable(outcome)
-                    unavailable_cause = _outcome_failure_cause(outcome)
+                    if _outcome_is_unavailable(outcome):
+                        availability = _LaneAvailability.WORK_UNAVAILABLE
+                        unavailable_work = outcome
                 elif type(admitted) is PageExhausted:
                     cursor = admitted.next_cursor
                 elif admitted is not None:
-                    unavailable = _outcome_is_unavailable(admitted)
-                    feed_unavailable = unavailable and type(admitted) is FeedReadFailed
-                    unavailable_cause = _outcome_failure_cause(admitted)
-            if unavailable:
-                if not feed_unavailable:
-                    consecutive_unavailable += 1
+                    if _outcome_is_unavailable(admitted):
+                        availability = (
+                            _LaneAvailability.FEED_UNAVAILABLE
+                            if type(admitted) is FeedReadFailed
+                            else _LaneAvailability.WORK_UNAVAILABLE
+                        )
+                    if (
+                        availability is _LaneAvailability.FEED_UNAVAILABLE
+                        and not feed_outage_active
+                    ):
+                        _LOG.warning(
+                            "Job feed for %s is unavailable; retrying: %s",
+                            owner.generation.lane.offering.implementation_ref,
+                            _unavailable_evidence_message(admitted.evidence),
+                        )
+                        feed_outage_active = True
+                    elif availability is _LaneAvailability.WORK_UNAVAILABLE:
+                        unavailable_work = admitted
+            if availability is _LaneAvailability.WORK_UNAVAILABLE:
+                if unavailable_work is None:
+                    raise AssertionError("Unavailable lane work has no outcome")
+                consecutive_work_unavailable += 1
                 if (
-                    not feed_unavailable
-                    and consecutive_unavailable
+                    consecutive_work_unavailable
                     >= policy.maximum_consecutive_unavailable
                 ):
                     failure = ProviderLaneUnavailable(
@@ -567,13 +595,16 @@ def _run_lane(
                         "lane after "
                         f"{policy.maximum_consecutive_unavailable} consecutive unavailable "
                         "operations. Any retained Attempt records remain available for "
-                        "restart recovery; inspect the failure evidence before restarting."
+                        "restart recovery. Last failure: "
+                        f"{_unavailable_outcome_message(unavailable_work)}."
                     )
+                    unavailable_cause = _outcome_failure_cause(unavailable_work)
                     if unavailable_cause is not None:
                         raise failure from unavailable_cause
                     raise failure
-            else:
-                consecutive_unavailable = 0
+            elif availability is _LaneAvailability.AVAILABLE:
+                consecutive_work_unavailable = 0
+                feed_outage_active = False
             if owner.session.retired:
                 raise RunnerSessionRetired(
                     f"Cannot continue the {owner.generation.lane.offering.implementation_ref} "
@@ -681,6 +712,31 @@ def _evidence_failure_cause(evidence: object) -> BaseException | None:
     }:
         return evidence.cause
     return None
+
+
+def _unavailable_evidence_message(evidence: object) -> str:
+    if type(evidence) is ProviderProblem:
+        return _fatal_evidence_message(evidence)
+    if type(evidence) is not ProviderRequestUnavailable:
+        raise AssertionError("Unavailable feed evidence has no operator description")
+    if evidence.status is not None:
+        return f"the edge returned HTTP {evidence.status} without an API envelope"
+    delivery = evidence.delivery.value.replace("_", " ")
+    if evidence.cause is None:
+        return f"request delivery was {delivery}"
+    return (
+        f"request delivery was {delivery}; "
+        f"{type(evidence.cause).__name__}: {evidence.cause}"
+    )
+
+
+def _unavailable_outcome_message(outcome: object) -> str:
+    if type(outcome) is InputInterpretationUnavailable:
+        return f"{type(outcome.evidence).__name__}: {outcome.evidence}"
+    evidence = _outcome_evidence(outcome)
+    if evidence is None:
+        raise AssertionError("Unavailable lane work has no failure evidence")
+    return _unavailable_evidence_message(evidence)
 
 
 def _raise_provider_protocol_failure(message: str, evidence: object) -> Never:
