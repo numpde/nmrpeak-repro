@@ -159,7 +159,14 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
             "observation_maximum_gap_seconds",
             "shutdown_drain_seconds",
         },
+        frozenset({"maximum_consecutive_unavailable"}),
     )
+    retired_unavailability_budget = process.get("maximum_consecutive_unavailable")
+    if retired_unavailability_budget is not None and (
+        type(retired_unavailability_budget) is not int
+        or retired_unavailability_budget < 1
+    ):
+        raise ValueError("Retired provider unavailability budget must be positive")
     process_policy = ProviderProcessPolicy(
         feed_interval_seconds=process["feed_interval_seconds"],
         hello_interval_seconds=process["hello_interval_seconds"],

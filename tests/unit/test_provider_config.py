@@ -67,6 +67,17 @@ class ProviderConfigTests(unittest.TestCase):
             240,
         )
 
+    def test_retired_unavailability_budget_does_not_change_runtime_policy(self) -> None:
+        existing_deployment = CONFIG.replace(
+            b"inventory_maximum_pages = 20\n",
+            b"inventory_maximum_pages = 20\nmaximum_consecutive_unavailable = 5\n",
+        )
+
+        self.assertEqual(
+            decode_provider_runtime_config(existing_deployment).process,
+            decode_provider_runtime_config(CONFIG).process,
+        )
+
     def test_private_ca_is_selected_without_loading_runtime_trust(self) -> None:
         configured = decode_provider_runtime_config(
             CONFIG.replace(
@@ -115,6 +126,10 @@ class ProviderConfigTests(unittest.TestCase):
             CONFIG.replace(
                 b"feed_interval_seconds = 5",
                 b"feed_interval_seconds = 0",
+            ),
+            CONFIG.replace(
+                b"inventory_maximum_pages = 20",
+                b"inventory_maximum_pages = 20\nmaximum_consecutive_unavailable = 0",
             ),
         )
         for raw in invalid:
