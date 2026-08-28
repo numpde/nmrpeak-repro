@@ -208,7 +208,7 @@ def run_provider_process(
         if stop.is_set():
             return
         next_hello_at = time.monotonic() + policy.hello_interval_seconds
-        hello_retry_seconds = policy.feed_interval_seconds
+        hello_retry_seconds = _initial_retry_delay(policy.feed_interval_seconds)
         hello_outage_active = False
 
         finished = Event()
@@ -276,7 +276,9 @@ def run_provider_process(
                     if hello_outage_active:
                         _LOG.info("Provider Hello recovered")
                     hello_outage_active = False
-                    hello_retry_seconds = policy.feed_interval_seconds
+                    hello_retry_seconds = _initial_retry_delay(
+                        policy.feed_interval_seconds
+                    )
                     next_hello_at = (
                         time.monotonic() + policy.hello_interval_seconds
                     )
@@ -400,7 +402,7 @@ def _await_initial_hello(
     policy: ProviderProcessPolicy,
     stop: Event,
 ) -> None:
-    delay = policy.feed_interval_seconds
+    delay = _initial_retry_delay(policy.feed_interval_seconds)
     outage_active = False
     while not stop.is_set():
         failure = _publish_hello(
@@ -434,7 +436,7 @@ def _recover_startup(
     stop: Event,
 ) -> None:
     records = journal.records()
-    delay = policy.feed_interval_seconds
+    delay = _initial_retry_delay(policy.feed_interval_seconds)
     outage_active = False
     while not stop.is_set():
         failure: object | None = None
@@ -471,7 +473,7 @@ def _recover_startup(
         if stop.is_set():
             return
         current = record
-        delay = policy.feed_interval_seconds
+        delay = _initial_retry_delay(policy.feed_interval_seconds)
         outage_active = False
         while not stop.is_set():
             owner = (
@@ -529,7 +531,7 @@ def _run_lane(
     owner: _LaneOwner,
 ) -> None:
     cursor: str | None = None
-    retry_delay = policy.feed_interval_seconds
+    retry_delay = _initial_retry_delay(policy.feed_interval_seconds)
     outage_active = False
     primary_error: BaseException | None = None
     try:
@@ -608,7 +610,7 @@ def _run_lane(
                     owner.generation.lane.offering.implementation_ref,
                 )
             outage_active = False
-            retry_delay = policy.feed_interval_seconds
+            retry_delay = _initial_retry_delay(policy.feed_interval_seconds)
             stop.wait(policy.feed_interval_seconds)
     except BaseException as error:
         primary_error = error
@@ -689,6 +691,10 @@ def _remote_evidence_message(evidence: object) -> str:
     if isinstance(evidence, BaseException):
         return f"{type(evidence).__name__}: {evidence}"
     raise AssertionError("Remote provider evidence has no operator description")
+
+
+def _initial_retry_delay(feed_interval_seconds: float) -> float:
+    return min(feed_interval_seconds, _MAX_REMOTE_RETRY_SECONDS)
 
 
 def _next_retry_delay(current: float) -> float:

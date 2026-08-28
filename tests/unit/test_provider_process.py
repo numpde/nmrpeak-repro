@@ -54,6 +54,7 @@ from nmrpeak_provider.provider_process import (
     ProviderLaneFailed,
     ProviderProcessPolicy,
     ProviderShutdownFailed,
+    _next_retry_delay,
     run_provider_process,
 )
 from nmrpeak_provider.provider_requests import (
@@ -236,6 +237,16 @@ class PeriodicHelloApi:
         if request.operation is ProviderOperation.JOBS_LIST:
             return jobs_response(query_value(request.query, "analysis_kind_ref"))
         raise AssertionError(f"unexpected provider operation {request.operation}")
+
+
+class RecordingWaitEvent(Event):
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list[float | None] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        return super().wait(0)
 
 
 class ProviderProcessTests(unittest.TestCase):
@@ -474,23 +485,26 @@ class ProviderProcessTests(unittest.TestCase):
         )
         hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
-        with journal_directory() as root:
-            with AttemptJournalStore(root, maximum_records=2) as journal:
-                run_provider_process(
-                    runtime=runtime,
-                    api=api,
-                    journal=journal,
-                    interpreter=self._unused_interpreter,
-                    hf_session=hf_session,
-                    chf_session=chf_session,
-                    hello=hello_request(),
-                    policy=process_policy(),
-                    stop=stop,
-                    on_ready=lambda: None,
-                )
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
+            with journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as journal:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
         self.assertEqual(api._fatal_feed_reads, 4)
+        self.assertTrue(any("invalid_json" in message for message in logs.output))
+        self.assertTrue(any("lane recovered" in message for message in logs.output))
 
-    def test_job_feed_retries_past_the_operation_unavailability_budget(self) -> None:
+    def test_job_feed_retries_until_remote_recovery(self) -> None:
         runtime = generation_runtime()
         stop = Event()
         api = ConcurrentProviderApi(
@@ -500,20 +514,21 @@ class ProviderProcessTests(unittest.TestCase):
         )
         hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
-        with journal_directory() as root:
-            with AttemptJournalStore(root, maximum_records=2) as journal:
-                run_provider_process(
-                    runtime=runtime,
-                    api=api,
-                    journal=journal,
-                    interpreter=self._unused_interpreter,
-                    hf_session=hf_session,
-                    chf_session=chf_session,
-                    hello=hello_request(),
-                    policy=process_policy(),
-                    stop=stop,
-                    on_ready=lambda: None,
-                )
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
+            with journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as journal:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
 
         hf_feeds = [
             request
@@ -523,6 +538,8 @@ class ProviderProcessTests(unittest.TestCase):
             == HF_LIFECYCLE_LANE.offering.analysis_kind_ref
         ]
         self.assertEqual(len(hf_feeds), 4)
+        self.assertTrue(any("HTTP 502" in message for message in logs.output))
+        self.assertTrue(any("lane recovered" in message for message in logs.output))
 
     def test_required_job_work_retries_without_process_failure(self) -> None:
         runtime = generation_runtime()
@@ -535,20 +552,21 @@ class ProviderProcessTests(unittest.TestCase):
         )
         hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
-        with journal_directory() as root:
-            with AttemptJournalStore(root, maximum_records=2) as journal:
-                run_provider_process(
-                    runtime=runtime,
-                    api=api,
-                    journal=journal,
-                    interpreter=self._unused_interpreter,
-                    hf_session=hf_session,
-                    chf_session=chf_session,
-                    hello=hello_request(),
-                    policy=process_policy(),
-                    stop=stop,
-                    on_ready=lambda: None,
-                )
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
+            with journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as journal:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
 
         self.assertEqual(
             sum(
@@ -557,30 +575,65 @@ class ProviderProcessTests(unittest.TestCase):
             ),
             3,
         )
+        self.assertTrue(any("HTTP 502" in message for message in logs.output))
 
-    def test_periodic_hello_retries_unavailability_without_gating_lanes(self) -> None:
+    def test_initial_hello_retries_until_remote_recovery(self) -> None:
         runtime = generation_runtime()
         stop = Event()
         api = PeriodicHelloApi(stop, fatal_second_hello=False)
         hf_session, hf_channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
 
-        with journal_directory() as root:
-            with AttemptJournalStore(root, maximum_records=2) as journal:
-                run_provider_process(
-                    runtime=runtime,
-                    api=api,
-                    journal=journal,
-                    interpreter=self._unused_interpreter,
-                    hf_session=hf_session,
-                    chf_session=chf_session,
-                    hello=hello_request(),
-                    policy=process_policy(hello_interval_seconds=0.005),
-                    stop=stop,
-                    on_ready=lambda: None,
-                )
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
+            with journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as journal:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(hello_interval_seconds=0.005),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
 
         self.assertEqual(api.hello_count, 2)
+        self.assertTrue(
+            any("request delivery was not sent" in message for message in logs.output)
+        )
+        self.assertTrue(
+            any("Initial provider Hello recovered" in message for message in logs.output)
+        )
+        self.assertTrue(hf_channel.closed)
+        self.assertTrue(chf_channel.closed)
+
+    def test_initial_hello_caps_the_first_remote_retry(self) -> None:
+        runtime = generation_runtime()
+        stop = RecordingWaitEvent()
+        api = PeriodicHelloApi(stop, fatal_second_hello=False)
+        hf_session, hf_channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
+        chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
+
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO"):
+            with journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as journal:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(feed_interval_seconds=600.0),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
+
+        self.assertEqual(stop.waits, [300.0])
         self.assertTrue(hf_channel.closed)
         self.assertTrue(chf_channel.closed)
 
@@ -591,28 +644,38 @@ class ProviderProcessTests(unittest.TestCase):
         hf_session, hf_channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, chf_channel = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
 
-        with journal_directory() as root:
-            with AttemptJournalStore(root, maximum_records=2) as journal:
-                run_provider_process(
-                    runtime=runtime,
-                    api=api,
-                    journal=journal,
-                    interpreter=self._unused_interpreter,
-                    hf_session=hf_session,
-                    chf_session=chf_session,
-                    hello=hello_request(),
-                    policy=process_policy(hello_interval_seconds=0.005),
-                    stop=stop,
-                    on_ready=lambda: None,
-                )
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
+            with journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=2) as journal:
+                    run_provider_process(
+                        runtime=runtime,
+                        api=api,
+                        journal=journal,
+                        interpreter=self._unused_interpreter,
+                        hf_session=hf_session,
+                        chf_session=chf_session,
+                        hello=hello_request(),
+                        policy=process_policy(hello_interval_seconds=0.005),
+                        stop=stop,
+                        on_ready=lambda: None,
+                    )
 
         self.assertEqual(api.hello_count, 3)
+        self.assertTrue(any("invalid_shape" in message for message in logs.output))
+        self.assertTrue(
+            any("Provider Hello recovered" in message for message in logs.output)
+        )
         self.assertTrue(stop.is_set())
         self.assertFalse(
             any(thread.name.startswith("nmrpeak-") for thread in threads())
         )
         self.assertTrue(hf_channel.closed)
         self.assertTrue(chf_channel.closed)
+
+    def test_remote_retry_backoff_doubles_to_the_cap(self) -> None:
+        self.assertEqual(_next_retry_delay(5.0), 10.0)
+        self.assertEqual(_next_retry_delay(200.0), 300.0)
+        self.assertEqual(_next_retry_delay(300.0), 300.0)
 
     def test_forced_shutdown_cancels_sessions_and_reports_live_lanes(self) -> None:
         runtime = generation_runtime()
@@ -867,10 +930,11 @@ def query_value(query: str, name: str) -> str:
 
 def process_policy(
     *,
+    feed_interval_seconds: float = 0.001,
     hello_interval_seconds: float = 0.1,
 ) -> ProviderProcessPolicy:
     return ProviderProcessPolicy(
-        feed_interval_seconds=0.001,
+        feed_interval_seconds=feed_interval_seconds,
         hello_interval_seconds=hello_interval_seconds,
         shutdown_drain_seconds=0.2,
         forced_join_seconds=0.2,
