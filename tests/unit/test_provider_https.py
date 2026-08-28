@@ -257,7 +257,7 @@ class ProviderHttpsTests(unittest.TestCase):
                     ),
                 )
 
-    def test_other_undeclared_status_remains_fatal(self) -> None:
+    def test_other_undeclared_status_remains_rejected(self) -> None:
         with _tls_server(
             self._certificate_directory,
             status=501,
@@ -293,7 +293,7 @@ class ProviderHttpsTests(unittest.TestCase):
                     )
                 self.assertIs(type(outcome), expected_type, repr(outcome))
 
-    def test_aggregate_read_deadline_rejects_a_drip_response(self) -> None:
+    def test_aggregate_read_deadline_reports_an_incomplete_exchange(self) -> None:
         with _tls_server(
             self._certificate_directory,
             response_body=b"four",
@@ -302,7 +302,10 @@ class ProviderHttpsTests(unittest.TestCase):
             outcome = self._send_inventory(server.port, io_deadline_seconds=0.12)
         self.assertEqual(
             outcome,
-            ProviderResponseRejected(ResponseRejection.RESPONSE_BODY_INCOMPLETE, 200),
+            ProviderRequestUnavailable(
+                RequestDelivery.RESPONSE_RECEIVED,
+                status=200,
+            ),
         )
         self.assertIsInstance(outcome.cause, TimeoutError)
 

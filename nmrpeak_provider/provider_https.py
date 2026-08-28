@@ -162,7 +162,6 @@ class ResponseRejection(Enum):
     DUPLICATE_REQUEST_ID = "duplicate_request_id"
     INVALID_CONTENT_LENGTH = "invalid_content_length"
     RESPONSE_BODY_TOO_LARGE = "response_body_too_large"
-    RESPONSE_BODY_INCOMPLETE = "response_body_incomplete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,16 +445,19 @@ def _read_response(
             body_parts.append(part)
             body_length += len(part)
     except (OSError, TimeoutError, http.client.HTTPException) as error:
-        return ProviderResponseRejected(
-            ResponseRejection.RESPONSE_BODY_INCOMPLETE,
+        return ProviderRequestUnavailable(
+            RequestDelivery.RESPONSE_RECEIVED,
+            error,
             status,
-            cause=error,
         )
     body = b"".join(body_parts)
     if len(body) > profile.response_body_limit:
         return ProviderResponseRejected(ResponseRejection.RESPONSE_BODY_TOO_LARGE, status)
     if lengths and len(body) != int(lengths[0]):
-        return ProviderResponseRejected(ResponseRejection.RESPONSE_BODY_INCOMPLETE, status)
+        return ProviderRequestUnavailable(
+            RequestDelivery.RESPONSE_RECEIVED,
+            status=status,
+        )
     return ProviderHttpResponse(status, topology, expected_media_type, request_id, body)
 
 

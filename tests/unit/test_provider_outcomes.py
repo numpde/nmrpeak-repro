@@ -105,6 +105,13 @@ class ProviderOutcomeTests(unittest.TestCase):
                 AttemptMutationCommitPossible,
             ),
             (
+                ProviderRequestUnavailable(
+                    RequestDelivery.RESPONSE_RECEIVED,
+                    status=200,
+                ),
+                AttemptMutationCommitPossible,
+            ),
+            (
                 ProviderResponseRejected(ResponseRejection.INVALID_TOPOLOGY, 200),
                 AttemptMutationCommitPossible,
             ),

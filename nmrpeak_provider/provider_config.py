@@ -155,7 +155,6 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
             "forced_join_seconds",
             "hello_interval_seconds",
             "inventory_maximum_pages",
-            "maximum_consecutive_unavailable",
             "observation_interval_seconds",
             "observation_maximum_gap_seconds",
             "shutdown_drain_seconds",
@@ -167,7 +166,6 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
         shutdown_drain_seconds=process["shutdown_drain_seconds"],
         forced_join_seconds=process["forced_join_seconds"],
         inventory_maximum_pages=process["inventory_maximum_pages"],
-        maximum_consecutive_unavailable=process["maximum_consecutive_unavailable"],
         observation=ObservationPolicy(
             process["observation_interval_seconds"],
             process["observation_maximum_gap_seconds"],

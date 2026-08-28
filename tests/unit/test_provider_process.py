@@ -52,9 +52,7 @@ from nmrpeak_provider.provider_https import (
 )
 from nmrpeak_provider.provider_process import (
     ProviderLaneFailed,
-    ProviderLaneUnavailable,
     ProviderProcessPolicy,
-    ProviderProtocolFailed,
     ProviderShutdownFailed,
     run_provider_process,
 )
@@ -109,6 +107,8 @@ class ConcurrentProviderApi:
         self.unavailable_feed_failures = unavailable_feed_failures
         self.feed_barrier = Barrier(2)
         self.requests: list[object] = []
+        self._fatal_feed_reads = 0
+        self._unavailable_input_reads = 0
         self._unavailable_feed_reads = 0
         self._lock = Lock()
 
@@ -146,13 +146,18 @@ class ConcurrentProviderApi:
             if analysis_kind == self.failing_analysis:
                 raise RuntimeError("lane failure")
             if analysis_kind == self.fatal_analysis:
-                return ProviderHttpResponse(
-                    200,
-                    "dev-local",
-                    "application/json",
-                    None,
-                    b"{",
-                )
+                with self._lock:
+                    self._fatal_feed_reads += 1
+                    fatal_feed_reads = self._fatal_feed_reads
+                if fatal_feed_reads <= 3:
+                    return ProviderHttpResponse(
+                        200,
+                        "dev-local",
+                        "application/json",
+                        None,
+                        b"{",
+                    )
+                self.stop.set()
             if analysis_kind == self.unavailable_analysis:
                 if (
                     self.unavailable_feed_failures is None
@@ -177,6 +182,11 @@ class ConcurrentProviderApi:
             analysis_kind = query_value(request.query, "analysis_kind_ref")
             if analysis_kind != self.unavailable_input_analysis:
                 raise AssertionError("unexpected Job input read")
+            with self._lock:
+                self._unavailable_input_reads += 1
+                unavailable_input_reads = self._unavailable_input_reads
+            if unavailable_input_reads >= 3:
+                self.stop.set()
             return ProviderRequestUnavailable(
                 RequestDelivery.RESPONSE_RECEIVED,
                 status=502,
@@ -219,6 +229,8 @@ class PeriodicHelloApi:
             if self.hello_count == 2:
                 if self.fatal_second_hello:
                     return response({"schema_id": "wrong"})
+                self.stop.set()
+            if self.hello_count == 3 and self.fatal_second_hello:
                 self.stop.set()
             return hello_response()
         if request.operation is ProviderOperation.JOBS_LIST:
@@ -428,7 +440,7 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertTrue(hf_channel.closed)
         self.assertTrue(chf_channel.closed)
 
-    def test_session_drift_and_malformed_response_fail_before_more_work(self) -> None:
+    def test_session_drift_fails_before_api_work(self) -> None:
         runtime = generation_runtime()
         stop = Event()
         api = ConcurrentProviderApi(stop=stop)
@@ -453,6 +465,8 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertTrue(hf_channel.closed)
         self.assertTrue(chf_channel.closed)
 
+    def test_malformed_feed_response_retries_without_process_failure(self) -> None:
+        runtime = generation_runtime()
         stop = Event()
         api = ConcurrentProviderApi(
             stop=stop,
@@ -462,28 +476,19 @@ class ProviderProcessTests(unittest.TestCase):
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=2) as journal:
-                with self.assertRaises(ProviderLaneFailed) as raised:
-                    run_provider_process(
-                        runtime=runtime,
-                        api=api,
-                        journal=journal,
-                        interpreter=self._unused_interpreter,
-                        hf_session=hf_session,
-                        chf_session=chf_session,
-                        hello=hello_request(),
-                        policy=process_policy(),
-                        stop=stop,
-                        on_ready=lambda: None,
-                    )
-        cause = raised.exception.__cause__
-        self.assertIs(type(cause), ProviderProtocolFailed)
-        self.assertIn("Cannot read the Job feed", str(cause))
-        self.assertIn(
-            "HTTP 200 success response failed validation (invalid_json)",
-            str(cause),
-        )
-        self.assertIsInstance(cause.__cause__, ValueError)
-        self.assertNotIn("authentication or contract evidence", str(cause))
+                run_provider_process(
+                    runtime=runtime,
+                    api=api,
+                    journal=journal,
+                    interpreter=self._unused_interpreter,
+                    hf_session=hf_session,
+                    chf_session=chf_session,
+                    hello=hello_request(),
+                    policy=process_policy(),
+                    stop=stop,
+                    on_ready=lambda: None,
+                )
+        self.assertEqual(api._fatal_feed_reads, 4)
 
     def test_job_feed_retries_past_the_operation_unavailability_budget(self) -> None:
         runtime = generation_runtime()
@@ -495,24 +500,20 @@ class ProviderProcessTests(unittest.TestCase):
         )
         hf_session, _ = runner_session(HF_FACTS, HF_RUNNER_CODEC)
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
-        with self.assertLogs(
-            "nmrpeak_provider.provider_process",
-            level="WARNING",
-        ) as captured:
-            with journal_directory() as root:
-                with AttemptJournalStore(root, maximum_records=2) as journal:
-                    run_provider_process(
-                        runtime=runtime,
-                        api=api,
-                        journal=journal,
-                        interpreter=self._unused_interpreter,
-                        hf_session=hf_session,
-                        chf_session=chf_session,
-                        hello=hello_request(),
-                        policy=process_policy(),
-                        stop=stop,
-                        on_ready=lambda: None,
-                    )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=2) as journal:
+                run_provider_process(
+                    runtime=runtime,
+                    api=api,
+                    journal=journal,
+                    interpreter=self._unused_interpreter,
+                    hf_session=hf_session,
+                    chf_session=chf_session,
+                    hello=hello_request(),
+                    policy=process_policy(),
+                    stop=stop,
+                    on_ready=lambda: None,
+                )
 
         hf_feeds = [
             request
@@ -522,10 +523,8 @@ class ProviderProcessTests(unittest.TestCase):
             == HF_LIFECYCLE_LANE.offering.analysis_kind_ref
         ]
         self.assertEqual(len(hf_feeds), 4)
-        self.assertEqual(len(captured.output), 1)
-        self.assertIn("HTTP 502", captured.output[0])
 
-    def test_required_job_work_stops_at_the_unavailability_budget(self) -> None:
+    def test_required_job_work_retries_without_process_failure(self) -> None:
         runtime = generation_runtime()
         stop = Event()
         api = ConcurrentProviderApi(
@@ -538,30 +537,25 @@ class ProviderProcessTests(unittest.TestCase):
         chf_session, _ = runner_session(CHF_FACTS, CHF_RUNNER_CODEC)
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=2) as journal:
-                with self.assertRaises(ProviderLaneFailed) as raised:
-                    run_provider_process(
-                        runtime=runtime,
-                        api=api,
-                        journal=journal,
-                        interpreter=self._unused_interpreter,
-                        hf_session=hf_session,
-                        chf_session=chf_session,
-                        hello=hello_request(),
-                        policy=process_policy(),
-                        stop=stop,
-                        on_ready=lambda: None,
-                    )
+                run_provider_process(
+                    runtime=runtime,
+                    api=api,
+                    journal=journal,
+                    interpreter=self._unused_interpreter,
+                    hf_session=hf_session,
+                    chf_session=chf_session,
+                    hello=hello_request(),
+                    policy=process_policy(),
+                    stop=stop,
+                    on_ready=lambda: None,
+                )
 
-        failure = raised.exception.__cause__
-        self.assertIs(type(failure), ProviderLaneUnavailable)
-        self.assertIn("2 consecutive unavailable operations", str(failure))
-        self.assertIn("HTTP 502", str(failure))
         self.assertEqual(
             sum(
                 request.operation is ProviderOperation.JOB_INPUT_READ
                 for request in api.requests
             ),
-            2,
+            3,
         )
 
     def test_periodic_hello_retries_unavailability_without_gating_lanes(self) -> None:
@@ -590,7 +584,7 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertTrue(hf_channel.closed)
         self.assertTrue(chf_channel.closed)
 
-    def test_periodic_fatal_hello_stops_and_joins_both_lanes(self) -> None:
+    def test_periodic_malformed_hello_retries_without_process_failure(self) -> None:
         runtime = generation_runtime()
         stop = Event()
         api = PeriodicHelloApi(stop, fatal_second_hello=True)
@@ -599,24 +593,20 @@ class ProviderProcessTests(unittest.TestCase):
 
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=2) as journal:
-                with self.assertRaisesRegex(
-                    ProviderProtocolFailed,
-                    "publish provider capabilities.*invalid_shape",
-                ):
-                    run_provider_process(
-                        runtime=runtime,
-                        api=api,
-                        journal=journal,
-                        interpreter=self._unused_interpreter,
-                        hf_session=hf_session,
-                        chf_session=chf_session,
-                        hello=hello_request(),
-                        policy=process_policy(hello_interval_seconds=0.005),
-                        stop=stop,
-                        on_ready=lambda: None,
-                    )
+                run_provider_process(
+                    runtime=runtime,
+                    api=api,
+                    journal=journal,
+                    interpreter=self._unused_interpreter,
+                    hf_session=hf_session,
+                    chf_session=chf_session,
+                    hello=hello_request(),
+                    policy=process_policy(hello_interval_seconds=0.005),
+                    stop=stop,
+                    on_ready=lambda: None,
+                )
 
-        self.assertEqual(api.hello_count, 2)
+        self.assertEqual(api.hello_count, 3)
         self.assertTrue(stop.is_set())
         self.assertFalse(
             any(thread.name.startswith("nmrpeak-") for thread in threads())
@@ -637,7 +627,6 @@ class ProviderProcessTests(unittest.TestCase):
             shutdown_drain_seconds=0.005,
             forced_join_seconds=0.005,
             inventory_maximum_pages=1,
-            maximum_consecutive_unavailable=2,
             observation=ObservationPolicy(0.001, 0.1),
         )
         try:
@@ -886,7 +875,6 @@ def process_policy(
         shutdown_drain_seconds=0.2,
         forced_join_seconds=0.2,
         inventory_maximum_pages=1,
-        maximum_consecutive_unavailable=2,
         observation=ObservationPolicy(0.001, 0.1),
     )
 

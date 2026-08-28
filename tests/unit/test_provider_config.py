@@ -36,7 +36,6 @@ hello_interval_seconds = 3600
 shutdown_drain_seconds = 330
 forced_join_seconds = 10
 inventory_maximum_pages = 20
-maximum_consecutive_unavailable = 5
 observation_interval_seconds = 1
 observation_maximum_gap_seconds = 45
 

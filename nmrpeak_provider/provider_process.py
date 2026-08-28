@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 import logging
 import math
 from threading import Event, Thread
 import time
-from typing import TYPE_CHECKING, Callable, Never
+from typing import TYPE_CHECKING, Callable
 
 from .attempt_inventory import (
+    AttemptInventoryRejected,
     AttemptInventoryReadFailed,
     read_attempt_inventory,
     validate_startup_inventory,
@@ -63,10 +63,7 @@ if TYPE_CHECKING:
 
 
 _LOG = logging.getLogger(__name__)
-
-
-class ProviderStartupUnavailable(RuntimeError):
-    """Server A did not yield the complete inventory required for startup."""
+_MAX_REMOTE_RETRY_SECONDS = 300.0
 
 
 class ProviderLaneFailed(RuntimeError):
@@ -75,20 +72,6 @@ class ProviderLaneFailed(RuntimeError):
 
 class ProviderShutdownFailed(RuntimeError):
     """At least one fixed lane remained live after forced bounded shutdown."""
-
-
-class ProviderProtocolFailed(RuntimeError):
-    """Server A evidence is not safe to retry as ordinary unavailability."""
-
-
-class ProviderLaneUnavailable(RuntimeError):
-    """One lane exhausted its bounded required-work unavailability budget."""
-
-
-class _LaneAvailability(Enum):
-    AVAILABLE = "available"
-    FEED_UNAVAILABLE = "feed_unavailable"
-    WORK_UNAVAILABLE = "work_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +83,6 @@ class ProviderProcessPolicy:
     shutdown_drain_seconds: float
     forced_join_seconds: float
     inventory_maximum_pages: int
-    maximum_consecutive_unavailable: int
     observation: ObservationPolicy
 
     def __post_init__(self) -> None:
@@ -114,11 +96,6 @@ class ProviderProcessPolicy:
                 raise ValueError("NMRPeak process waits must be positive finite seconds")
         if type(self.inventory_maximum_pages) is not int or self.inventory_maximum_pages < 1:
             raise ValueError("NMRPeak inventory page bound must be positive")
-        if (
-            type(self.maximum_consecutive_unavailable) is not int
-            or self.maximum_consecutive_unavailable < 1
-        ):
-            raise ValueError("NMRPeak unavailability budget must be positive")
         if type(self.observation) is not ObservationPolicy:
             raise TypeError("NMRPeak process requires an admitted observation policy")
 
@@ -221,8 +198,18 @@ def run_provider_process(
             return
 
         provider_ref = runtime.hf.generation.provider_ref
-        _publish_hello(api=api, prepared=hello, provider_ref=provider_ref)
+        _await_initial_hello(
+            api=api,
+            prepared=hello,
+            provider_ref=provider_ref,
+            policy=policy,
+            stop=stop,
+        )
+        if stop.is_set():
+            return
         next_hello_at = time.monotonic() + policy.hello_interval_seconds
+        hello_retry_seconds = policy.feed_interval_seconds
+        hello_outage_active = False
 
         finished = Event()
         works = tuple(_LaneWork(owner, finished) for owner in owners)
@@ -280,17 +267,28 @@ def run_provider_process(
             if stop.is_set():
                 break
             if time.monotonic() >= next_hello_at:
-                try:
-                    _publish_hello(
-                        api=api,
-                        prepared=hello,
-                        provider_ref=provider_ref,
+                hello_failure = _publish_hello(
+                    api=api,
+                    prepared=hello,
+                    provider_ref=provider_ref,
+                )
+                if hello_failure is None:
+                    if hello_outage_active:
+                        _LOG.info("Provider Hello recovered")
+                    hello_outage_active = False
+                    hello_retry_seconds = policy.feed_interval_seconds
+                    next_hello_at = (
+                        time.monotonic() + policy.hello_interval_seconds
                     )
-                except BaseException as error:
-                    coordination_error = error
-                    stop.set()
-                    break
-                next_hello_at = time.monotonic() + policy.hello_interval_seconds
+                else:
+                    if not hello_outage_active:
+                        _LOG.warning(
+                            "Provider Hello is unavailable; retrying: %s",
+                            _remote_evidence_message(hello_failure),
+                        )
+                    hello_outage_active = True
+                    next_hello_at = time.monotonic() + hello_retry_seconds
+                    hello_retry_seconds = _next_retry_delay(hello_retry_seconds)
         if finished.is_set() and not stop.is_set():
             stop.set()
 
@@ -368,18 +366,18 @@ def _publish_hello(
     api: ProviderApiClient,
     prepared: _PreparedProviderRequest,
     provider_ref: str,
-) -> None:
-    """Publish once, treating only transport and service outage as best-effort."""
+) -> object | None:
+    """Publish once, returning remote evidence instead of process policy."""
 
     outcome = api.send(prepared)
-    if type(outcome) is ProviderRequestUnavailable:
-        return
+    if type(outcome) in {
+        ProviderRequestUnavailable,
+        ProviderResponseRejected,
+        ProviderTlsRejected,
+    }:
+        return outcome
     if type(outcome) is not ProviderHttpResponse:
-        _raise_provider_protocol_failure(
-            "Cannot publish provider capabilities: "
-            f"{_fatal_evidence_message(outcome)}.",
-            outcome,
-        )
+        raise TypeError("Provider Hello returned unsupported transport evidence")
     if outcome.status == 200:
         receipt = parse_provider_hello_success(
             prepared,
@@ -387,26 +385,42 @@ def _publish_hello(
             expected_provider_ref=provider_ref,
         )
         if type(receipt) is ProviderHelloAccepted:
-            return
+            return None
         if type(receipt) is ProviderSuccessRejected:
-            raise ProviderProtocolFailed(
-                "Cannot publish provider capabilities: the API returned HTTP 200, "
-                "but the success response failed validation "
-                f"({receipt.reason.value})."
-            )
+            return receipt
         raise AssertionError("NMRPeak hello parser returned an unknown outcome")
-    problem = parse_provider_problem(prepared.operation, outcome)
-    if type(problem) is ProviderProblem and problem.status in {408, 500, 503}:
-        return
-    if type(problem) is ProviderProblemRejected:
-        raise ProviderProtocolFailed(
-            "Cannot publish provider capabilities: "
-            f"{_fatal_evidence_message(problem)}."
+    return parse_provider_problem(prepared.operation, outcome)
+
+
+def _await_initial_hello(
+    *,
+    api: ProviderApiClient,
+    prepared: _PreparedProviderRequest,
+    provider_ref: str,
+    policy: ProviderProcessPolicy,
+    stop: Event,
+) -> None:
+    delay = policy.feed_interval_seconds
+    outage_active = False
+    while not stop.is_set():
+        failure = _publish_hello(
+            api=api,
+            prepared=prepared,
+            provider_ref=provider_ref,
         )
-    raise ProviderProtocolFailed(
-        "Cannot publish provider capabilities: "
-        f"{_fatal_evidence_message(problem)}."
-    )
+        if failure is None:
+            if outage_active:
+                _LOG.info("Initial provider Hello recovered")
+            return
+        if not outage_active:
+            _LOG.warning(
+                "Initial provider Hello is unavailable; retrying: %s",
+                _remote_evidence_message(failure),
+            )
+            outage_active = True
+        if stop.wait(delay):
+            return
+        delay = _next_retry_delay(delay)
 
 
 def _recover_startup(
@@ -420,39 +434,46 @@ def _recover_startup(
     stop: Event,
 ) -> None:
     records = journal.records()
-    for attempt in range(policy.maximum_consecutive_unavailable):
-        inventory = read_attempt_inventory(
-            api=api,
-            maximum_pages=policy.inventory_maximum_pages,
-        )
-        if type(inventory) is not AttemptInventoryReadFailed:
-            break
-        _outcome_is_unavailable(inventory)
-        if attempt + 1 == policy.maximum_consecutive_unavailable:
-            failure = ProviderStartupUnavailable(
-                "Cannot start the provider after "
-                f"{policy.maximum_consecutive_unavailable} unavailable reads of the "
-                "in-progress Attempt inventory. No new Jobs were admitted; check API "
-                "availability before restarting."
+    delay = policy.feed_interval_seconds
+    outage_active = False
+    while not stop.is_set():
+        failure: object | None = None
+        try:
+            inventory = read_attempt_inventory(
+                api=api,
+                maximum_pages=policy.inventory_maximum_pages,
             )
-            cause = _outcome_failure_cause(inventory)
-            if cause is not None:
-                raise failure from cause
-            raise failure
-        if stop.wait(policy.feed_interval_seconds):
+            if type(inventory) is AttemptInventoryReadFailed:
+                failure = inventory.evidence
+            else:
+                validate_startup_inventory(
+                    runtime=runtime,
+                    records=records,
+                    inventory=inventory,
+                )
+        except AttemptInventoryRejected as error:
+            failure = error
+        if failure is None:
+            if outage_active:
+                _LOG.info("Startup Attempt inventory recovered")
+            break
+        if not outage_active:
+            _LOG.warning(
+                "Startup Attempt inventory is unavailable; retrying: %s",
+                _remote_evidence_message(failure),
+            )
+            outage_active = True
+        if stop.wait(delay):
             return
-    else:
-        raise AssertionError("NMRPeak startup inventory loop produced no outcome")
-    validate_startup_inventory(
-        runtime=runtime,
-        records=records,
-        inventory=inventory,
-    )
+        delay = _next_retry_delay(delay)
+
     for record in records:
         if stop.is_set():
             return
         current = record
-        for attempt in range(policy.maximum_consecutive_unavailable):
+        delay = policy.feed_interval_seconds
+        outage_active = False
+        while not stop.is_set():
             owner = (
                 _owner_for_record(runtime, owners, current)
                 if current.frozen_generation_id == runtime.frozen_generation_id
@@ -467,7 +488,13 @@ def _recover_startup(
                 record=current,
                 observation=policy.observation,
             )
-            if not _outcome_is_unavailable(outcome):
+            failure = _remote_failure_evidence(outcome)
+            if failure is None:
+                if outage_active:
+                    _LOG.info(
+                        "Startup recovery for %s recovered",
+                        current.execution_attempt_ref,
+                    )
                 break
             retained = tuple(
                 candidate
@@ -475,23 +502,20 @@ def _recover_startup(
                 if candidate.provider_attempt_key == record.provider_attempt_key
             )
             if not retained:
-                raise ProviderProtocolFailed(
+                raise RuntimeError(
                     "Unavailable recovery outcome lost its durable Attempt record"
                 )
             current = retained[0]
-            if attempt + 1 == policy.maximum_consecutive_unavailable:
-                failure = ProviderStartupUnavailable(
-                    "Cannot start the provider after "
-                    f"{policy.maximum_consecutive_unavailable} unavailable recovery "
-                    f"operations for {current.execution_attempt_ref}. Its journal record "
-                    "remains available for the next startup."
+            if not outage_active:
+                _LOG.warning(
+                    "Startup recovery for %s is unavailable; retrying: %s",
+                    current.execution_attempt_ref,
+                    _remote_evidence_message(failure),
                 )
-                cause = _outcome_failure_cause(outcome)
-                if cause is not None:
-                    raise failure from cause
-                raise failure
-            if stop.wait(policy.feed_interval_seconds):
+                outage_active = True
+            if stop.wait(delay):
                 return
+            delay = _next_retry_delay(delay)
 
 
 def _run_lane(
@@ -505,13 +529,12 @@ def _run_lane(
     owner: _LaneOwner,
 ) -> None:
     cursor: str | None = None
-    consecutive_work_unavailable = 0
-    feed_outage_active = False
+    retry_delay = policy.feed_interval_seconds
+    outage_active = False
     primary_error: BaseException | None = None
     try:
         while not stop.is_set():
-            availability = _LaneAvailability.AVAILABLE
-            unavailable_work: object | None = None
+            failure: object | None = None
             records = tuple(
                 record
                 for record in journal.records()
@@ -530,10 +553,8 @@ def _run_lane(
                         record=record,
                         observation=policy.observation,
                     )
-                    unavailable = _outcome_is_unavailable(outcome)
-                    if unavailable:
-                        availability = _LaneAvailability.WORK_UNAVAILABLE
-                        unavailable_work = outcome
+                    failure = _remote_failure_evidence(outcome)
+                    if failure is not None:
                         break
             else:
                 try:
@@ -558,59 +579,36 @@ def _run_lane(
                         admitted=admitted,
                         observation=policy.observation,
                     )
-                    if _outcome_is_unavailable(outcome):
-                        availability = _LaneAvailability.WORK_UNAVAILABLE
-                        unavailable_work = outcome
+                    failure = _remote_failure_evidence(outcome)
                 elif type(admitted) is PageExhausted:
                     cursor = admitted.next_cursor
                 elif admitted is not None:
-                    if _outcome_is_unavailable(admitted):
-                        availability = (
-                            _LaneAvailability.FEED_UNAVAILABLE
-                            if type(admitted) is FeedReadFailed
-                            else _LaneAvailability.WORK_UNAVAILABLE
-                        )
-                    if (
-                        availability is _LaneAvailability.FEED_UNAVAILABLE
-                        and not feed_outage_active
-                    ):
-                        _LOG.warning(
-                            "Job feed for %s is unavailable; retrying: %s",
-                            owner.generation.lane.offering.implementation_ref,
-                            _unavailable_evidence_message(admitted.evidence),
-                        )
-                        feed_outage_active = True
-                    elif availability is _LaneAvailability.WORK_UNAVAILABLE:
-                        unavailable_work = admitted
-            if availability is _LaneAvailability.WORK_UNAVAILABLE:
-                if unavailable_work is None:
-                    raise AssertionError("Unavailable lane work has no outcome")
-                consecutive_work_unavailable += 1
-                if (
-                    consecutive_work_unavailable
-                    >= policy.maximum_consecutive_unavailable
-                ):
-                    failure = ProviderLaneUnavailable(
-                        f"Cannot continue the {owner.generation.lane.offering.implementation_ref} "
-                        "lane after "
-                        f"{policy.maximum_consecutive_unavailable} consecutive unavailable "
-                        "operations. Any retained Attempt records remain available for "
-                        "restart recovery. Last failure: "
-                        f"{_unavailable_outcome_message(unavailable_work)}."
-                    )
-                    unavailable_cause = _outcome_failure_cause(unavailable_work)
-                    if unavailable_cause is not None:
-                        raise failure from unavailable_cause
-                    raise failure
-            elif availability is _LaneAvailability.AVAILABLE:
-                consecutive_work_unavailable = 0
-                feed_outage_active = False
+                    failure = _remote_failure_evidence(admitted)
             if owner.session.retired:
                 raise RunnerSessionRetired(
                     f"Cannot continue the {owner.generation.lane.offering.implementation_ref} "
                     "lane because its runner session retired. Inspect the runner container "
                     "before restarting the provider."
                 )
+            if failure is not None:
+                if not outage_active:
+                    _LOG.warning(
+                        "%s provider lane is unavailable; retrying: %s",
+                        owner.generation.lane.offering.implementation_ref,
+                        _remote_evidence_message(failure),
+                    )
+                    outage_active = True
+                if stop.wait(retry_delay):
+                    break
+                retry_delay = _next_retry_delay(retry_delay)
+                continue
+            if outage_active:
+                _LOG.info(
+                    "%s provider lane recovered",
+                    owner.generation.lane.offering.implementation_ref,
+                )
+            outage_active = False
+            retry_delay = policy.feed_interval_seconds
             stop.wait(policy.feed_interval_seconds)
     except BaseException as error:
         primary_error = error
@@ -638,48 +636,12 @@ def _owner_for_record(
     raise AssertionError("NMRPeak record resolved outside the two fixed lane owners")
 
 
-def _outcome_is_unavailable(outcome: object) -> bool:
+def _remote_failure_evidence(outcome: object) -> object | None:
+    """Return external evidence while leaving process policy to the caller."""
+
     if type(outcome) is InputInterpretationUnavailable:
-        return True
-    evidence = _outcome_evidence(outcome)
-    if evidence is None:
-        return False
-    if type(evidence) is ProviderRequestUnavailable:
-        return True
-    if type(evidence) is ProviderProblem:
-        if evidence.status in {404, 408, 500, 503}:
-            return True
-        if evidence.status == 409 and type(outcome) in {
-            AttemptMutationCommitPossible,
-            AttemptMutationNotCommitted,
-        }:
-            return True
-    if type(outcome) is AttemptMutationNotCommitted:
-        _raise_provider_protocol_failure(
-            "Cannot continue after the API rejected an Attempt mutation: "
-            f"{_fatal_evidence_message(evidence)}. The API proved that the mutation "
-            "did not commit.",
-            evidence,
-        )
-    if type(outcome) is AttemptMutationCommitPossible:
-        _raise_provider_protocol_failure(
-            "Cannot continue after an Attempt mutation response failed validation: "
-            f"{_fatal_evidence_message(evidence)}. The mutation may have committed; "
-            "its retained journal record must be reconciled before retry.",
-            evidence,
-        )
-    operation = {
-        AttemptInventoryReadFailed: "read the in-progress Attempt inventory",
-        AttemptObservationFailed: "observe the retained Attempt",
-        FeedReadFailed: "read the Job feed",
-        InputReadFailed: "read the selected Job input",
-    }.get(type(outcome))
-    if operation is None:
-        raise AssertionError("Fatal provider outcome has no operator description")
-    _raise_provider_protocol_failure(
-        f"Cannot {operation}: {_fatal_evidence_message(evidence)}.",
-        evidence,
-    )
+        return outcome.evidence
+    return _outcome_evidence(outcome)
 
 
 def _outcome_evidence(outcome: object) -> object | None:
@@ -695,61 +657,7 @@ def _outcome_evidence(outcome: object) -> object | None:
     return None
 
 
-def _outcome_failure_cause(outcome: object) -> BaseException | None:
-    if type(outcome) is InputInterpretationUnavailable:
-        return outcome.evidence
-    evidence = _outcome_evidence(outcome)
-    return _evidence_failure_cause(evidence)
-
-
-def _evidence_failure_cause(evidence: object) -> BaseException | None:
-    if type(evidence) in {
-        ProviderProblemRejected,
-        ProviderRequestUnavailable,
-        ProviderResponseRejected,
-        ProviderSuccessRejected,
-        ProviderTlsRejected,
-    }:
-        return evidence.cause
-    return None
-
-
-def _unavailable_evidence_message(evidence: object) -> str:
-    if type(evidence) is ProviderProblem:
-        return _fatal_evidence_message(evidence)
-    if type(evidence) is not ProviderRequestUnavailable:
-        raise AssertionError("Unavailable feed evidence has no operator description")
-    if evidence.status is not None:
-        return f"the edge returned HTTP {evidence.status} without an API envelope"
-    delivery = evidence.delivery.value.replace("_", " ")
-    if evidence.cause is None:
-        return f"request delivery was {delivery}"
-    return (
-        f"request delivery was {delivery}; "
-        f"{type(evidence.cause).__name__}: {evidence.cause}"
-    )
-
-
-def _unavailable_outcome_message(outcome: object) -> str:
-    if type(outcome) is InputInterpretationUnavailable:
-        return f"{type(outcome.evidence).__name__}: {outcome.evidence}"
-    evidence = _outcome_evidence(outcome)
-    if evidence is None:
-        raise AssertionError("Unavailable lane work has no failure evidence")
-    return _unavailable_evidence_message(evidence)
-
-
-def _raise_provider_protocol_failure(message: str, evidence: object) -> Never:
-    failure = ProviderProtocolFailed(message)
-    cause = _evidence_failure_cause(evidence)
-    if cause is not None:
-        raise failure from cause
-    raise failure
-
-
-def _fatal_evidence_message(evidence: object) -> str:
-    """Render only bounded, validated API evidence for provider operators."""
-
+def _remote_evidence_message(evidence: object) -> str:
     if type(evidence) is ProviderProblem:
         code = f", code {evidence.code}" if evidence.code is not None else ""
         return (
@@ -768,7 +676,23 @@ def _fatal_evidence_message(evidence: object) -> str:
         return f"the API response {status} failed validation ({evidence.reason.value})"
     if type(evidence) is ProviderTlsRejected:
         return "TLS verification failed before the request was sent"
-    raise AssertionError("Fatal provider evidence has no operator description")
+    if type(evidence) is ProviderRequestUnavailable:
+        if evidence.status is not None:
+            return f"HTTP {evidence.status} ended without a complete API response"
+        delivery = evidence.delivery.value.replace("_", " ")
+        if evidence.cause is None:
+            return f"request delivery was {delivery}"
+        return (
+            f"request delivery was {delivery}; "
+            f"{type(evidence.cause).__name__}: {evidence.cause}"
+        )
+    if isinstance(evidence, BaseException):
+        return f"{type(evidence).__name__}: {evidence}"
+    raise AssertionError("Remote provider evidence has no operator description")
+
+
+def _next_retry_delay(current: float) -> float:
+    return min(current * 2.0, _MAX_REMOTE_RETRY_SECONDS)
 
 
 def _join_threads(threads: tuple[Thread, ...], timeout_seconds: float) -> None:

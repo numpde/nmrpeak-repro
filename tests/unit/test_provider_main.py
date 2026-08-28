@@ -20,7 +20,6 @@ from nmrpeak_provider.provider_main import (
 )
 from nmrpeak_provider.provider_process import (
     ProviderLaneFailed,
-    ProviderProtocolFailed,
 )
 from nmrpeak_provider.provider_credential import parse_provider_signing_credential
 from tests.unit.test_frozen_generation import FILES, runtime
@@ -49,7 +48,7 @@ class FakeJournal:
 
 class ProviderMainTests(unittest.TestCase):
     def test_main_renders_process_effect_cause_and_cleanup_note(self) -> None:
-        cause = ProviderProtocolFailed(
+        cause = RuntimeError(
             "Cannot read the Job feed: the HTTP 403 problem response failed validation."
         )
         failure = ProviderLaneFailed(
@@ -93,7 +92,7 @@ class ProviderMainTests(unittest.TestCase):
             "Interpreter endpoint failures",
             [RuntimeError("endpoint one refused the connection")],
         )
-        unavailable = ProviderProtocolFailed("All interpreter endpoints failed")
+        unavailable = RuntimeError("All interpreter endpoints failed")
         unavailable.__cause__ = endpoint_failures
         failure = ProviderLaneFailed("The hf provider lane stopped")
         failure.__cause__ = unavailable
