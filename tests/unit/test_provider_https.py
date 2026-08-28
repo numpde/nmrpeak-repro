@@ -309,6 +309,25 @@ class ProviderHttpsTests(unittest.TestCase):
         )
         self.assertIsInstance(outcome.cause, TimeoutError)
 
+    def test_short_response_body_preserves_the_incomplete_exchange(self) -> None:
+        with _tls_server(
+            self._certificate_directory,
+            response_body=b"four",
+            declared_response_length=5,
+        ) as server:
+            outcome = self._send_inventory(server.port)
+        self.assertEqual(
+            outcome,
+            ProviderRequestUnavailable(
+                RequestDelivery.RESPONSE_RECEIVED,
+                status=200,
+            ),
+        )
+        self.assertEqual(
+            str(outcome.cause),
+            "HTTP response ended after 4 of 5 declared bytes",
+        )
+
     def test_close_before_status_leaves_delivery_possible(self) -> None:
         with _tls_server(self._certificate_directory, close_before_status=True) as server:
             outcome = self._send_inventory(server.port)
@@ -450,6 +469,7 @@ def _tls_server(
     status: int = 200,
     response_headers: dict[str, str] | None = None,
     response_body: bytes = b"{}",
+    declared_response_length: int | None = None,
     close_before_status: bool = False,
     drip_seconds: float | None = None,
 ):
@@ -486,7 +506,14 @@ def _tls_server(
             self.send_response(status)
             for name, value in headers.items():
                 self.send_header(name, value)
-            self.send_header("Content-Length", str(len(response_body)))
+            self.send_header(
+                "Content-Length",
+                str(
+                    len(response_body)
+                    if declared_response_length is None
+                    else declared_response_length
+                ),
+            )
             self.send_header("Connection", "close")
             self.end_headers()
             if drip_seconds is None:

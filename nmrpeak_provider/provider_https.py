@@ -456,6 +456,10 @@ def _read_response(
     if lengths and len(body) != int(lengths[0]):
         return ProviderRequestUnavailable(
             RequestDelivery.RESPONSE_RECEIVED,
+            EOFError(
+                f"HTTP response ended after {len(body)} of {int(lengths[0])} "
+                "declared bytes"
+            ),
             status=status,
         )
     return ProviderHttpResponse(status, topology, expected_media_type, request_id, body)
