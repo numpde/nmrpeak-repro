@@ -12,6 +12,7 @@
     h2 { margin-top: 2rem; }
     a { color: light-dark(#174ea6, #9fc5ff); }
     code { font-size: 0.9em; overflow-wrap: anywhere; }
+    pre { overflow-x: auto; }
     li + li { margin-top: 0.75rem; }
   </style>
 </head>
@@ -19,7 +20,7 @@
   <main>
     <h1>nmrpeak-repro</h1>
     <p>A deployment repository for an NMRPeak provider that generates molecular structures through the NMR API.</p>
-    <p><a href="https://github.com/numpde/nmrpeak-repro">Source code and operator instructions</a></p>
+    <p><a href="https://github.com/numpde/nmrpeak-repro">Source code</a></p>
 
     <h2>Analysis offerings</h2>
     <ul>
@@ -29,7 +30,12 @@
     <p>When deployed, each offering runs its pinned source and reviewed checkpoint in a separate networkless container. The provider handles signed NMR API communication and durable recovery of interrupted API attempts.</p>
 
     <h2>Running and verifying the provider</h2>
-    <p>Start with the <a href="https://github.com/numpde/nmrpeak-repro#operator-map">README</a> and run <code>make help</code> in the repository for the maintained command list, required inputs, and operational boundaries.</p>
+    <p>Run <code>make help</code> in the repository for the authoritative command list, required inputs, effects, and operational boundaries. Do not infer current commands from the design note.</p>
+    <p>Clone with the pinned submodules and run the maintained verification lane:</p>
+    <pre><code>git clone --recurse-submodules https://github.com/numpde/nmrpeak-repro.git
+cd nmrpeak-repro
+# Use a Python environment containing the dependencies in requirements.lock.
+make test</code></pre>
     <p>The <code>make test</code> verification lane uses inert fixtures without network access, credentials, or checkpoints. It checks the provider and both runner protocols; it does not load released checkpoints or establish that a live deployment works.</p>
 
     <h2>Scientific references</h2>
@@ -40,7 +46,8 @@
     <p>This deployment repository contains neither the training data nor the training pipeline.</p>
 
     <h2>Licensing</h2>
-    <p>Original code in this repository is licensed under Apache License 2.0. Third-party components retain their own licenses. The pinned NMRPeak source uses CC BY-NC-SA 4.0 and is restricted to non-commercial use; Uni-Core uses the MIT License. See the <a href="https://github.com/numpde/nmrpeak-repro#license">README’s license section</a> for checkpoint licensing and source links.</p>
+    <p>Original code in this repository is licensed under Apache License 2.0. Third-party components retain their own licenses. The pinned NMRPeak source uses CC BY-NC-SA 4.0 and is restricted to non-commercial use; Uni-Core, the PyTorch model framework used by NMRPeak, uses the MIT License.</p>
+    <p>The NMRPeak checkpoints are downloaded from <a href="https://zenodo.org/records/19122815">Zenodo record 19122815</a>, whose metadata identifies the deposit’s license as <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International</a>. This repository does not relicense those files.</p>
   </main>
 </body>
 </html>
