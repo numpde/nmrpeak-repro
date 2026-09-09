@@ -89,6 +89,8 @@ CHF_FACTS = ProviderResultFacts(
 
 
 class ConcurrentProviderApi:
+    endpoint = SimpleNamespace(origin="https://api.example.test")
+
     def __init__(
         self,
         *,
@@ -197,6 +199,8 @@ class ConcurrentProviderApi:
 
 
 class BlockingFeedApi:
+    endpoint = SimpleNamespace(origin="https://api.example.test")
+
     def __init__(self, stop: Event, release: Event) -> None:
         self.stop = stop
         self.release = release
@@ -216,6 +220,8 @@ class BlockingFeedApi:
 
 
 class PeriodicHelloApi:
+    endpoint = SimpleNamespace(origin="https://api.example.test")
+
     def __init__(self, stop: Event, *, fatal_second_hello: bool) -> None:
         self.stop = stop
         self.fatal_second_hello = fatal_second_hello
@@ -310,7 +316,10 @@ class ProviderProcessTests(unittest.TestCase):
         from nmrpeak_provider.provider_process import _publish_hello
 
         replies = [hello_response(), response({"schema_id": "wrong"}), hello_response()]
-        api = SimpleNamespace(send=lambda _: replies.pop(0))
+        api = SimpleNamespace(
+            endpoint=SimpleNamespace(origin="https://api.example.test"),
+            send=lambda _: replies.pop(0),
+        )
         with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
             outcomes = [
                 _publish_hello(api=api, prepared=hello_request(), provider_ref="provider:nmrpeak")
@@ -323,13 +332,18 @@ class ProviderProcessTests(unittest.TestCase):
         for message in logs.output:
             self.assertIn("Hello accepted", message)
             self.assertIn("provider:nmrpeak", message)
+            self.assertIn("origin=https://api.example.test", message)
+            self.assertIn("request=", message)
             self.assertIn("accepted_at=2026-08-24T12:00:00Z", message)
 
     def test_hello_outage_keeps_reporting_retries_until_acceptance(self) -> None:
         from nmrpeak_provider.provider_process import _await_initial_hello
 
         replies = [ProviderRequestUnavailable(RequestDelivery.NOT_SENT)] * 3 + [hello_response()]
-        api = SimpleNamespace(send=lambda _: replies.pop(0))
+        api = SimpleNamespace(
+            endpoint=SimpleNamespace(origin="https://api.example.test"),
+            send=lambda _: replies.pop(0),
+        )
         waits = []
         stop = SimpleNamespace(is_set=lambda: False, wait=lambda seconds: waits.append(seconds))
         with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:

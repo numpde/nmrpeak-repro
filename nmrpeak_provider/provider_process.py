@@ -397,9 +397,11 @@ def _publish_hello(
         )
         if type(receipt) is ProviderHelloAccepted:
             _LOG.info(
-                'Provider Hello accepted; provider=%s accepted_at=%s',
+                "Provider Hello accepted; provider=%s origin=%s accepted_at=%s request=%s",
                 receipt.provider_ref,
+                api.endpoint.origin,
                 receipt.accepted_at,
+                outcome.request_id,
             )
             return None
         if type(receipt) is ProviderSuccessRejected:
