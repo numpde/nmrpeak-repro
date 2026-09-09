@@ -60,6 +60,15 @@ class DeploymentTopologyTests(unittest.TestCase):
             ):
                 project_deployment_topology(document, IMAGES, CHECKPOINTS)
 
+    def test_every_service_requires_retained_and_bounded_logs(self) -> None:
+        for service in ("provider", "hf-runner", "chf-runner"):
+            for logging in ({"driver": "none"}, {"driver": "json-file"}):
+                document = compose_document()
+                document["services"][service]["logging"] = logging
+                with self.subTest(service=service, logging=logging):
+                    with self.assertRaises(DeploymentTopologyRejected):
+                        project_deployment_topology(document, IMAGES, CHECKPOINTS)
+
     def test_provider_image_identity_changes_the_authenticated_projection(self) -> None:
         original = project_deployment_topology(
             compose_document(),
@@ -194,7 +203,7 @@ def runner(lane: str, image: str, image_input: str, checkpoint: str) -> dict[str
         "entrypoint": None,
         "image": image,
         "init": True,
-        "logging": {"driver": "none"},
+        "logging": {"driver": "json-file", "options": {"max-file": "3", "max-size": "10m"}},
         "mem_limit": "34359738368",
         "memswap_limit": "34359738368",
         "network_mode": "none",

@@ -102,7 +102,10 @@ services:
         target: /checkpoint
         read_only: true
     logging:
-      driver: none
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
 
   chf-runner:
     image: "${CHF_RUNNER_IMAGE_REF:?set CHF_RUNNER_IMAGE_REF through make}"
@@ -139,7 +142,10 @@ services:
         target: /checkpoint
         read_only: true
     logging:
-      driver: none
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 10m
 
 volumes:
   provider-identity-lock:

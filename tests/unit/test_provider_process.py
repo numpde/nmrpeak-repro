@@ -312,6 +312,33 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertEqual(len(logs.records), 3)
         self.assertIn("journal full", logs.output[-1])
 
+    def test_admission_rejection_does_not_retry_a_retired_runner(self) -> None:
+        from nmrpeak_provider.provider_process import _LaneOwner, _run_lane
+        from nmrpeak_provider.attempt_journal_store import AttemptJournalAdmissionRejected
+        from nmrpeak_provider.runner_session import RunnerSessionRetired
+
+        runtime = generation_runtime()
+        session, channel = runner_session(HF_FACTS, HF_RUNNER_CODEC)
+        stop = RecordingWaitEvent()
+
+        def reject_admission(**kwargs):
+            session.retire()
+            # Bound the regression: the broken branch sleeps even after shutdown.
+            stop.set()
+            raise AttemptJournalAdmissionRejected("journal full")
+
+        with journal_directory() as root, AttemptJournalStore(root, maximum_records=2) as journal:
+            with patch("nmrpeak_provider.provider_process.admit_next_job", side_effect=reject_admission):
+                with self.assertRaisesRegex(RunnerSessionRetired, "Cannot continue the hf lane"):
+                    _run_lane(
+                        runtime=runtime, api=None, journal=journal,
+                        interpreter=self._unused_interpreter,
+                        policy=process_policy(), stop=stop,
+                        owner=_LaneOwner(runtime.hf, session),
+                    )
+        self.assertEqual(stop.waits, [])
+        self.assertTrue(channel.closed)
+
     def test_hello_logs_only_validated_acceptance_receipts(self) -> None:
         from nmrpeak_provider.provider_process import _publish_hello
 
@@ -356,6 +383,35 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertEqual(waits, [process_policy().feed_interval_seconds * 2 ** i for i in range(3)])
         self.assertIn("Hello accepted", logs.output[-2])
         self.assertIn("Hello recovered", logs.output[-1])
+
+    def test_hello_retry_reports_api_problem_detail_and_request_identities(self) -> None:
+        from nmrpeak_provider.provider_process import _await_initial_hello
+
+        detail = "The description exceeds the provider limit."
+        problem = ProviderHttpResponse(
+            status=400, topology="dev-local", content_type="application/problem+json",
+            request_id="transport-request",
+            body=json.dumps({
+                "type": "urn:nmr-api:problem:bad-request", "title": "Bad request",
+                "status": 400, "instance": "/provider/v1/hello",
+                "request_id": "body-request", "code": "provider_request_invalid",
+                "detail": detail,
+            }).encode(),
+        )
+        replies = [problem, hello_response()]
+        api = SimpleNamespace(
+            endpoint=SimpleNamespace(origin="https://api.example.test"),
+            send=lambda _: replies.pop(0),
+        )
+        with self.assertLogs("nmrpeak_provider.provider_process", level="WARNING") as logs:
+            _await_initial_hello(
+                api=api, prepared=hello_request(), provider_ref="provider:nmrpeak",
+                policy=process_policy(), stop=RecordingWaitEvent(),
+            )
+        self.assertEqual(len(logs.records), 1)
+        message = logs.records[0].getMessage()
+        for evidence in (detail, "transport-request", "body-request", "provider_request_invalid"):
+            self.assertIn(evidence, message)
 
     def test_mutation_retry_message_preserves_commit_uncertainty(self) -> None:
         from nmrpeak_provider.provider_process import _remote_failure_evidence, _remote_evidence_message

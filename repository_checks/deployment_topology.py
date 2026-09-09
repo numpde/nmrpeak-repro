@@ -179,6 +179,14 @@ def _common_posture(
     if any(service.get(name) != value for name, value in expected.items()):
         raise DeploymentTopologyRejected("Deployment service posture has drifted")
 
+    if service.get("logging") != {
+        "driver": "json-file",
+        "options": {"max-file": "3", "max-size": "10m"},
+    }:
+        raise DeploymentTopologyRejected(
+            "Deployment services require json-file logging with three 10 MB files"
+        )
+
 
 def _provider_posture(service: dict[str, object], *, private_ca: bool) -> None:
     if service.get("networks") != {"default": None}:
@@ -187,11 +195,6 @@ def _provider_posture(service: dict[str, object], *, private_ca: bool) -> None:
         raise DeploymentTopologyRejected("Provider image entrypoint must remain fixed")
     if service.get("stop_grace_period") != "10m0s":
         raise DeploymentTopologyRejected("Provider stop budget has drifted")
-    if service.get("logging") != {
-        "driver": "json-file",
-        "options": {"max-file": "3", "max-size": "10m"},
-    }:
-        raise DeploymentTopologyRejected("Provider logging policy has drifted")
     if service.get("healthcheck") != {
         "test": ["CMD", "python", "-m", "nmrpeak_provider.provider_readiness"],
         "timeout": "2s",
@@ -273,9 +276,8 @@ def _runner_posture(
     if (
         service.get("stop_grace_period") != "20s"
         or service.get("shm_size") != "1073741824"
-        or service.get("logging") != {"driver": "none"}
     ):
-        raise DeploymentTopologyRejected("Runner resource or log posture has drifted")
+        raise DeploymentTopologyRejected("Runner resource posture has drifted")
     if service.get("tmpfs") != [
         "/tmp:size=2g,mode=1777,noexec,nosuid,nodev,uid=65532,gid=65532"
     ]:

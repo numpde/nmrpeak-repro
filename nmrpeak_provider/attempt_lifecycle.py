@@ -620,6 +620,7 @@ def start_attempt(
     if type(outcome) is not AttemptMutationCommitted:
         return outcome
     receipt = outcome.receipt
+    # Record the confirmed API effect even if the following journal update fails.
     _LOG.info(
         "API accepted attempt start; job=%s attempt=%s state=%s started_at=%s replayed=%s",
         record.job_ref, receipt.execution_attempt_ref, receipt.state.value,
@@ -920,6 +921,7 @@ def deliver_terminal(
     if type(outcome) is not AttemptMutationCommitted:
         return outcome
     receipt = outcome.receipt
+    # Record the confirmed API effect even if the following journal update fails.
     _LOG.info(
         "API confirmed %s; job=%s attempt=%s committed_at=%s replayed=%s",
         record.terminal_operation.value, record.job_ref, record.execution_attempt_ref,

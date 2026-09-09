@@ -28,7 +28,7 @@
       <li><code>nmrpeak_hf_v1</code>: a molecular formula and a proton (<sup>1</sup>H) NMR peak list.</li>
       <li><code>nmrpeak_chf_v1</code>: a molecular formula, a proton (<sup>1</sup>H) NMR peak list, and a carbon-13 (<sup>13</sup>C) NMR peak list.</li>
     </ul>
-    <p>Each proton peak needs a chemical shift or shift range, an integral, and a multiplicity; include coupling constants when reported. Each carbon peak needs a chemical shift. The provider uses a configured language-model service to interpret the job’s input text before running NMRPeak.</p>
+    <p>Each proton peak needs a chemical shift or shift range, an integral, and a multiplicity; include coupling constants when reported. Each carbon peak needs a chemical shift. The provider accepts structured input directly and uses a configured language-model service to interpret freeform job text before running NMRPeak.</p>
     <p>Results contain candidate structures represented as SMILES strings. They are model predictions; the provider does not establish the compound’s identity or report a confidence score.</p>
 
     <h2>Check the software</h2>
@@ -45,9 +45,11 @@ make test PYTHON=.venv/bin/python</code></pre>
     <p>After cloning, run <code>make help</code> for checkpoint preparation, image builds, deployment setup, and start/stop commands, including their required arguments. The <a href="https://github.com/numpde/nmrpeak-repro/blob/main/Makefile">Makefile</a> also lists these commands online. The test commands above do not start a deployment.</p>
 
     <h2>Monitor the deployment</h2>
-    <p>Run <code>make provider/logs DEPLOYMENT=&lt;name&gt;</code> to follow provider logs. Use <code>make provider/deployment/status DEPLOYMENT=&lt;name&gt;</code> to find the runner containers, then <code>docker logs &lt;container&gt;</code> to read their logs.</p>
-    <p>Application logs include UTC timestamps, startup and model readiness, accepted hellos, job and attempt identifiers, input text, interpreted input, generated results, and API delivery outcomes. A <code>Provider Hello accepted</code> entry records the API’s acceptance time. Locally generated or retained results are reported separately from API-confirmed completion. Credentials and signing material are not logged.</p>
-    <p>Temporary failures report the reason and next retry delay, with backoff capped at five minutes. Recovery waits report periodically; empty job polls remain quiet. Docker retains up to three 10 MB log files per container. Container health reflects startup readiness; check hello acceptance times for recent API acknowledgement.</p>
+    <p>Run <code>make provider/logs DEPLOYMENT=&lt;name&gt;</code> to read the provider’s last 200 log lines and follow new entries while it runs. Use <code>make provider/deployment/status DEPLOYMENT=&lt;name&gt;</code> to find the model runner containers, then <code>docker --context default logs &lt;container&gt;</code> to read their retained logs.</p>
+    <p>Application logs include UTC timestamps, startup and model readiness, job and attempt identifiers, input text, interpreted input, generated results, and API delivery outcomes. Job content is recorded without redaction. Logging does not intentionally include configured credentials or signing keys.</p>
+    <p>A hello sends the provider’s description and analysis offerings to the API. Each <code>Provider Hello accepted</code> entry records the API origin, provider, acceptance time, and request identifier. Compare its age with <code>hello_interval_seconds</code>, reported in the <code>Provider ready</code> startup entry. If an expected acknowledgement is missing, inspect subsequent retry or shutdown messages. Provider container health reflects startup readiness.</p>
+    <p><code>Completion retained for API delivery</code> means a result is stored locally for delivery; <code>API confirmed complete</code> records the API’s completion receipt. API-access and journal-admission retries report their reason and next delay, capped at five minutes. Retained attempts waiting for API expiry or conflict resolution report about every five minutes while polling continues; empty job polls remain quiet. Follow the reported failure evidence when retries persist. Leave the provider’s Docker journal volume intact so its retained attempts remain available for recovery.</p>
+    <p>Docker retains up to three 10 MB log files per container. Older entries rotate out.</p>
 
     <h2>Scientific references</h2>
     <ul>

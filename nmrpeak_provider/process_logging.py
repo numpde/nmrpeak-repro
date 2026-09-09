@@ -5,7 +5,11 @@ import time
 
 
 def configure_process_logging() -> None:
-    """Expose application progress with UTC timestamps and quiet dependencies."""
+    """Replace root handlers with UTC stderr output at process startup.
+
+    Application namespaces emit INFO; dependencies default to WARNING.
+    Call only from executable entry points, which own the process-wide sink.
+    """
 
     formatter = logging.Formatter(
         "%(asctime)sZ %(levelname)s %(name)s %(threadName)s %(message)s",

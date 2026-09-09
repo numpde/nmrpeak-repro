@@ -593,15 +593,8 @@ def _run_lane(
                         cursor=cursor,
                     )
                 except AttemptJournalAdmissionRejected as error:
-                    _LOG.warning(
-                        "Job admission deferred; lane=%s retry_seconds=%s: %r",
-                        owner.generation.lane.offering.implementation_ref,
-                        retry_delay, error,
-                    )
-                    if stop.wait(retry_delay):
-                        break
-                    retry_delay = _next_retry_delay(retry_delay)
-                    continue
+                    admitted = None
+                    failure = error
                 if type(admitted) is JobAdmitted:
                     cursor = None
                     outcome = run_admitted_job(
@@ -658,6 +651,8 @@ def _run_lane(
 
 
 def _log_recovery_wait(outcome: object) -> None:
+    """Report retained waits; leave other recovery outcomes to their owners."""
+
     if type(outcome) is ObserveUntilExpiry:
         _LOG.info(
             "Recovery is waiting for API attempt expiry after the job closed; "
@@ -686,14 +681,8 @@ def _owner_for_record(
 
 
 def _remote_failure_evidence(outcome: object) -> object | None:
-    """Return external evidence while leaving process policy to the caller."""
+    """Select retry evidence, retaining mutation certainty; return None otherwise."""
 
-    if type(outcome) is InputInterpretationUnavailable:
-        return outcome.evidence
-    return _outcome_evidence(outcome)
-
-
-def _outcome_evidence(outcome: object) -> object | None:
     if type(outcome) in {AttemptMutationCommitPossible, AttemptMutationNotCommitted}:
         return outcome
     if type(outcome) in {
@@ -701,6 +690,7 @@ def _outcome_evidence(outcome: object) -> object | None:
         AttemptObservationFailed,
         FeedReadFailed,
         InputReadFailed,
+        InputInterpretationUnavailable,
     }:
         return outcome.evidence
     return None
@@ -713,9 +703,11 @@ def _remote_evidence_message(evidence: object) -> str:
         return "this API send did not commit its mutation; " + _remote_evidence_message(evidence.evidence)
     if type(evidence) is ProviderProblem:
         code = f", code {evidence.code}" if evidence.code is not None else ""
+        detail = f"; {evidence.detail}" if evidence.detail is not None else ""
         return (
-            f"the API returned HTTP {evidence.status} ({evidence.title.lower()}{code}; "
-            f"request {evidence.transport_request_id})"
+            f"the API returned HTTP {evidence.status} ({evidence.title}{code}; "
+            f"transport request {evidence.transport_request_id}; "
+            f"body request {evidence.body_request_id}{detail})"
         )
     if type(evidence) is ProviderProblemRejected:
         return (
