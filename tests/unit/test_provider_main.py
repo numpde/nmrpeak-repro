@@ -124,7 +124,7 @@ class ProviderMainTests(unittest.TestCase):
             document["description"],
             "Generates candidate molecular structures from molecular formula and "
             "NMR peak-list input. License, attribution, and source details: "
-            "https://github.com/numpde/nmrpeak-repro#license",
+            "https://numpde.github.io/nmrpeak-repro/#licensing",
         )
 
     def test_local_admission_precedes_locked_work_and_cleanup_surrounds_failure(self) -> None:

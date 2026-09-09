@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="NMRPeak deployment for the NMR API: molecular structure generation from a molecular formula and NMR spectra.">
+  <meta name="description" content="NMRPeak deployment for the NMR API: candidate molecular structures from a molecular formula and NMR peak lists.">
   <title>nmrpeak-repro — NMRPeak for the NMR API</title>
   <style>
     :root { color-scheme: light dark; }
@@ -19,33 +19,39 @@
 <body>
   <main>
     <h1>nmrpeak-repro</h1>
-    <p>A deployment repository for an NMRPeak provider that generates molecular structures through the NMR API.</p>
+    <p>Deploy NMRPeak as a service that processes jobs from the <a href="https://github.com/numpde/nmr-api-v1">NMR API</a> and returns candidate molecular structures.</p>
     <p><a href="https://github.com/numpde/nmrpeak-repro">Source code</a></p>
 
-    <h2>Analysis offerings</h2>
+    <h2>Inputs and results</h2>
+    <p>The provider connects NMR API jobs to two NMRPeak analysis offerings:</p>
     <ul>
-      <li><code>nmrpeak_hf_v1</code> generates structures from a molecular formula and proton NMR.</li>
-      <li><code>nmrpeak_chf_v1</code> generates structures from a molecular formula, carbon NMR, and proton NMR.</li>
+      <li><code>nmrpeak_hf_v1</code>: a molecular formula and a proton (<sup>1</sup>H) NMR peak list.</li>
+      <li><code>nmrpeak_chf_v1</code>: a molecular formula, a proton (<sup>1</sup>H) NMR peak list, and a carbon-13 (<sup>13</sup>C) NMR peak list.</li>
     </ul>
-    <p>When deployed, each offering runs its pinned source and reviewed checkpoint in a separate networkless container. The provider handles signed NMR API communication and durable recovery of interrupted API attempts.</p>
+    <p>Each proton peak needs a chemical shift or shift range, an integral, and a multiplicity; include coupling constants when reported. Each carbon peak needs a chemical shift. The provider uses a configured language-model service to interpret the job’s input text before running NMRPeak.</p>
+    <p>Results contain candidate structures represented as SMILES strings. They are model predictions; the provider does not establish the compound’s identity or report a confidence score.</p>
 
-    <h2>Running and verifying the provider</h2>
-    <p>Run <code>make help</code> in the repository for the authoritative command list, required inputs, effects, and operational boundaries. Do not infer current commands from the design note.</p>
-    <p>Clone with the pinned submodules and run the maintained verification lane:</p>
+    <h2>Check the software</h2>
+    <p>You need Git, Make, and Python 3.11 or later, including <code>venv</code> and <code>pip</code>. Clone the repository and its pinned dependencies, then prepare a Python environment:</p>
     <pre><code>git clone --recurse-submodules https://github.com/numpde/nmrpeak-repro.git
 cd nmrpeak-repro
-# Use a Python environment containing the dependencies in requirements.lock.
-make test</code></pre>
-    <p>The <code>make test</code> verification lane uses inert fixtures without network access, credentials, or checkpoints. It checks the provider and both runner protocols; it does not load released checkpoints or establish that a live deployment works.</p>
+python3 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements.lock
+make test PYTHON=.venv/bin/python</code></pre>
+    <p>Cloning and installing dependencies require network access. The tests do not require network access, API credentials, or model weights. They check provider behavior, communication with the model processes, and repository consistency using test fixtures and the pinned source. Passing them does not demonstrate model accuracy or a working deployment.</p>
+
+    <h2>Deploy the provider</h2>
+    <p>Deployment requires Docker with Compose, built provider and model images, installed model weights, an NMR API provider credential, and a configured OpenAI-compatible language-model endpoint for interpreting input text. The model processes run on CPU in separate containers without network access; the provider communicates with the API and the interpreter endpoint.</p>
+    <p>After cloning, run <code>make help</code> for checkpoint preparation, image builds, deployment setup, and start/stop commands, including their required arguments. The <a href="https://github.com/numpde/nmrpeak-repro/blob/main/Makefile">Makefile</a> also lists these commands online. The test commands above do not start a deployment.</p>
 
     <h2>Scientific references</h2>
     <ul>
       <li>Xu et al., <a href="https://arxiv.org/abs/2602.08752">NMRPeak: a ready-to-use intelligent system for molecular structure elucidation enabled by synergistic cross-modal learning</a> (2026). This repository pins the authors’ <a href="https://github.com/Colin-Jay/NMRPeak">official implementation</a>.</li>
-      <li>Wang et al., <a href="https://doi.org/10.1038/s41597-025-06245-5">NMRexp: A database of 3.3 million experimental NMR spectra</a>, <cite>Scientific Data</cite> 12, 1954 (2025). NMRPeak uses a curated subset of NMRexp together with simulated MST-NMR data. The NMRPeak paper describes the curation and splits.</li>
+      <li>Wang et al., <a href="https://doi.org/10.1038/s41597-025-06245-5">NMRexp: A database of 3.3 million experimental NMR spectra</a>, <cite>Scientific Data</cite> 12, 1954 (2025). The NMRPeak paper describes its experimental NMRexp and simulated MST-NMR datasets, including curation and training, validation, and test splits.</li>
     </ul>
-    <p>This deployment repository contains neither the training data nor the training pipeline.</p>
+    <p>This repository maintains the provider deployment. The pinned upstream implementation also includes training scripts; see the NMRPeak paper and upstream project for training and data preparation.</p>
 
-    <h2>Licensing</h2>
+    <h2 id="licensing">Licensing</h2>
     <p>Original code in this repository is licensed under Apache License 2.0. Third-party components retain their own licenses. The pinned NMRPeak source uses CC BY-NC-SA 4.0 and is restricted to non-commercial use; Uni-Core, the PyTorch model framework used by NMRPeak, uses the MIT License.</p>
     <p>The NMRPeak checkpoints are downloaded from <a href="https://zenodo.org/records/19122815">Zenodo record 19122815</a>, whose metadata identifies the deposit’s license as <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International</a>. This repository does not relicense those files.</p>
   </main>

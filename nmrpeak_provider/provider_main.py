@@ -43,7 +43,7 @@ _DISPLAY_NAME = "NMRPeak"
 _DESCRIPTION = (
     "Generates candidate molecular structures from molecular formula and NMR "
     "peak-list input. License, attribution, and source details: "
-    "https://github.com/numpde/nmrpeak-repro#license"
+    "https://numpde.github.io/nmrpeak-repro/#licensing"
 )
 _HELLO_FILES = ("hello/hf.txt", "hello/chf.txt")
 _FROZEN_FILES = {*_HELLO_FILES, "deployment/topology.json"}
