@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="NMRPeak deployment for the NMR API: molecular structure generation from a molecular formula and NMR spectra.">
+  <title>nmrpeak-repro — NMRPeak for the NMR API</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { max-width: 48rem; margin: 0 auto; padding: 2rem 1.25rem; font: 1.1rem/1.6 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.2; }
+    h2 { margin-top: 2rem; }
+    a { color: light-dark(#174ea6, #9fc5ff); }
+    code { font-size: 0.9em; overflow-wrap: anywhere; }
+    li + li { margin-top: 0.75rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>nmrpeak-repro</h1>
+    <p>A deployment repository for an NMRPeak provider that generates molecular structures through the NMR API.</p>
+    <p><a href="https://github.com/numpde/nmrpeak-repro">Source code and operator instructions</a></p>
+
+    <h2>Analysis offerings</h2>
+    <ul>
+      <li><code>nmrpeak_hf_v1</code> generates structures from a molecular formula and proton NMR.</li>
+      <li><code>nmrpeak_chf_v1</code> generates structures from a molecular formula, carbon NMR, and proton NMR.</li>
+    </ul>
+    <p>When deployed, each offering runs its pinned source and reviewed checkpoint in a separate networkless container. The provider handles signed NMR API communication and durable recovery of interrupted API attempts.</p>
+
+    <h2>Running and verifying the provider</h2>
+    <p>Start with the <a href="https://github.com/numpde/nmrpeak-repro#operator-map">README</a> and run <code>make help</code> in the repository for the maintained command list, required inputs, and operational boundaries.</p>
+    <p>The <code>make test</code> verification lane uses inert fixtures without network access, credentials, or checkpoints. It checks the provider and both runner protocols; it does not load released checkpoints or establish that a live deployment works.</p>
+
+    <h2>Scientific references</h2>
+    <ul>
+      <li>Xu et al., <a href="https://arxiv.org/abs/2602.08752">NMRPeak: a ready-to-use intelligent system for molecular structure elucidation enabled by synergistic cross-modal learning</a> (2026). This repository pins the authors’ <a href="https://github.com/Colin-Jay/NMRPeak">official implementation</a>.</li>
+      <li>Wang et al., <a href="https://doi.org/10.1038/s41597-025-06245-5">NMRexp: A database of 3.3 million experimental NMR spectra</a>, <cite>Scientific Data</cite> 12, 1954 (2025). NMRPeak uses a curated subset of NMRexp together with simulated MST-NMR data. The NMRPeak paper describes the curation and splits.</li>
+    </ul>
+    <p>This deployment repository contains neither the training data nor the training pipeline.</p>
+
+    <h2>Licensing</h2>
+    <p>Original code in this repository is licensed under Apache License 2.0. Third-party components retain their own licenses. The pinned NMRPeak source uses CC BY-NC-SA 4.0 and is restricted to non-commercial use; Uni-Core uses the MIT License. See the <a href="https://github.com/numpde/nmrpeak-repro#license">README’s license section</a> for checkpoint licensing and source links.</p>
+  </main>
+</body>
+</html>
