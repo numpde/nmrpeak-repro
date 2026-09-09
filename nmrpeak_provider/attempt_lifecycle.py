@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from hashlib import sha256
 import math
+import logging
+import time
 from threading import Event, Thread
 from typing import TYPE_CHECKING
 
@@ -106,6 +108,7 @@ if TYPE_CHECKING:
     from .input_interpreter import InputInterpreter
 
 
+_LOG = logging.getLogger(__name__)
 _FEED_PAGE_LIMIT = 50
 _INTERRUPTED_FAILURE_MESSAGE = (
     "The provider process was interrupted before this execution completed."
@@ -412,6 +415,11 @@ def admit_next_job(
     if selected_job is None:
         return PageExhausted(page.next_cursor)
 
+    _LOG.info(
+        'Reading selected job input; job=%s analysis=%s',
+        selected_job.job_ref,
+        lane.offering.analysis_kind_ref,
+    )
     input_request = prepare_job_input_read(
         job_ref=selected_job.job_ref,
         analysis_kind_ref=lane.offering.analysis_kind_ref,
@@ -440,6 +448,11 @@ def admit_next_job(
         frozen_generation_id=frozen_generation_id,
     )
     journal.admit(record)
+    _LOG.info(
+        "Job admitted to journal; job=%s attempt_key=%s analysis=%s input=%r",
+        record.job_ref, record.provider_attempt_key, lane.offering.analysis_kind_ref,
+        job_input.canonical_input.decode("utf-8"),
+    )
     return JobAdmitted(record=record, canonical_input=job_input.canonical_input)
 
 
@@ -589,6 +602,11 @@ def start_attempt(
         raise TypeError("NMRPeak start requires a durable pending-start record")
     _require_generation(lane, record, generation, frozen_generation_id)
 
+    _LOG.info(
+        'Sending attempt start; job=%s attempt_key=%s',
+        record.job_ref,
+        record.provider_attempt_key,
+    )
     prepared = prepare_execution_attempt_start(
         job_ref=record.job_ref,
         provider_attempt_key=record.provider_attempt_key,
@@ -602,6 +620,11 @@ def start_attempt(
     if type(outcome) is not AttemptMutationCommitted:
         return outcome
     receipt = outcome.receipt
+    _LOG.info(
+        "API accepted attempt start; job=%s attempt=%s state=%s started_at=%s replayed=%s",
+        record.job_ref, receipt.execution_attempt_ref, receipt.state.value,
+        receipt.started_at, receipt.replayed,
+    )
     if receipt.state is AttemptState.IN_PROGRESS:
         active = bind_started_attempt(record, receipt)
         journal.replace(record, active)
@@ -636,6 +659,11 @@ def prepare_execution(
     except InputRejected:
         model_input = None
 
+    _LOG.info(
+        'Reporting preparing phase; job=%s attempt=%s',
+        record.job_ref,
+        record.execution_attempt_ref,
+    )
     progress = prepare_execution_attempt_progress(
         execution_attempt_ref=record.execution_attempt_ref,
         phase="preparing",
@@ -648,6 +676,11 @@ def prepare_execution(
     if type(progress_outcome) is not AttemptMutationCommitted:
         return progress_outcome
 
+    _LOG.info(
+        "Preparing input; job=%s attempt=%s source=%s",
+        record.job_ref, record.execution_attempt_ref,
+        "structured input" if model_input is not None else "freeform interpretation",
+    )
     if model_input is not None:
         validated = session.validate(
             execution_attempt_ref=record.execution_attempt_ref,
@@ -673,6 +706,11 @@ def prepare_execution(
             return _retain_input_rejection(journal, record, rejection.message)
         except InterpreterUnavailable as unavailable:
             return InputInterpretationUnavailable(unavailable)
+    _LOG.info(
+        'Runner input validated; job=%s attempt=%s',
+        record.job_ref,
+        record.execution_attempt_ref,
+    )
     return PreparedForExecution(record, validated)
 
 
@@ -719,6 +757,11 @@ def execute_prepared(
     if record.local_phase is not LocalExecutionPhase.PRE_EXECUTION:
         raise ValueError("NMRPeak execution requires a pre-execution Attempt")
 
+    _LOG.info(
+        'Reporting running phase; job=%s attempt=%s',
+        record.job_ref,
+        record.execution_attempt_ref,
+    )
     running = prepare_execution_attempt_progress(
         execution_attempt_ref=record.execution_attempt_ref,
         phase="running",
@@ -755,7 +798,13 @@ def execute_prepared(
         args=(session, prepared.request),
         name="nmrpeak-generation",
     )
+    started_at = time.monotonic()
     worker.start()
+    _LOG.info(
+        'Generation worker started; job=%s attempt=%s',
+        record.job_ref,
+        record.execution_attempt_ref,
+    )
     try:
         while not work.done.is_set():
             current = observe_attempt(api=api, record=entered)
@@ -779,8 +828,19 @@ def execute_prepared(
             raise AssertionError(
                 "NMRPeak generation finished without candidates or an error"
             )
+        _LOG.info(
+            'Generation returned candidates; job=%s attempt=%s elapsed_seconds=%.3f; awaiting '
+            'result validation and API delivery',
+            record.job_ref,
+            record.execution_attempt_ref,
+            time.monotonic() - started_at,
+        )
         return CandidatesGenerated(entered, work.candidates, session)
     except BaseException as error:
+        error.add_note(
+            f"During NMRPeak generation for job {record.job_ref}, "
+            f"attempt {record.execution_attempt_ref}."
+        )
         if worker.is_alive():
             try:
                 _cancel_and_join_generation(session, worker, observation)
@@ -827,6 +887,10 @@ def select_completion(
     )
     terminal = retain_terminal_command(record, prepared)
     journal.replace(record, terminal)
+    _LOG.info(
+        "Completion retained for API delivery; job=%s attempt=%s result=%r",
+        record.job_ref, record.execution_attempt_ref, result.decode("utf-8"),
+    )
     return CompletionPending(terminal)
 
 
@@ -840,6 +904,12 @@ def deliver_terminal(
 
     if type(record) is not TerminalPending:
         raise TypeError("NMRPeak terminal delivery requires a retained command")
+    _LOG.info(
+        'Sending retained %s command; job=%s attempt=%s',
+        record.terminal_operation.value,
+        record.job_ref,
+        record.execution_attempt_ref,
+    )
     prepared = prepared_terminal_replay(record)
     sent = api.send(prepared)
     outcome = (
@@ -849,8 +919,25 @@ def deliver_terminal(
     )
     if type(outcome) is not AttemptMutationCommitted:
         return outcome
+    receipt = outcome.receipt
+    _LOG.info(
+        "API confirmed %s; job=%s attempt=%s committed_at=%s replayed=%s",
+        record.terminal_operation.value, record.job_ref, record.execution_attempt_ref,
+        receipt.committed_at, receipt.replayed,
+    )
+    if type(receipt) is ExecutionAttemptCompleted:
+        _LOG.info(
+            'Analysis result published; job=%s result=%s',
+            record.job_ref,
+            receipt.analysis_result_ref,
+        )
     journal.retire(record)
-    return TerminalDelivered(outcome.receipt)
+    _LOG.info(
+        'Attempt journal record retired; job=%s attempt=%s',
+        record.job_ref,
+        record.execution_attempt_ref,
+    )
+    return TerminalDelivered(receipt)
 
 
 def reconcile_record(
@@ -864,6 +951,12 @@ def reconcile_record(
 
     if type(record) not in {StartPending, ActiveAttempt, TerminalPending}:
         raise TypeError("NMRPeak recovery requires an exact journal record")
+    _LOG.debug(
+        'Reconciling retained attempt; job=%s attempt_key=%s local_record=%s',
+        record.job_ref,
+        record.provider_attempt_key,
+        type(record).__name__,
+    )
     if type(record) is StartPending:
         if record.frozen_generation_id != runtime.frozen_generation_id:
             raise GenerationRuntimeRejected(
@@ -895,6 +988,12 @@ def reconcile_record(
             resolved = runtime.resolve(record)
             return _recover_input(resolved.lane, api, decision.record)
     if type(decision) is PublishInterruptedFailure:
+        _LOG.warning(
+            'Execution cannot resume after interruption; retaining failure for API delivery; '
+            'job=%s attempt=%s',
+            record.job_ref,
+            record.execution_attempt_ref,
+        )
         prepared = prepare_execution_attempt_fail(
             execution_attempt_ref=decision.record.execution_attempt_ref,
             failure_code=decision.failure_code,
@@ -912,6 +1011,12 @@ def reconcile_record(
             record=decision.record,
         )
     if type(decision) is RetireResolved:
+        _LOG.info(
+            'API resolved retained attempt; job=%s attempt=%s state=%s',
+            record.job_ref,
+            record.execution_attempt_ref,
+            observed.snapshot.state.value,
+        )
         journal.retire(decision.record)
         return RecoveryResolved(decision.record, observed.snapshot)
     raise AssertionError("NMRPeak recovery received an unsupported restart action")
@@ -944,8 +1049,22 @@ def _stopped_execution_outcome(
     observation: AttemptObservation,
 ) -> ExecutionCutOff | ExecutionResolved | ObservationLost:
     if type(observation) is AttemptObservationFailed:
+        _LOG.warning(
+            'Generation stopped because API observation was lost; job=%s attempt=%s evidence=%r; '
+            'journal retained for reconciliation',
+            record.job_ref,
+            record.execution_attempt_ref,
+            observation.evidence,
+        )
         return ObservationLost(record, observation.evidence)
     snapshot = observation.snapshot
+    _LOG.info(
+        'Generation stopped on API state; job=%s attempt=%s attempt_state=%s job_state=%s',
+        record.job_ref,
+        record.execution_attempt_ref,
+        snapshot.state.value,
+        snapshot.job_state.value,
+    )
     if snapshot.state is not AttemptState.IN_PROGRESS:
         journal.retire(record)
         return ExecutionResolved(snapshot)
@@ -999,6 +1118,12 @@ def _retain_input_rejection(
     )
     terminal = retain_terminal_command(record, prepared)
     journal.replace(record, terminal)
+    _LOG.info(
+        'Input rejected; failure retained for API delivery; job=%s attempt=%s reason=%r',
+        record.job_ref,
+        record.execution_attempt_ref,
+        message,
+    )
     return InputFailurePending(terminal)
 
 

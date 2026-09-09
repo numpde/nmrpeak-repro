@@ -20,15 +20,16 @@ import sys
 from collections.abc import Sequence
 
 from nmrpeak_provider.owner_session_endpoint import open_owner_session_directory
+from nmrpeak_provider.process_logging import configure_process_logging
 
 
 _SUPERVISOR_LOCK_NAME = ".owner-session.lock"
 _OWNER_SESSION_LOST_STATUS = 72
+
 _LOGGER = logging.getLogger("nmrpeak_runner.supervisor")
 # Pure function tests import this module without adopting its process logging
 # policy. The executable main configures the root sink explicitly below.
 _LOGGER.addHandler(logging.NullHandler())
-_LOG_FORMAT = "%(levelname)s %(name)s %(message)s"
 
 
 class OwnerSessionLost(RuntimeError):
@@ -380,7 +381,7 @@ def _validated_worker_argv(worker_argv: Sequence[str]) -> tuple[str, ...]:
 
 def main(socket_path: str, argv: Sequence[str] | None = None) -> int:
     """Run the fence as the container's small pre-model process."""
-    _configure_logging()
+    configure_process_logging()
     arguments = tuple(sys.argv[1:] if argv is None else argv)
     if len(arguments) < 4 or arguments[2] != "--":
         raise SystemExit(
@@ -417,12 +418,8 @@ def main(socket_path: str, argv: Sequence[str] | None = None) -> int:
     except WorkerTerminationTimeout as error:
         _LOGGER.error("event=worker_termination_timed_out detail=%r", str(error))
         return 1
-    except Exception as error:
-        _LOGGER.error(
-            "event=supervisor_failed error_type=%s detail=%r",
-            type(error).__name__,
-            str(error),
-        )
+    except Exception:
+        _LOGGER.exception("event=supervisor_failed")
         return 1
     finally:
         for signal_number, handler in previous_handlers.items():
@@ -436,11 +433,3 @@ def _record_shutdown_signal(_signal_number: int, _frame: object) -> None:
     # signal.set_wakeup_fd writes the signal number into the supervisor pipe.
     # The handler must not perform lifecycle work asynchronously.
     pass
-
-
-def _configure_logging() -> None:
-    """Expose runner-owned INFO while leaving dependency verbosity at WARNING."""
-
-    logging.basicConfig(level=logging.WARNING, format=_LOG_FORMAT, force=True)
-    runner_logger = logging.getLogger("nmrpeak_runner")
-    runner_logger.setLevel(logging.INFO)

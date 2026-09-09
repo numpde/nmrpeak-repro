@@ -67,6 +67,11 @@ class InputInterpreter:
         """Interpret prose and return the runner capability that admitted it."""
 
         source_text = _admit_source_text(source)
+        _LOG.info(
+            'Interpreting input text; attempt=%s endpoints=%d',
+            execution_attempt_ref,
+            len(self.endpoint_specs),
+        )
         return asyncio.run(
             self._validate_freeform_input(
                 source_text=source_text,
@@ -98,7 +103,17 @@ class InputInterpreter:
                 model_input=runner_input,
             )
             if type(outcome) is RunnerInputRejected:
+                _LOG.info(
+                    'Interpretation rejected by runner; attempt=%s reason=%r',
+                    execution_attempt_ref,
+                    outcome.message,
+                )
                 raise InterpretationCandidateRejected(outcome.message)
+            _LOG.info(
+                'Interpretation validated by runner; attempt=%s input=%r',
+                execution_attempt_ref,
+                runner_input.wire_document(),
+            )
             return outcome
 
         def report_endpoint_failure(event: InterpreterEndpointFailed) -> None:
@@ -139,9 +154,10 @@ class InputInterpreter:
             finally:
                 await endpoints.join_response_releases()
         _LOG.info(
-            "Interpreter accepted endpoint %s after route %s",
+            "Interpreter accepted endpoint %s after route %s; attempt=%s",
             result.configuration_id,
             ",".join(result.attempted_configuration_ids),
+            execution_attempt_ref,
         )
         return result.admitted
 

@@ -6,6 +6,9 @@ from contextlib import redirect_stderr
 from io import StringIO
 from types import SimpleNamespace
 import signal
+import logging
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -47,6 +50,45 @@ class FakeJournal:
 
 
 class ProviderMainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        root = logging.getLogger()
+        handlers = root.handlers[:]
+        names = ("", "nmrpeak_provider", "nmrpeak_runner")
+        levels = {name: logging.getLogger(name).level for name in names}
+
+        def restore_logging() -> None:
+            for handler in root.handlers[:]:
+                if handler not in handlers:
+                    root.removeHandler(handler)
+                    handler.close()
+            root.handlers[:] = handlers
+            for name, level in levels.items():
+                logging.getLogger(name).setLevel(level)
+
+        self.addCleanup(restore_logging)
+
+    def test_entrypoint_exposes_application_info_with_utc_timestamps(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", """
+import logging
+from unittest.mock import patch
+from nmrpeak_provider.provider_main import main
+def run():
+    logging.getLogger('nmrpeak_provider.provider_process').info('Hello receipt visible')
+    logging.getLogger('nmrpeak_runner.worker').info('Runner progress visible')
+    logging.getLogger('httpx').info('Dependency chatter')
+with patch('nmrpeak_provider.provider_main.run_provider', run):
+    raise SystemExit(main())
+"""],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout, "")
+        self.assertRegex(result.stderr, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z INFO")
+        self.assertIn("Hello receipt visible", result.stderr)
+        self.assertIn("Runner progress visible", result.stderr)
+        self.assertIn("Provider stopped", result.stderr)
+        self.assertNotIn("Dependency chatter", result.stderr)
+
     def test_main_renders_process_effect_cause_and_cleanup_note(self) -> None:
         cause = RuntimeError(
             "Cannot read the Job feed: the HTTP 403 problem response failed validation."

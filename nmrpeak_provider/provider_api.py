@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from secrets import token_bytes
 from time import time
 
@@ -20,6 +21,9 @@ from .provider_requests import (
 from .provider_signing import validate_provider_credential_ref
 
 
+_LOG = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderApiClient:
     """The authenticated transport authority for one provider credential."""
@@ -34,6 +38,7 @@ class ProviderApiClient:
         if not isinstance(self.private_key, Ed25519PrivateKey):
             raise TypeError("Provider API client requires an Ed25519 private key")
         validate_provider_credential_ref(self.credential_ref)
+        _LOG.info("API client configured; origin=%s", self.endpoint.origin)
 
     def send(self, prepared: _PreparedProviderRequest) -> ProviderHttpsOutcome:
         """Sign and send one operation with a fresh timestamp and nonce."""

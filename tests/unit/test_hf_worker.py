@@ -39,6 +39,7 @@ class HfWorkerTests(unittest.TestCase):
         )
 
         with (
+            self.assertLogs("nmrpeak_runner.worker", level="INFO") as logs,
             patch.object(
                 worker,
                 "open_verified_checkpoint",
@@ -63,6 +64,9 @@ class HfWorkerTests(unittest.TestCase):
             )
 
         self.assertEqual(0, result)
+        self.assertIn("Loading model", logs.output[0])
+        self.assertIn(CHECKPOINT_REF, logs.output[0])
+        self.assertIn("Model loaded on CPU", logs.output[1])
         open_checkpoint.assert_called_once_with(CHECKPOINT_REF)
         load_runtime.assert_called_once_with(checkpoint)
         serve.assert_called_once_with(

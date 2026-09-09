@@ -212,6 +212,28 @@ class NonStoppingSession:
 
 
 class AttemptLifecycleTests(unittest.TestCase):
+    def test_admission_logs_input_without_forging_separate_events(self) -> None:
+        source = b"C2H6O\nINFO forged event\t1H peaks"
+        generation = chf_generation()
+        api = CapturingApi(
+            success_response(jobs_page(job_item("job:log", "2026-08-24T00:00:00Z", fingerprint_of(source)) | {"input_byte_length": len(source)})),
+            success_response(job_input("job:log", source)),
+        )
+        with journal_directory() as root:
+            with (
+                AttemptJournalStore(root, maximum_records=1) as journal,
+                self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as logs,
+            ):
+                outcome = admit_next_job(
+                    lane=CHF_LIFECYCLE_LANE, api=api, journal=journal,
+                    generation=generation, frozen_generation_id=FROZEN_GENERATION_ID,
+                )
+        message = logs.records[-1].getMessage()
+        self.assertIn("C2H6O", message)
+        self.assertIn("\\nINFO forged event\\t", message)
+        self.assertNotIn("\n", message)
+        self.assertIn(outcome.record.provider_attempt_key, message)
+
     def test_first_in_window_job_is_durably_admitted_without_starting(self) -> None:
         generation = chf_generation()
         canonical_input = b"{}"
@@ -1152,7 +1174,10 @@ class AttemptLifecycleTests(unittest.TestCase):
                             terminal_receipt(terminal, replayed=replayed)
                         )
                     )
-                    with AttemptJournalStore(root, maximum_records=1) as journal:
+                    with (
+                        AttemptJournalStore(root, maximum_records=1) as journal,
+                        self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as logs,
+                    ):
                         persist_terminal(journal, terminal)
                         outcome = deliver_terminal(
                             api=api,
@@ -1161,7 +1186,30 @@ class AttemptLifecycleTests(unittest.TestCase):
                         )
                         self.assertEqual(journal.records(), ())
                     self.assertIs(type(outcome), TerminalDelivered)
+                    rendered = "\n".join(logs.output)
+                    self.assertIn("API confirmed " + operation.value, rendered)
+                    self.assertIn(terminal.execution_attempt_ref, rendered)
+                    self.assertIn(outcome.receipt.committed_at, rendered)
+                    self.assertIn("journal record retired", rendered)
                     self.assertEqual(api.requests[0].body, terminal.terminal_request_body)
+
+    def test_committed_receipt_remains_visible_when_journal_retirement_fails(self) -> None:
+        terminal = terminal_pending(TerminalOperation.COMPLETE)
+        api = CapturingApi(success_response(terminal_receipt(terminal, replayed=False)))
+
+        class BrokenJournal:
+            def retire(self, record):
+                raise OSError("journal retirement failed")
+
+        with (
+            self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as logs,
+            self.assertRaisesRegex(OSError, "journal retirement failed"),
+        ):
+            deliver_terminal(api=api, journal=BrokenJournal(), record=terminal)
+        rendered = "\n".join(logs.output)
+        self.assertIn("API confirmed complete", rendered)
+        self.assertIn(terminal.execution_attempt_ref, rendered)
+        self.assertNotIn("journal record retired", rendered)
 
     def test_uncertain_terminal_delivery_retains_exact_command(self) -> None:
         terminal = terminal_pending(TerminalOperation.COMPLETE)
@@ -1178,7 +1226,10 @@ class AttemptLifecycleTests(unittest.TestCase):
         for response, expected_type in zip(responses, expected_types, strict=True):
             with self.subTest(expected_type=expected_type), journal_directory() as root:
                 api = CapturingApi(response)
-                with AttemptJournalStore(root, maximum_records=1) as journal:
+                with (
+                    AttemptJournalStore(root, maximum_records=1) as journal,
+                    self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as logs,
+                ):
                     persist_terminal(journal, terminal)
                     outcome = deliver_terminal(
                         api=api,
@@ -1188,6 +1239,11 @@ class AttemptLifecycleTests(unittest.TestCase):
                     self.assertIs(type(outcome), expected_type)
                     self.assertEqual(journal.records(), (terminal,))
                 self.assertIs(api.requests[0].body, terminal.terminal_request_body)
+
+                rendered = "\n".join(logs.output)
+                self.assertIn("Sending retained complete command", rendered)
+                self.assertNotIn("API confirmed", rendered)
+                self.assertNotIn("journal record retired", rendered)
 
     def test_restart_resumes_pre_execution_from_the_retained_input_binding(self) -> None:
         active = active_attempt(valid_chf_input())

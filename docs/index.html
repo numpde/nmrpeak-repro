@@ -44,6 +44,11 @@ make test PYTHON=.venv/bin/python</code></pre>
     <p>Deployment requires Docker with Compose, built provider and model images, installed model weights, an NMR API provider credential, and a configured OpenAI-compatible language-model endpoint for interpreting input text. The model processes run on CPU in separate containers without network access; the provider communicates with the API and the interpreter endpoint.</p>
     <p>After cloning, run <code>make help</code> for checkpoint preparation, image builds, deployment setup, and start/stop commands, including their required arguments. The <a href="https://github.com/numpde/nmrpeak-repro/blob/main/Makefile">Makefile</a> also lists these commands online. The test commands above do not start a deployment.</p>
 
+    <h2>Monitor the deployment</h2>
+    <p>Run <code>make provider/logs DEPLOYMENT=&lt;name&gt;</code> to follow provider logs. Use <code>make provider/deployment/status DEPLOYMENT=&lt;name&gt;</code> to find the runner containers, then <code>docker logs &lt;container&gt;</code> to read their logs.</p>
+    <p>Application logs include UTC timestamps, startup and model readiness, accepted hellos, job and attempt identifiers, input text, interpreted input, generated results, and API delivery outcomes. A <code>Provider Hello accepted</code> entry records the API’s acceptance time. Locally generated or retained results are reported separately from API-confirmed completion. Credentials and signing material are not logged.</p>
+    <p>Temporary failures report the reason and next retry delay, with backoff capped at five minutes. Recovery waits report periodically; empty job polls remain quiet. Docker retains up to three 10 MB log files per container. Container health reflects startup readiness; check hello acceptance times for recent API acknowledgement.</p>
+
     <h2>Scientific references</h2>
     <ul>
       <li>Xu et al., <a href="https://arxiv.org/abs/2602.08752">NMRPeak: a ready-to-use intelligent system for molecular structure elucidation enabled by synergistic cross-modal learning</a> (2026). This repository pins the authors’ <a href="https://github.com/Colin-Jay/NMRPeak">official implementation</a>.</li>

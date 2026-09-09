@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import time
+
 from typing import Generic, Protocol, TypeVar
 
 from nmrpeak_provider.canonical_json import JsonValue
@@ -19,6 +22,9 @@ from nmrpeak_provider.runner_protocol import (
 )
 
 from .runner_runtime import NmrpeakRuntimeInputRejected
+
+
+_LOG = logging.getLogger("nmrpeak_runner.worker")
 
 
 ModelInput = TypeVar("ModelInput", bound=RunnerModelInput)
@@ -49,6 +55,12 @@ def serve_loaded_nmrpeak_runtime(
     """Publish READY and serve one validated request at a time until RETIRE."""
 
     connection.sendall(codec.encode(ready))
+    _LOG.info(
+        'Runner ready; runner=%s boot=%s checkpoint=%s',
+        ready.runner_ref,
+        ready.boot_generation,
+        ready.release_sha256,
+    )
     pending: ValidateFrame[ModelInput] | None = None
     while True:
         command = codec.receive(connection)
@@ -57,9 +69,15 @@ def serve_loaded_nmrpeak_runtime(
                 raise RunnerProtocolError(
                     "Cannot validate NMRPeak input: another request is already validated"
                 )
+            _LOG.info("Validating input; attempt=%s", command.correlation.attempt_ref)
             try:
                 runtime.validate(command.model_input)
             except NmrpeakRuntimeInputRejected as rejection:
+                _LOG.info(
+                    'Input rejected; attempt=%s reason=%r',
+                    command.correlation.attempt_ref,
+                    str(rejection),
+                )
                 connection.sendall(
                     codec.encode(
                         RejectedFrame(command.correlation, str(rejection))
@@ -74,9 +92,16 @@ def serve_loaded_nmrpeak_runtime(
                 raise RunnerProtocolError(
                     "Cannot generate NMRPeak candidates: no matching input is validated"
                 )
+            _LOG.info("Model generation began; attempt=%s", command.correlation.attempt_ref)
+            started_at = time.monotonic()
             candidates = runtime.generate(pending.model_input)
             connection.sendall(
                 codec.encode(ResultFrame(command.correlation, candidates))
+            )
+            _LOG.info(
+                'Model result sent to provider; attempt=%s elapsed_seconds=%.3f',
+                command.correlation.attempt_ref,
+                time.monotonic() - started_at,
             )
             pending = None
             continue
@@ -85,6 +110,7 @@ def serve_loaded_nmrpeak_runtime(
                 raise RunnerProtocolError(
                     "Cannot retire NMRPeak worker: boot is wrong or a request is pending"
                 )
+            _LOG.info("Runner retired; boot=%s", ready.boot_generation)
             return 0
         raise RunnerProtocolError(
             "Cannot serve NMRPeak worker: provider sent a response-only frame"

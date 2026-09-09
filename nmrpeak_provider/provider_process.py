@@ -15,7 +15,7 @@ from .attempt_inventory import (
     read_attempt_inventory,
     validate_startup_inventory,
 )
-from .attempt_journal import AttemptJournalRecord
+from .attempt_journal import AttemptJournalRecord, ObserveUntilExpiry, RetainTerminalConflict
 from .attempt_journal_store import (
     AttemptJournalAdmissionRejected,
     AttemptJournalStore,
@@ -257,6 +257,11 @@ def run_provider_process(
         coordination_error: BaseException | None = None
         try:
             on_ready()
+            _LOG.info(
+                'Provider ready; provider=%s hello_interval_seconds=%s',
+                provider_ref,
+                policy.hello_interval_seconds,
+            )
         except BaseException as error:
             coordination_error = error
             stop.set()
@@ -283,21 +288,25 @@ def run_provider_process(
                         time.monotonic() + policy.hello_interval_seconds
                     )
                 else:
-                    if not hello_outage_active:
-                        _LOG.warning(
-                            "Provider Hello is unavailable; retrying: %s",
-                            _remote_evidence_message(hello_failure),
-                        )
+                    _LOG.warning(
+                        "Provider Hello is unavailable; retrying in %s seconds: %r",
+                        hello_retry_seconds, _remote_evidence_message(hello_failure),
+                    )
                     hello_outage_active = True
                     next_hello_at = time.monotonic() + hello_retry_seconds
                     hello_retry_seconds = _next_retry_delay(hello_retry_seconds)
         if finished.is_set() and not stop.is_set():
             stop.set()
 
+        _LOG.info(
+            'Provider shutdown began; draining lane work for up to %s seconds',
+            policy.shutdown_drain_seconds,
+        )
         _join_threads(threads, policy.shutdown_drain_seconds)
         live = tuple(thread for thread in threads if thread.is_alive())
         cancellation_errors: list[RunnerSessionRetired] = []
         if live:
+            _LOG.warning("Provider drain deadline reached; cancelling %d live lane(s)", len(live))
             for owner in owners:
                 try:
                     owner.session.cancel()
@@ -387,6 +396,11 @@ def _publish_hello(
             expected_provider_ref=provider_ref,
         )
         if type(receipt) is ProviderHelloAccepted:
+            _LOG.info(
+                'Provider Hello accepted; provider=%s accepted_at=%s',
+                receipt.provider_ref,
+                receipt.accepted_at,
+            )
             return None
         if type(receipt) is ProviderSuccessRejected:
             return receipt
@@ -414,12 +428,11 @@ def _await_initial_hello(
             if outage_active:
                 _LOG.info("Initial provider Hello recovered")
             return
-        if not outage_active:
-            _LOG.warning(
-                "Initial provider Hello is unavailable; retrying: %s",
-                _remote_evidence_message(failure),
-            )
-            outage_active = True
+        _LOG.warning(
+            "Initial provider Hello is unavailable; retrying in %s seconds: %r",
+            delay, _remote_evidence_message(failure),
+        )
+        outage_active = True
         if stop.wait(delay):
             return
         delay = _next_retry_delay(delay)
@@ -436,6 +449,7 @@ def _recover_startup(
     stop: Event,
 ) -> None:
     records = journal.records()
+    _LOG.info("Startup recovery began; retained_attempts=%d", len(records))
     delay = _initial_retry_delay(policy.feed_interval_seconds)
     outage_active = False
     while not stop.is_set():
@@ -459,12 +473,11 @@ def _recover_startup(
             if outage_active:
                 _LOG.info("Startup Attempt inventory recovered")
             break
-        if not outage_active:
-            _LOG.warning(
-                "Startup Attempt inventory is unavailable; retrying: %s",
-                _remote_evidence_message(failure),
-            )
-            outage_active = True
+        _LOG.warning(
+            "Startup Attempt inventory is unavailable; retrying in %s seconds: %r",
+            delay, _remote_evidence_message(failure),
+        )
+        outage_active = True
         if stop.wait(delay):
             return
         delay = _next_retry_delay(delay)
@@ -492,10 +505,11 @@ def _recover_startup(
             )
             failure = _remote_failure_evidence(outcome)
             if failure is None:
+                _log_recovery_wait(outcome)
                 if outage_active:
                     _LOG.info(
                         "Startup recovery for %s recovered",
-                        current.execution_attempt_ref,
+                        current.provider_attempt_key,
                     )
                 break
             retained = tuple(
@@ -508,16 +522,18 @@ def _recover_startup(
                     "Unavailable recovery outcome lost its durable Attempt record"
                 )
             current = retained[0]
-            if not outage_active:
-                _LOG.warning(
-                    "Startup recovery for %s is unavailable; retrying: %s",
-                    current.execution_attempt_ref,
-                    _remote_evidence_message(failure),
-                )
-                outage_active = True
+            _LOG.warning(
+                "Startup recovery is unavailable; job=%s attempt_key=%s retry_seconds=%s: %r",
+                current.job_ref, current.provider_attempt_key,
+                delay, _remote_evidence_message(failure),
+            )
+            outage_active = True
             if stop.wait(delay):
                 return
             delay = _next_retry_delay(delay)
+
+    if not stop.is_set():
+        _LOG.info("Startup recovery pass completed")
 
 
 def _run_lane(
@@ -531,6 +547,7 @@ def _run_lane(
     owner: _LaneOwner,
 ) -> None:
     cursor: str | None = None
+    next_wait_report_at = 0.0
     retry_delay = _initial_retry_delay(policy.feed_interval_seconds)
     outage_active = False
     primary_error: BaseException | None = None
@@ -543,6 +560,7 @@ def _run_lane(
                 if runtime.resolve(record) is owner.generation
             )
             if records:
+                report_waits = time.monotonic() >= next_wait_report_at
                 for record in records:
                     if stop.is_set():
                         break
@@ -555,10 +573,14 @@ def _run_lane(
                         record=record,
                         observation=policy.observation,
                     )
+                    if report_waits and type(outcome) in {ObserveUntilExpiry, RetainTerminalConflict}:
+                        _log_recovery_wait(outcome)
+                        next_wait_report_at = time.monotonic() + _MAX_REMOTE_RETRY_SECONDS
                     failure = _remote_failure_evidence(outcome)
                     if failure is not None:
                         break
             else:
+                next_wait_report_at = 0.0
                 try:
                     admitted = admit_next_job(
                         lane=owner.generation.lane,
@@ -568,8 +590,16 @@ def _run_lane(
                         frozen_generation_id=runtime.frozen_generation_id,
                         cursor=cursor,
                     )
-                except AttemptJournalAdmissionRejected:
-                    admitted = None
+                except AttemptJournalAdmissionRejected as error:
+                    _LOG.warning(
+                        "Job admission deferred; lane=%s retry_seconds=%s: %r",
+                        owner.generation.lane.offering.implementation_ref,
+                        retry_delay, error,
+                    )
+                    if stop.wait(retry_delay):
+                        break
+                    retry_delay = _next_retry_delay(retry_delay)
+                    continue
                 if type(admitted) is JobAdmitted:
                     cursor = None
                     outcome = run_admitted_job(
@@ -593,13 +623,12 @@ def _run_lane(
                     "before restarting the provider."
                 )
             if failure is not None:
-                if not outage_active:
-                    _LOG.warning(
-                        "%s provider lane is unavailable; retrying: %s",
-                        owner.generation.lane.offering.implementation_ref,
-                        _remote_evidence_message(failure),
-                    )
-                    outage_active = True
+                _LOG.warning(
+                    "%s provider lane is unavailable; retrying in %s seconds: %r",
+                    owner.generation.lane.offering.implementation_ref,
+                    retry_delay, _remote_evidence_message(failure),
+                )
+                outage_active = True
                 if stop.wait(retry_delay):
                     break
                 retry_delay = _next_retry_delay(retry_delay)
@@ -626,6 +655,22 @@ def _run_lane(
             )
 
 
+def _log_recovery_wait(outcome: object) -> None:
+    if type(outcome) is ObserveUntilExpiry:
+        _LOG.info(
+            "Recovery is waiting for API attempt expiry after the job closed; "
+            "job=%s attempt=%s; journal retained",
+            outcome.record.job_ref, outcome.record.execution_attempt_ref,
+        )
+    elif type(outcome) is RetainTerminalConflict:
+        _LOG.warning(
+            "API terminal state conflicts with the retained command; "
+            "job=%s attempt=%s command=%s; journal retained for investigation",
+            outcome.record.job_ref, outcome.record.execution_attempt_ref,
+            outcome.record.terminal_operation.value,
+        )
+
+
 def _owner_for_record(
     runtime: GenerationRuntime,
     owners: tuple[_LaneOwner, _LaneOwner],
@@ -647,19 +692,23 @@ def _remote_failure_evidence(outcome: object) -> object | None:
 
 
 def _outcome_evidence(outcome: object) -> object | None:
+    if type(outcome) in {AttemptMutationCommitPossible, AttemptMutationNotCommitted}:
+        return outcome
     if type(outcome) in {
         AttemptInventoryReadFailed,
         AttemptObservationFailed,
         FeedReadFailed,
         InputReadFailed,
-        AttemptMutationCommitPossible,
-        AttemptMutationNotCommitted,
     }:
         return outcome.evidence
     return None
 
 
 def _remote_evidence_message(evidence: object) -> str:
+    if type(evidence) is AttemptMutationCommitPossible:
+        return "API mutation outcome is unconfirmed; " + _remote_evidence_message(evidence.evidence)
+    if type(evidence) is AttemptMutationNotCommitted:
+        return "this API send did not commit its mutation; " + _remote_evidence_message(evidence.evidence)
     if type(evidence) is ProviderProblem:
         code = f", code {evidence.code}" if evidence.code is not None else ""
         return (

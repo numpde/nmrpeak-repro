@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 import signal
 import stat
 from threading import Event
-import traceback
 
 from .attempt_journal_store import AttemptJournalStore
 from .frozen_generation import FrozenGeneration, load_frozen_generation
+from .process_logging import configure_process_logging
 from .provider_api import ProviderApiClient
 from .provider_config import (
     CHF_SOCKET_PATH,
@@ -38,6 +39,7 @@ from .provider_requests import HelloOffering, prepare_provider_hello
 from .runner_session import RunnerSession, open_runner_session
 
 
+_LOG = logging.getLogger(__name__)
 _CONFIG_MAX_BYTES = 65_536
 _DISPLAY_NAME = "NMRPeak"
 _DESCRIPTION = (
@@ -52,6 +54,7 @@ _FROZEN_FILES = {*_HELLO_FILES, "deployment/topology.json"}
 def run_provider(config_path: Path = CONFIG_PATH) -> None:
     """Admit every local input, then serve until signal or fatal failure."""
 
+    _LOG.info("Provider startup began; config=%s", config_path)
     readiness = ProviderReadiness.begin()
     try:
         _run_provider(config_path, readiness)
@@ -76,7 +79,12 @@ def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
     )
     if credential.provider_ref != frozen.runtime.hf.generation.provider_ref:
         raise ValueError("Provider credential belongs to another frozen generation")
+    _LOG.info(
+        "Provider configuration admitted; provider=%s generation=%s",
+        credential.provider_ref, frozen.frozen_generation_id,
+    )
     hello = _prepare_hello(frozen)
+    _LOG.info("Provider hello configured; snapshot=%r", hello.body.decode("utf-8"))
     stop = Event()
     previous_handlers = {
         signal_number: signal.signal(signal_number, lambda *_args: stop.set())
@@ -97,18 +105,21 @@ def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
                     credential.credential_ref,
                     credential.private_key,
                 )
+                _LOG.info("Connecting to HF runner; socket=%s", HF_SOCKET_PATH)
                 hf_session = open_runner_session(
                     HF_SOCKET_PATH,
                     frozen.runtime.hf.result_facts,
                     configured.runner,
                     frozen.runtime.hf.runner_codec,
                 )
+                _LOG.info("HF runner ready; connecting to CHF runner; socket=%s", CHF_SOCKET_PATH)
                 chf_session = open_runner_session(
                     CHF_SOCKET_PATH,
                     frozen.runtime.chf.result_facts,
                     configured.runner,
                     frozen.runtime.chf.runner_codec,
                 )
+                _LOG.info("CHF runner ready; opening attempt journal; path=%s", JOURNAL_PATH)
                 journal = AttemptJournalStore(
                     JOURNAL_PATH,
                     maximum_records=configured.journal_maximum_records,
@@ -137,12 +148,14 @@ def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
                     try:
                         journal.close()
                     except BaseException as error:
+                        _LOG.exception("Provider journal cleanup failed")
                         cleanup_errors.append(error)
                 for session in (hf_session, chf_session):
                     if session is not None and not session.retired:
                         try:
                             session.retire()
                         except BaseException as error:
+                            _LOG.exception("Provider runner-session cleanup failed")
                             cleanup_errors.append(error)
                 if cleanup_errors:
                     if primary_error is not None:
@@ -196,17 +209,18 @@ def _read_regular_file(path: Path, maximum_bytes: int) -> bytes:
 
 
 def main() -> int:
+    configure_process_logging()
     try:
         run_provider()
-    except Exception as error:
-        print("Provider process stopped unexpectedly.", file=os.sys.stderr)
-        traceback.print_exception(error, file=os.sys.stderr)
+    except Exception:
+        _LOG.exception("Provider process stopped unexpectedly")
         print(
             "The provider is not ready; inspect the failure above and the runner "
             "status before restarting.",
             file=os.sys.stderr,
         )
         return 1
+    _LOG.info("Provider stopped; local cleanup completed")
     return 0
 
 

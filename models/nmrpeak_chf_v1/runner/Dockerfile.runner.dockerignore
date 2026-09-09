@@ -37,6 +37,7 @@
 !nmrpeak_provider/owner_session_endpoint.py
 !nmrpeak_provider/owner_session_supervisor.py
 !nmrpeak_provider/product.py
+!nmrpeak_provider/process_logging.py
 !nmrpeak_provider/product_decode.py
 !nmrpeak_provider/product_input.py
 !nmrpeak_provider/product_result.py

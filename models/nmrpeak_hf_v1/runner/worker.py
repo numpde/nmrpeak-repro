@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import time
 import secrets
 import socket
 import sys
@@ -17,12 +19,16 @@ from nmrpeak_provider.hf_runner_protocol import (
     HF_RUNNER_CODEC,
     HF_RUNNER_CONTRACT_ID,
 )
+from nmrpeak_provider.process_logging import configure_process_logging
 from nmrpeak_provider.product_decode import HF_DECODE_POLICY
 from nmrpeak_provider.product_result import (
     HF_RESULT_IDENTITY,
     NMRPEAK_SOURCE_CLOSURE_REF,
 )
 from nmrpeak_provider.runner_protocol import ReadyFrame
+
+
+_LOG = logging.getLogger("nmrpeak_runner.worker")
 
 
 def serve_hf_worker(
@@ -34,8 +40,16 @@ def serve_hf_worker(
 ) -> int:
     """Load the fixed verified component and serve its inherited owner session."""
 
+    started_at = time.monotonic()
+    _LOG.info(
+        'Loading model; checkpoint=%s image=%s boot=%s',
+        checkpoint_ref,
+        image_input_id,
+        boot_generation,
+    )
     with open_verified_checkpoint(checkpoint_ref) as checkpoint:
         runtime = load_nmrpeak_hf_runtime(checkpoint)
+    _LOG.info("Model loaded on CPU; elapsed_seconds=%.3f", time.monotonic() - started_at)
     ready = ReadyFrame(
         boot_generation=boot_generation,
         runner_ref=HF_RESULT_IDENTITY.runner_ref,
@@ -58,6 +72,7 @@ def serve_hf_worker(
 def main(arguments: list[str]) -> int:
     """Own one inherited session descriptor and one fixed HF model boot."""
 
+    configure_process_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument("--session-fd", required=True, type=int)
     parser.add_argument("--checkpoint-ref", required=True)

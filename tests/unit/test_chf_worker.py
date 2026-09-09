@@ -99,6 +99,7 @@ class ChfWorkerTests(unittest.TestCase):
             return 0
 
         with (
+            self.assertLogs("nmrpeak_runner.worker", level="INFO") as logs,
             patch.object(
                 worker_module,
                 "open_verified_checkpoint",
@@ -123,13 +124,19 @@ class ChfWorkerTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
+        self.assertIn("Loading model", logs.output[0])
+        self.assertIn(FACTS.checkpoint_ref, logs.output[0])
+        self.assertIn("Model loaded on CPU", logs.output[1])
         open_checkpoint.assert_called_once_with(FACTS.checkpoint_ref)
         load_runtime.assert_called_once_with(checkpoint)
         self.assertEqual(served, [(connection, runtime, READY, CHF_RUNNER_CODEC)])
 
     def test_loaded_worker_completes_the_provider_session_and_retires(self) -> None:
         runtime = RecordingRuntime(candidates=["CCO", "OCC"])
-        with WorkerHarness(runtime) as harness:
+        with (
+            self.assertLogs("nmrpeak_runner.worker", level="INFO") as logs,
+            WorkerHarness(runtime) as harness,
+        ):
             session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
             validated = validate(session)
             self.assertIsInstance(validated, ValidatedRunnerRequest)
@@ -141,6 +148,12 @@ class ChfWorkerTests(unittest.TestCase):
         self.assertEqual(runtime.validated, [MODEL_INPUT])
         self.assertEqual(runtime.generated, [MODEL_INPUT])
         self.assertEqual(harness.result, 0)
+        rendered = "\n".join(logs.output)
+        self.assertIn("Runner ready", rendered)
+        self.assertIn(ATTEMPT_REF, rendered)
+        self.assertIn("Model generation began", rendered)
+        self.assertIn("Model result sent to provider", rendered)
+        self.assertIn("Runner retired", rendered)
 
     def test_deterministic_rejection_keeps_the_loaded_boot_reusable(self) -> None:
         runtime = RecordingRuntime(rejections=1, candidates=["CCO"])

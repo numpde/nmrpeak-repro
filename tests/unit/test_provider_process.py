@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import time
+from types import SimpleNamespace
 from threading import (
     Barrier,
     BrokenBarrierError,
@@ -250,6 +251,108 @@ class RecordingWaitEvent(Event):
 
 
 class ProviderProcessTests(unittest.TestCase):
+    def test_recovery_wait_logs_are_periodic_while_polling_continues(self) -> None:
+        from nmrpeak_provider.provider_process import _run_lane
+        from nmrpeak_provider.attempt_journal import ObserveUntilExpiry
+
+        clock = [0.0]
+        record = SimpleNamespace(job_ref="job:waiting", execution_attempt_ref="attempt:waiting")
+        generation = object()
+        session = SimpleNamespace(retired=False, retire=lambda: None)
+        owner = SimpleNamespace(generation=generation, session=session)
+        waits = []
+
+        def wait(seconds):
+            waits.append(seconds)
+            clock[0] += 100.0
+            return False
+
+        stop = SimpleNamespace(is_set=lambda: len(waits) == 4, wait=wait)
+        with (
+            patch("nmrpeak_provider.provider_process.time.monotonic", side_effect=lambda: clock[0]),
+            patch("nmrpeak_provider.provider_process.run_recovery_record", return_value=ObserveUntilExpiry(record)) as recover,
+            self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs,
+        ):
+            _run_lane(
+                runtime=SimpleNamespace(resolve=lambda _: generation), api=None,
+                journal=SimpleNamespace(records=lambda: (record,)), interpreter=None,
+                policy=process_policy(), stop=stop, owner=owner,
+            )
+        self.assertEqual(recover.call_count, 4)
+        self.assertEqual(len(logs.records), 2)
+        for record in logs.records:
+            self.assertIn("waiting for API attempt expiry", record.getMessage())
+            self.assertIn("job:waiting", record.getMessage())
+
+    def test_journal_admission_deferral_is_visible_and_backs_off(self) -> None:
+        from nmrpeak_provider.provider_process import _run_lane
+        from nmrpeak_provider.attempt_journal_store import AttemptJournalAdmissionRejected
+
+        waits = []
+        stop = SimpleNamespace(is_set=lambda: len(waits) == 3, wait=lambda delay: waits.append(delay))
+        generation = SimpleNamespace(lane=SimpleNamespace(offering=SimpleNamespace(implementation_ref="hf")), generation=None)
+        session = SimpleNamespace(retired=False, retire=lambda: None)
+        with (
+            patch("nmrpeak_provider.provider_process.admit_next_job", side_effect=AttemptJournalAdmissionRejected("journal full")),
+            self.assertLogs("nmrpeak_provider.provider_process", level="WARNING") as logs,
+        ):
+            _run_lane(
+                runtime=SimpleNamespace(frozen_generation_id="unused"), api=None,
+                journal=SimpleNamespace(records=lambda: ()), interpreter=None,
+                policy=process_policy(), stop=stop,
+                owner=SimpleNamespace(generation=generation, session=session),
+            )
+        self.assertEqual(waits, [process_policy().feed_interval_seconds * 2 ** i for i in range(3)])
+        self.assertEqual(len(logs.records), 3)
+        self.assertIn("journal full", logs.output[-1])
+
+    def test_hello_logs_only_validated_acceptance_receipts(self) -> None:
+        from nmrpeak_provider.provider_process import _publish_hello
+
+        replies = [hello_response(), response({"schema_id": "wrong"}), hello_response()]
+        api = SimpleNamespace(send=lambda _: replies.pop(0))
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
+            outcomes = [
+                _publish_hello(api=api, prepared=hello_request(), provider_ref="provider:nmrpeak")
+                for _ in range(3)
+            ]
+        self.assertIsNone(outcomes[0])
+        self.assertIsNotNone(outcomes[1])
+        self.assertIsNone(outcomes[2])
+        self.assertEqual(len(logs.output), 2)
+        for message in logs.output:
+            self.assertIn("Hello accepted", message)
+            self.assertIn("provider:nmrpeak", message)
+            self.assertIn("accepted_at=2026-08-24T12:00:00Z", message)
+
+    def test_hello_outage_keeps_reporting_retries_until_acceptance(self) -> None:
+        from nmrpeak_provider.provider_process import _await_initial_hello
+
+        replies = [ProviderRequestUnavailable(RequestDelivery.NOT_SENT)] * 3 + [hello_response()]
+        api = SimpleNamespace(send=lambda _: replies.pop(0))
+        waits = []
+        stop = SimpleNamespace(is_set=lambda: False, wait=lambda seconds: waits.append(seconds))
+        with self.assertLogs("nmrpeak_provider.provider_process", level="INFO") as logs:
+            _await_initial_hello(
+                api=api, prepared=hello_request(), provider_ref="provider:nmrpeak",
+                policy=process_policy(), stop=stop,
+            )
+        warnings = [record for record in logs.records if record.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 3)
+        self.assertEqual(waits, [process_policy().feed_interval_seconds * 2 ** i for i in range(3)])
+        self.assertIn("Hello accepted", logs.output[-2])
+        self.assertIn("Hello recovered", logs.output[-1])
+
+    def test_mutation_retry_message_preserves_commit_uncertainty(self) -> None:
+        from nmrpeak_provider.provider_process import _remote_failure_evidence, _remote_evidence_message
+        from nmrpeak_provider.provider_outcomes import AttemptMutationCommitPossible, AttemptMutationNotCommitted
+
+        evidence = ProviderRequestUnavailable(RequestDelivery.POSSIBLE)
+        possible = AttemptMutationCommitPossible(evidence)
+        rejected = AttemptMutationNotCommitted(ProviderRequestUnavailable(RequestDelivery.NOT_SENT))
+        self.assertIn("unconfirmed", _remote_evidence_message(_remote_failure_evidence(possible)))
+        self.assertIn("did not commit", _remote_evidence_message(_remote_failure_evidence(rejected)))
+
     _unused_interpreter = object()
 
     def test_recovers_retained_terminal_before_concurrent_lane_feeds(self) -> None:
