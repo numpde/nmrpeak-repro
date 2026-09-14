@@ -1,0 +1,61 @@
+Closed Attempt archival for NMRPeak operators
+
+A held report preserves work that cannot safely be resent. After investigation,
+an operator can archive that exact obligation if a fresh authenticated API read
+proves the same Attempt is closed. Closure does not prove delivery. Archival
+sends no report, starts no worker, reruns no computation and makes no API mutation.
+
+Stop the deployment, then inspect retained work:
+
+  make provider/deployment/down DEPLOYMENT=<name>
+  make provider/deployment/journal/inspect DEPLOYMENT=<name>
+
+For a terminal_hold record, use its execution_attempt_ref, record_digest and
+frozen_generation_id. The digest covers the complete exact on-disk record,
+including uncertainty and hold evidence, rather than only the request body:
+
+  make provider/deployment/journal/archive-closed DEPLOYMENT=<name> \
+    ATTEMPT_REF=<execution_attempt_ref> RECORD_DIGEST=<record_digest> \
+    FROZEN_GENERATION=<frozen_generation_id> \
+    REASON='What was investigated and why local retirement is appropriate'
+
+For the existing localhost API deployment, also pass
+LOCALHOST_CA_CERTIFICATE=/absolute/path/to/ca.crt. The command uses current API
+connection settings and a matching installed credential, the existing journal's
+API/provider binding, and the selected retained frozen generation. It does not
+substitute the current model generation for the one that owns the report.
+The installed provider image must contain this command; select an updated image
+through the normal image build/deployment workflow first.
+
+The command retains exact original record bytes, API closure snapshot, API and
+provider provenance, and the operator reason in <record-digest>.archive.json
+inside the journal. File and directory durability are confirmed before the
+active record is removed. Other active obligations remain unchanged. Archived
+originals still count as generation references, so ordinary generation cleanup
+preserves the interpretation provenance. Archives never re-enter execution.
+
+Success explains the observed API state, preserved work, unconfirmed delivery,
+and stopped automation. The operator may restart the owning deployment with
+make provider/deployment/up DEPLOYMENT=<name> to admit eligible work. Restart
+does not resend the archived report. There is no end-user API/GUI update from
+archival; do not tell users their archived result was delivered.
+
+A live/unreadable/missing Attempt, wrong identity or generation, pending read
+reconciliation, stale record digest or unsafe storage prevents archival.
+Preserve the journal and any archive after an uncertain result. The command
+attempts to stop only its exactly identified container if Docker observation
+fails. If cleanup is unconfirmed, verify the reported name and token label and
+stop only that container ID before inspection or restarting.
+
+Exceptional journal retirement is different: provider/deployment/journal/retire
+DELETES THE ENTIRE VOLUME, including retained commands, archived results and
+evidence. Its exact-volume confirmation and complete signed no-live-Attempt
+check remain required. It is not a way to resume a held report or retain evidence;
+preserve needed private evidence separately before deliberately retiring an
+obsolete or irrecoverably corrupt journal. Volume deletion is not secure erasure.
+
+Ownership: API clients/provider_python is the immutable authoritative source for
+closure semantics. NMRPeak owns local selection, frozen-generation resolution,
+volume/identity locking, durable storage and operator presentation. A closed API
+Attempt cannot be reopened by replaying its start key. New eligible Attempts
+remain distinct work. This is not a universal recovery or error framework.

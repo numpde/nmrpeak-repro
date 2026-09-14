@@ -67,6 +67,8 @@ help:
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
 		'      Report the owned provider and runner container state.' \
 		'  make provider/deployment/journal/inspect DEPLOYMENT=<name>' \
+		'  make provider/deployment/journal/archive-closed DEPLOYMENT=<name> ATTEMPT_REF=<ref> RECORD_DIGEST=<sha256> FROZEN_GENERATION=<sha256> REASON=<text>' \
+		'      Archive reviewed held work only after API-confirmed closure; see notes/002_closed_attempt_archival.txt.' \
 		'      Inspect retained work in a stopped deployment without publishing or changing it.' \
 		'  make provider/logs DEPLOYMENT=<name>' \
 		'      Follow logs from the running owned provider.' \
@@ -76,9 +78,9 @@ help:
 		'Exceptional removal:' \
 		'  make provider/deployment/generation/remove DEPLOYMENT=<name> FROZEN_GENERATION=<id> CONFIRM=<id>' \
 		'      Remove one unreferenced frozen generation after exact confirmation.' \
-		'  make provider/deployment/journal/retire DEPLOYMENT=<name> CONFIRM=<provider-ref>' \
-		'      Remove one empty stopped deployment journal after exact confirmation.' \
-		'  make provider/identity-lock/remove PROVIDER_REF=<provider-ref> CONFIRM=<provider-ref>' \
+		'  make provider/deployment/journal/retire DEPLOYMENT=<name> CONFIRM=<full-journal-volume-name>' \
+		'      Delete the entire stopped journal, including retained commands and archives, after exact volume confirmation.' \
+		'  make provider/identity-lock/remove PROVIDER_REF=<provider-ref> CONFIRM=<full-journal-volume-name>' \
 		'      Remove one unused provider identity lock after exact confirmation.' \
 		'  There is no blanket cleanup target.'
 
@@ -229,6 +231,20 @@ provider/deployment/journal/inspect:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment journal-inspect "$$DEPLOYMENT_INPUT"
+
+.PHONY: provider/deployment/journal/archive-closed
+provider/deployment/journal/archive-closed: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/journal/archive-closed: private export ATTEMPT_REF_INPUT := $(value ATTEMPT_REF)
+provider/deployment/journal/archive-closed: private export RECORD_DIGEST_INPUT := $(value RECORD_DIGEST)
+provider/deployment/journal/archive-closed: private export ARCHIVE_REASON_INPUT := $(value REASON)
+provider/deployment/journal/archive-closed: private export FROZEN_GENERATION_INPUT := $(value FROZEN_GENERATION)
+provider/deployment/journal/archive-closed: private export LOCALHOST_CA_INPUT := $(value LOCALHOST_CA_CERTIFICATE)
+provider/deployment/journal/archive-closed:
+	@cd "$(CURDIR)" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(CURDIR)" \
+		$(PYTHON) -m deployment.provider_deployment journal-archive-closed "$$DEPLOYMENT_INPUT" \
+		--execution-attempt-ref "$$ATTEMPT_REF_INPUT" --record-digest "$$RECORD_DIGEST_INPUT" \
+		--reason "$$ARCHIVE_REASON_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT" \
+		$${LOCALHOST_CA_INPUT:+--localhost-ca-certificate "$${LOCALHOST_CA_INPUT}"}
 
 provider/deployment/journal/retire: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/journal/retire: private export CONFIRM_INPUT := $(value CONFIRM)

@@ -49,7 +49,7 @@ def _validate_record(record):
     if type(record) is not dict:
         raise ValueError("Invalid inspection record")
     phase = record.get("phase")
-    common = "phase job_ref provider_attempt_key frozen_generation_id next_actor next_action restart_behavior"
+    common = "record_digest phase job_ref provider_attempt_key frozen_generation_id next_actor next_action restart_behavior"
     extra = {
         "start_pending": "delivery",
         "active": "execution_attempt_ref local_phase",
@@ -60,6 +60,7 @@ def _validate_record(record):
     if type(phase) is not str or phase not in extra:
         raise ValueError("Invalid inspection phase")
     _fields(record, common + " " + extra[phase])
+    _identity(record["record_digest"], r"sha256:[0-9a-f]{64}")
     _identity(record["job_ref"], r"job:[A-Za-z0-9_.-]{1,124}")
     _identity(record["provider_attempt_key"], r"nmrpeak-provider\.v1:[0-9a-f]{64}")
     _identity(record["frozen_generation_id"], r"sha256:[0-9a-f]{64}")

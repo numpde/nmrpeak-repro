@@ -3,6 +3,7 @@ containers/provider/Dockerfile.dockerignore
 nmrpeak_provider/__init__.py
 nmrpeak_provider/_nmr_api_failure_contract.py
 nmrpeak_provider/_nmr_api_failures.py
+nmrpeak_provider/archive_document.py
 nmrpeak_provider/attempt_identity.py
 nmrpeak_provider/attempt_inventory.py
 nmrpeak_provider/attempt_journal.py
@@ -19,8 +20,11 @@ nmrpeak_provider/hf_runner_protocol.py
 nmrpeak_provider/http_response.py
 nmrpeak_provider/identity_lock_hold.py
 nmrpeak_provider/input_interpreter.py
+nmrpeak_provider/inspection_document.py
 nmrpeak_provider/interpreter.py
 nmrpeak_provider/interpreter_policy.py
+nmrpeak_provider/journal_archive.py
+nmrpeak_provider/journal_inspect.py
 nmrpeak_provider/journal_inventory.py
 nmrpeak_provider/lifecycle_lane.py
 nmrpeak_provider/local_input.py

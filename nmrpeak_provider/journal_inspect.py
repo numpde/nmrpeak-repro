@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,7 +54,8 @@ def _record_facts(record):
 def inspect_journal(root: Path) -> bytes:
     """Read validated records without mutation; caller owns stopped deployment exclusion."""
     with AttemptJournalStore(root, maximum_records=JOURNAL_MAXIMUM_RECORDS, read_only=True) as journal:
-        records = [_record_facts(record) for record in journal.records()]
+        records = [_record_facts(record) | {"record_digest": "sha256:" + sha256(journal.record_bytes(record)).hexdigest()}
+                   for record in journal.records()]
     document = {"schema_id": "nmrpeak.journal_inspection.v1",
         "current_automation": "stopped", "observed_at": datetime.now(UTC).isoformat(),
         "stage_counts": dict(Counter(record["phase"] for record in records)), "records": records}

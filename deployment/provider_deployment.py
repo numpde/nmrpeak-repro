@@ -35,6 +35,7 @@ from deployment.provider_volumes import (
     remove_provider_journal_volume,
 )
 from nmrpeak_provider.inspection_document import validate_inspection_document
+from nmrpeak_provider.archive_document import validate_archive_document
 from nmrpeak_provider.attempt_inventory import (
     AttemptInventory,
     AttemptInventoryReadFailed,
@@ -733,6 +734,101 @@ def inspect_provider_journal(
         except (TypeError, ValueError) as error:
             raise DeploymentOperationRejected("Provider journal inspection returned invalid output") from error
         return output
+
+
+def archive_provider_journal(repository: Path, deployment: str, *, execution_attempt_ref: str,
+                             record_digest: str, reason: str, frozen_generation: str,
+                             localhost_ca_certificate: Path | None = None, docker: Path = _DOCKER) -> bytes:
+    """Retire one reviewed held record using its authenticated retained generation."""
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected("Deployment repository must be one resolved directory")
+    _require_deployment_name(deployment)
+    validate_frozen_generation_id(frozen_generation)
+    state_root = _existing_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        services = _inspect_project_containers(docker, root, deployment)
+        _require_stopped_services(services, "Provider journal archival")
+        selection = load_named_deployment(root / "config/deployments" / deployment / "deployment.toml")
+        configured = _runtime_config(root, deployment)
+        ca = _admit_localhost_ca_certificate(localhost_ca_certificate)
+        _admit_server_a_endpoint(configured.endpoint, localhost=ca is not None)
+        authority = server_a_authority_id(configured.endpoint)
+        journal = _admitted_journal_volume(docker, deployment, selection.provider_ref, authority, services)
+        lock = inspect_provider_identity_lock_volume(docker, selection.provider_ref)
+        _, credential = _read_owned_private_credential(state_root / "signing.private.json",
+                            "Provider journal archival credential", require_provider_access=True)
+        frozen_root = state_root / "generations" / _retained_identity_name(frozen_generation) / "frozen"
+        if frozen_root.resolve(strict=True) != frozen_root:
+            raise DeploymentOperationRejected("Archive generation must be a retained non-symlink directory")
+        frozen = load_frozen_generation(frozen_root, expected_frozen_generation_id=frozen_generation)
+        if credential.provider_ref != selection.provider_ref or frozen.runtime.hf.generation.provider_ref != selection.provider_ref:
+            raise DeploymentOperationRejected("Archive credential or frozen generation belongs to another provider")
+        image = _resolve_provider_image(docker, root)
+        token = secrets.token_hex(16)
+        name = "nmrpeak-journal-archive-" + token
+        mounts = ("--mount", f"type=volume,src={journal},dst=/var/lib/nmrpeak-provider",
+                  "--mount", f"type=volume,src={lock},dst=/run/nmrpeak-provider-lock,readonly",
+                  "--mount", f"type=bind,src={root / 'config/deployments' / deployment / 'provider.toml'},dst=/run/config/nmrpeak-provider/provider.toml,readonly",
+                  "--mount", f"type=bind,src={state_root / 'signing.private.json'},dst=/run/secrets/nmrpeak-provider/signing.private.json,readonly",
+                  "--mount", f"type=bind,src={frozen_root},dst=/run/nmrpeak-provider/frozen,readonly")
+        networking = ("--add-host", "nmr.localhost:host-gateway") if ca is not None else ()
+        if ca is not None:
+            mounts += ("--mount", f"type=bind,src={ca},dst=/run/config/nmrpeak-provider/server-a-ca.crt,readonly")
+        try:
+            output = _docker_command(docker, (
+                "run", "--rm", "--name", name, "--label", "io.nmrpeak.archive=" + token,
+                "--pull", "never", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges:true", "--pids-limit", "32", "--memory", "128m",
+                "--memory-swap", "128m", "--log-driver", "none", *networking, *mounts,
+                "--entrypoint", "python", image.image_id, "-m", "nmrpeak_provider.journal_archive",
+                "--execution-attempt-ref", execution_attempt_ref, "--record-digest", record_digest,
+                "--reason", reason, "--frozen-generation", frozen_generation,
+                "--expected-provider-ref", selection.provider_ref, "--expected-authority-id", authority,
+            ), timeout=60).stdout
+        except (Exception, KeyboardInterrupt) as original:
+            try:
+                _remove_archive_invocation(docker, name, token)
+            except (Exception, KeyboardInterrupt) as cleanup:
+                raise DeploymentOperationRejected(
+                    f"Archive result unconfirmed ({original}); cleanup unconfirmed ({cleanup}). "
+                    f"Operator must inspect name={name}, label=io.nmrpeak.archive={token}, verify both and "
+                    "remove only that container ID before inspecting retained journal/archive state or restarting."
+                ) from original
+            raise DeploymentOperationRejected(
+                f"Archive result unconfirmed ({original}); invocation stopped. Operator must inspect "
+                "the retained journal and archive before retrying or restarting; preserve both."
+            ) from original
+        try:
+            if len(output) > 16385 or not output.endswith(b"\n"):
+                raise ValueError("Invalid framing")
+            document = validate_archive_document(parse_canonical_json_bytes(output[:-1]))
+            if document["execution_attempt_ref"] != execution_attempt_ref or document["record_digest"] != record_digest:
+                raise ValueError("Selection mismatch")
+        except (TypeError, ValueError) as error:
+            raise DeploymentOperationRejected("Archive returned invalid output; inspect journal and archive before retrying") from error
+        return output
+
+
+def _remove_archive_invocation(docker: Path, name: str, token: str) -> None:
+    """Stop only the inspected invocation when Docker observation failed."""
+    identifiers = _docker_command(docker, ("ps", "-a", "--no-trunc", "--filter",
+                    "name=^/" + name + "$", "--format", "{{.ID}}"), timeout=30).stdout.decode("ascii").splitlines()
+    if not identifiers:
+        return
+    if len(identifiers) != 1 or re.fullmatch(r"[0-9a-f]{64}", identifiers[0]) is None:
+        raise DeploymentOperationRejected("Archive container inventory is malformed")
+    identifier = identifiers[0]
+    records = _json_output(_docker_command(docker, ("inspect", identifier), timeout=30).stdout, "Archive cleanup")
+    if type(records) is not list or len(records) != 1 or type(records[0]) is not dict:
+        raise DeploymentOperationRejected("Archive container inspection is malformed")
+    record = records[0]
+    config = record.get("Config")
+    labels = config.get("Labels") if type(config) is dict else None
+    if (record.get("Id") != identifier or record.get("Name") != "/" + name
+            or type(labels) is not dict or labels.get("io.nmrpeak.archive") != token):
+        raise DeploymentOperationRejected("Archive container ownership does not match this invocation")
+    _docker_command(docker, ("rm", "-f", identifier), timeout=30)
 
 
 def retire_provider_journal(
@@ -2762,6 +2858,7 @@ def main(arguments: list[str] | None = None) -> int:
             "generation-remove",
             "init",
             "journal-inspect",
+            "journal-archive-closed",
             "journal-retire",
             "logs",
             "status",
@@ -2773,6 +2870,9 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--frozen-generation")
     parser.add_argument("--confirm")
+    parser.add_argument("--execution-attempt-ref")
+    parser.add_argument("--record-digest")
+    parser.add_argument("--reason")
     parser.add_argument("--localhost-ca-certificate", type=Path)
     options = parser.parse_args(arguments)
     _validate_operation_options(parser, options)
@@ -2799,6 +2899,11 @@ def main(arguments: list[str] | None = None) -> int:
             )
         elif options.operation == "journal-inspect":
             print(inspect_provider_journal(repository, options.deployment).decode("utf-8"), end="")
+        elif options.operation == "journal-archive-closed":
+            print(archive_provider_journal(repository, options.deployment,
+                  execution_attempt_ref=options.execution_attempt_ref, record_digest=options.record_digest,
+                  reason=options.reason, frozen_generation=options.frozen_generation,
+                  localhost_ca_certificate=options.localhost_ca_certificate).decode("utf-8"), end="")
         elif options.operation == "journal-retire":
             removed = retire_provider_journal(
                 repository,
@@ -2807,6 +2912,7 @@ def main(arguments: list[str] | None = None) -> int:
             )
             print(
                 f"Retired provider journal volume: {removed}. "
+                "Retained commands, archived results and evidence in this volume were deleted. "
                 "Docker volume deletion is not secure erasure of underlying storage."
             )
         elif options.operation == "init":
@@ -2873,6 +2979,8 @@ _OPERATION_OPTION_POLICY = {
     ),
     "init": (frozenset(), frozenset()),
     "journal-inspect": (frozenset(), frozenset()),
+    "journal-archive-closed": (frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation"}),
+        frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation", "localhost_ca_certificate"})),
     "journal-retire": (frozenset({"confirm"}), frozenset({"confirm"})),
     "logs": (frozenset(), frozenset()),
     "status": (frozenset(), frozenset()),
@@ -2883,6 +2991,9 @@ _OPTION_NAMES = {
     "replace": "--replace",
     "frozen_generation": "--frozen-generation",
     "confirm": "--confirm",
+    "execution_attempt_ref": "--execution-attempt-ref",
+    "record_digest": "--record-digest",
+    "reason": "--reason",
     "localhost_ca_certificate": "--localhost-ca-certificate",
 }
 _OPERATION_FAILURE_HEADLINES = {
@@ -2892,6 +3003,7 @@ _OPERATION_FAILURE_HEADLINES = {
     "generation-remove": "Frozen deployment generation removal failed",
     "init": "Provider deployment initialization failed",
     "journal-inspect": "Provider journal inspection failed",
+    "journal-archive-closed": "Provider journal archival failed",
     "journal-retire": "Provider journal retirement failed",
     "logs": "Provider log read failed",
     "status": "Provider deployment status read failed",

@@ -2,6 +2,7 @@
 from dataclasses import replace
 from pathlib import Path
 import json
+from hashlib import sha256
 import subprocess
 import sys
 import unittest
@@ -39,6 +40,7 @@ class JournalInspectionTests(unittest.TestCase):
                 self.assertEqual(doc["current_automation"], "stopped")
                 self.assertEqual(doc["stage_counts"], {phase: 1})
                 item, = doc["records"]
+                self.assertEqual(item["record_digest"], "sha256:" + sha256(before).hexdigest())
                 self.assertEqual(item["phase"], phase)
                 self.assertEqual(item["job_ref"], record.job_ref)
                 self.assertEqual(item["provider_attempt_key"], record.provider_attempt_key)

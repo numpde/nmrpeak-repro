@@ -22,7 +22,7 @@ def journal_generation_inventory(root: Path) -> bytes:
         read_only=True,
     ) as journal:
         generation_ids = sorted(
-            {record.frozen_generation_id for record in journal.records()}
+            {record.frozen_generation_id for record in (*journal.records(), *journal.archived_records())}
         )
     return canonical_json_bytes(
         {

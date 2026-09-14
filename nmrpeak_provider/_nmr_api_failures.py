@@ -13,6 +13,22 @@ from urllib.parse import quote
 from ._nmr_api_failure_contract import EVIDENCE, OPERATIONS, PROFILES, RECOVERY, SEND_EFFECTS, CONFLICT_RECOVERY
 
 
+def attempt_is_closed(state: object) -> bool:
+    """Classify a validated API state, not delivery or permission to archive.
+
+    Source authority: operations/execution_attempt_lifecycle.py completion and
+    failure decisions; provider/http_contract.py:_attempt_recovery_contract.
+    Providers still own authenticated identity binding and durable recovery.
+    """
+    if type(state) is not str:
+        raise ValueError("Attempt state must be a supported API state string")
+    if state == "in_progress":
+        return False
+    if state in {"succeeded", "failed", "expired"}:
+        return True
+    raise ValueError("Attempt state is not a supported API state")
+
+
 @dataclass(frozen=True, slots=True)
 class FailureInterpretation:
     supported: bool

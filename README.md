@@ -12,3 +12,5 @@ to read its owned journal without network access. It prints canonical JSON with
 operation identities, retained phases, fingerprints, and restart behavior; it
 does not print request bodies or report delivery to the API. It rejects a running
 deployment and does not stop, resume, retire, or modify retained work.
+
+[Safely archive a held report after API-confirmed closure](notes/002_closed_attempt_archival.txt).

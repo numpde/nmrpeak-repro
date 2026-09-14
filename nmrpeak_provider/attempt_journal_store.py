@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 import os
+from hashlib import sha256
 from pathlib import Path
 import re
 import stat
@@ -21,6 +22,8 @@ from .attempt_journal import (
 
 _RECORD_NAME = re.compile(r"[0-9a-f]{64}\.json")
 _STAGING_NAME = re.compile(r"\.([0-9a-f]{64}\.json)\.pending")
+_ARCHIVE_NAME = re.compile(r"[0-9a-f]{64}\.archive\.json")
+_ARCHIVE_STAGING = re.compile(r"\.[0-9a-f]{64}\.archive\.pending")
 _DIRECTORY_MODE = 0o700
 _RECORD_MODE = 0o600
 
@@ -89,6 +92,89 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
                 self._read_record(name)
                 for name in sorted(self._record_names())
             )
+
+    def record_bytes(self, expected: AttemptJournalRecord) -> bytes:
+        """Return the exact admitted on-disk bytes, including retained metadata."""
+        with self._lock:
+            self._require_usable()
+            name = journal_record_name(expected)
+            self._require_current(name, expected)
+            return self._read_bytes(name)
+
+    def archived_records(self) -> tuple[AttemptJournalRecord, ...]:
+        """Retain archived generation provenance without admitting replay obligations."""
+        from .canonical_json import parse_canonical_json_bytes
+        from .journal_archive import archived_original
+        with self._lock:
+            self._require_usable()
+            records = []
+            for name in sorted(os.listdir(self._directory_fd)):
+                if _ARCHIVE_NAME.fullmatch(name):
+                    try:
+                        document = parse_canonical_json_bytes(self._read_bytes(name, maximum=8 * 1024 * 1024))
+                        records.append(archived_original(document, expected_digest='sha256:' + name[:-len('.archive.json')]))
+                    except (ValueError, TypeError, KeyError) as error:
+                        raise AttemptJournalStateRejected('Invalid archive prevents generation cleanup; preserve its evidence') from error
+            return tuple(records)
+
+    def archive_record(self, expected, raw: bytes, document: dict, validate_existing) -> Path:
+        """Publish private evidence durably before retiring the unchanged obligation."""
+        from .canonical_json import canonical_json_bytes, parse_canonical_json_bytes
+        with self._lock:
+            self._require_usable()
+            self._require_writable()
+            target = journal_record_name(expected)
+            self._require_current(target, expected)
+            if self._read_bytes(target) != raw:
+                raise AttemptJournalConflict("Record bytes changed; inspect again")
+            stem = sha256(raw).hexdigest()
+            name, staging = stem + ".archive.json", "." + stem + ".archive.pending"
+            descriptor = -1
+            try:
+                descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                                     _RECORD_MODE, dir_fd=self._directory_fd)
+                os.fchmod(descriptor, _RECORD_MODE)
+                payload = canonical_json_bytes(document)
+                offset = 0
+                while offset < len(payload):
+                    written = os.write(descriptor, payload[offset:])
+                    if written <= 0:
+                        raise OSError("Archive write made no progress")
+                    offset += written
+                os.fsync(descriptor)
+                closing, descriptor = descriptor, -1
+                os.close(closing)
+                try:
+                    os.link(staging, name, src_dir_fd=self._directory_fd,
+                            dst_dir_fd=self._directory_fd, follow_symlinks=False)
+                except FileExistsError:
+                    existing = self._read_bytes(name, maximum=8 * 1024 * 1024)
+                    validate_existing(parse_canonical_json_bytes(existing))
+                    descriptor = self._open_record(name)
+                    os.fsync(descriptor)
+                    closing, descriptor = descriptor, -1
+                    os.close(closing)
+                os.unlink(staging, dir_fd=self._directory_fd)
+                os.fsync(self._directory_fd)
+                self._require_current(target, expected)
+                if self._read_bytes(target) != raw:
+                    raise AttemptJournalConflict("Record bytes changed during archival; preserve both copies")
+            except BaseException as error:
+                self._poisoned = True
+                if descriptor >= 0:
+                    closing, descriptor = descriptor, -1
+                    try:
+                        os.close(closing)
+                    except OSError as cleanup_error:
+                        error.add_note(f'Archive descriptor cleanup also failed: {cleanup_error}')
+                raise
+            try:
+                os.unlink(target, dir_fd=self._directory_fd)
+                os.fsync(self._directory_fd)
+            except OSError as error:
+                self._poisoned = True
+                raise AttemptJournalWriteFailed("Archive exists; active retirement durability is unconfirmed") from error
+            return self._root / name
 
     def admit(self, record: StartPending) -> StartPending:
         """Durably add one new start obligation without replacing any record."""
@@ -192,6 +278,16 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         record_names: list[str] = []
         staging_names: list[str] = []
         for name in os.listdir(self._directory_fd):
+            if _ARCHIVE_NAME.fullmatch(name):
+                continue
+            if _ARCHIVE_STAGING.fullmatch(name):
+                if not self._read_only:
+                    status = os.stat(name, dir_fd=self._directory_fd, follow_symlinks=False)
+                    if not stat.S_ISREG(status.st_mode) or status.st_uid != os.geteuid() or stat.S_IMODE(status.st_mode) != _RECORD_MODE:
+                        raise AttemptJournalStateRejected("Unsafe archive staging entry")
+                    os.unlink(name, dir_fd=self._directory_fd)
+                    os.fsync(self._directory_fd)
+                continue
             if _RECORD_NAME.fullmatch(name) is not None:
                 record_names.append(name)
             elif _STAGING_NAME.fullmatch(name) is not None:
@@ -218,6 +314,8 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
     def _record_names(self) -> set[str]:
         names: set[str] = set()
         for name in os.listdir(self._directory_fd):
+            if _ARCHIVE_NAME.fullmatch(name) or _ARCHIVE_STAGING.fullmatch(name):
+                continue
             if _RECORD_NAME.fullmatch(name) is None:
                 if _STAGING_NAME.fullmatch(name) is not None:
                     if self._read_only:
@@ -235,15 +333,15 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             )
         return names
 
-    def _read_record(self, name: str) -> AttemptJournalRecord:
+    def _read_bytes(self, name: str, maximum=MAX_JOURNAL_RECORD_BYTES) -> bytes:
         descriptor = self._open_record(name)
         try:
             chunks: list[bytes] = []
             total = 0
-            while total <= MAX_JOURNAL_RECORD_BYTES:
+            while total <= maximum:
                 chunk = os.read(
                     descriptor,
-                    min(65_536, MAX_JOURNAL_RECORD_BYTES + 1 - total),
+                    min(65_536, maximum + 1 - total),
                 )
                 if not chunk:
                     break
@@ -251,12 +349,16 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
                 total += len(chunk)
         finally:
             os.close(descriptor)
-        if total > MAX_JOURNAL_RECORD_BYTES:
+        if total > maximum:
             raise AttemptJournalStateRejected(
                 "Attempt journal record exceeds its durable size limit"
             )
+        return b"".join(chunks)
+
+    def _read_record(self, name: str) -> AttemptJournalRecord:
+        raw = self._read_bytes(name)
         try:
-            record = parse_journal_record(b"".join(chunks))
+            record = parse_journal_record(raw)
         except (TypeError, ValueError) as error:
             raise AttemptJournalStateRejected(
                 "Attempt journal contains an invalid record"
