@@ -1321,6 +1321,58 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.assertNotIn("credential", " ".join(arguments))
         self.assertNotIn("checkpoint", " ".join(arguments))
 
+    def test_journal_inspection_is_stopped_owned_and_restricted(self) -> None:
+        output = canonical_json_bytes({
+            "schema_id": "nmrpeak.journal_inspection.v1",
+            "current_automation": "stopped", "observed_at": "2026-09-14T00:00:00Z",
+            "stage_counts": {}, "records": [],
+        }) + b"\n"
+        with render_repository() as repository:
+            materialize_deployment_plan(repository, "production", test_plan(repository))
+            for running, attachments, failure in (
+                (True, (), None), (False, ("foreign",), None),
+                (False, (), DeploymentOperationRejected("module failed")),
+                (False, (), None),
+            ):
+                with (
+                    self.subTest(running=running, attachments=attachments, failure=failure),
+                    patch.object(provider_deployment, "_inspect_project_containers",
+                                 return_value={"provider": {"Id": "owned", "State": {"Running": running}}}),
+                    patch.object(provider_deployment, "inspect_provider_journal_volume",
+                                 return_value=("nmrpeak-production-journal-v1", attachments)),
+                    patch.object(provider_deployment, "inspect_provider_identity_lock_volume",
+                                 return_value="identity-lock"),
+                    patch.object(provider_deployment, "_resolve_provider_image", return_value=IMAGES["provider"]),
+                    patch.object(provider_deployment, "_held_provider_identity_lock", return_value=nullcontext()) as lock,
+                    patch.object(provider_deployment, "_docker_command", side_effect=failure,
+                                 return_value=subprocess.CompletedProcess((), 0, output, b"")) as command,
+                ):
+                    if running or attachments or failure:
+                        with self.assertRaises(DeploymentOperationRejected) as caught:
+                            provider_deployment.inspect_provider_journal(repository, "production")
+                        if running:
+                            self.assertIn("make provider/deployment/down DEPLOYMENT=production", str(caught.exception))
+                        if running or attachments:
+                            command.assert_not_called()
+                        continue
+                    self.assertEqual(provider_deployment.inspect_provider_journal(repository, "production"), output)
+                    lock.assert_called_once()
+                    args = command.call_args.args[1]
+                    self.assertEqual(args[-3:], (IMAGES["provider"].image_id, "-m", "nmrpeak_provider.journal_inspect"))
+                    self.assertEqual(args[args.index("--network") + 1], "none")
+                    self.assertIn("--read-only", args)
+                    self.assertEqual(args[args.index("--mount") + 1],
+                                     "type=volume,src=nmrpeak-production-journal-v1,dst=/var/lib/nmrpeak-provider,readonly")
+                    self.assertEqual(args.count("--mount"), 1)
+                    for bad in ({"records": [None]}, {"body_base64": "private"}):
+                        document = parse_canonical_json_bytes(output[:-1])
+                        document.update(bad)
+                        command.return_value = subprocess.CompletedProcess(
+                            (), 0, canonical_json_bytes(document) + b"\n", b""
+                        )
+                        with self.assertRaisesRegex(DeploymentOperationRejected, "invalid output"):
+                            provider_deployment.inspect_provider_journal(repository, "production")
+
     def test_journal_retirement_requires_exact_confirmation_before_engine_use(
         self,
     ) -> None:

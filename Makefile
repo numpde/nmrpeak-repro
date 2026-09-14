@@ -2,7 +2,7 @@ PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 .DEFAULT_GOAL := help
 
-.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
 	@printf '%s\n' \
@@ -66,6 +66,8 @@ help:
 		'      Load the reviewed checkpoints and start signed API activity using the supplied private CA.' \
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
 		'      Report the owned provider and runner container state.' \
+		'  make provider/deployment/journal/inspect DEPLOYMENT=<name>' \
+		'      Inspect retained work in a stopped deployment without publishing or changing it.' \
 		'  make provider/logs DEPLOYMENT=<name>' \
 		'      Follow logs from the running owned provider.' \
 		'  make provider/deployment/down DEPLOYMENT=<name>' \
@@ -221,6 +223,12 @@ provider/deployment/generation/remove:
 		$(PYTHON) -m deployment.provider_deployment generation-remove \
 		"$$DEPLOYMENT_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT" \
 		--confirm "$$CONFIRM_INPUT"
+
+provider/deployment/journal/inspect: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/journal/inspect:
+	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment journal-inspect "$$DEPLOYMENT_INPUT"
 
 provider/deployment/journal/retire: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/journal/retire: private export CONFIRM_INPUT := $(value CONFIRM)

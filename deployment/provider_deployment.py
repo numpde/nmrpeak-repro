@@ -34,6 +34,7 @@ from deployment.provider_volumes import (
     provider_journal_volume_name,
     remove_provider_journal_volume,
 )
+from nmrpeak_provider.inspection_document import validate_inspection_document
 from nmrpeak_provider.attempt_inventory import (
     AttemptInventory,
     AttemptInventoryReadFailed,
@@ -691,6 +692,49 @@ def remove_frozen_generation(
         _remove_retained_generation(state_root, frozen_generation)
 
 
+def inspect_provider_journal(
+    repository: Path,
+    deployment: str,
+    *,
+    docker: Path = _DOCKER,
+) -> bytes:
+    """Inspect retained work offline while deployment and provider locks are held."""
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected("Deployment repository must be one resolved directory")
+    _require_deployment_name(deployment)
+    state_root = _existing_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        services = _inspect_project_containers(docker, root, deployment)
+        try:
+            _require_stopped_services(services, "Provider journal inspection")
+        except DeploymentOperationRejected as error:
+            raise DeploymentOperationRejected(
+                f"{error}. Run make provider/deployment/down DEPLOYMENT={deployment} before inspection."
+            ) from error
+        selection = load_named_deployment(
+            root / "config/deployments" / deployment / "deployment.toml"
+        )
+        journal = _admitted_journal_volume(
+            docker, deployment, selection.provider_ref,
+            server_a_authority_id(_runtime_config(root, deployment).endpoint), services,
+        )
+        lock = inspect_provider_identity_lock_volume(docker, selection.provider_ref)
+        image = _resolve_provider_image(docker, root)
+        with _held_provider_identity_lock(docker, lock, selection.provider_ref, image):
+            output = _run_journal_reader(
+                docker, journal, image, "nmrpeak_provider.journal_inspect"
+            )
+        try:
+            if not output.endswith(b"\n"):
+                raise ValueError("Missing newline")
+            document = parse_canonical_json_bytes(output[:-1])
+            validate_inspection_document(document)
+        except (TypeError, ValueError) as error:
+            raise DeploymentOperationRejected("Provider journal inspection returned invalid output") from error
+        return output
+
+
 def retire_provider_journal(
     repository: Path,
     deployment: str,
@@ -1343,14 +1387,13 @@ def _reap_docker_client(process: subprocess.Popen[bytes]) -> None:
         ) from error
 
 
-def _journal_generation_ids(
+def _admitted_journal_volume(
     docker: Path,
-    repository: Path,
     deployment: str,
     provider_ref: str,
     authority_id: str,
     services: dict[str, dict[str, object]],
-) -> tuple[str, ...]:
+) -> str:
     journal_volume, attachments = inspect_provider_journal_volume(
         docker,
         deployment,
@@ -1362,7 +1405,12 @@ def _journal_generation_ids(
         raise DeploymentOperationRejected(
             "Provider journal volume has a foreign container attachment"
         )
-    provider_image = _resolve_provider_image(docker, repository)
+    return journal_volume
+
+
+def _run_journal_reader(
+    docker: Path, journal_volume: str, provider_image: LocalImage, module: str,
+) -> bytes:
     result = _docker_command(
         docker,
         (
@@ -1393,16 +1441,34 @@ def _journal_generation_ids(
             "python",
             provider_image.image_id,
             "-m",
-            "nmrpeak_provider.journal_inventory",
+            module,
         ),
         timeout=300,
     )
-    if not result.stdout.endswith(b"\n") or result.stdout.endswith(b"\n\n"):
+    return result.stdout
+
+
+def _journal_generation_ids(
+    docker: Path,
+    repository: Path,
+    deployment: str,
+    provider_ref: str,
+    authority_id: str,
+    services: dict[str, dict[str, object]],
+) -> tuple[str, ...]:
+    journal_volume = _admitted_journal_volume(
+        docker, deployment, provider_ref, authority_id, services
+    )
+    output = _run_journal_reader(
+        docker, journal_volume, _resolve_provider_image(docker, repository),
+        "nmrpeak_provider.journal_inventory",
+    )
+    if not output.endswith(b"\n") or output.endswith(b"\n\n"):
         raise DeploymentOperationRejected(
             "Provider journal inventory returned invalid framing"
         )
     try:
-        document = parse_canonical_json_bytes(result.stdout[:-1])
+        document = parse_canonical_json_bytes(output[:-1])
     except (TypeError, ValueError) as error:
         raise DeploymentOperationRejected(
             "Provider journal inventory returned invalid canonical JSON"
@@ -2695,6 +2761,7 @@ def main(arguments: list[str] | None = None) -> int:
             "down",
             "generation-remove",
             "init",
+            "journal-inspect",
             "journal-retire",
             "logs",
             "status",
@@ -2730,6 +2797,8 @@ def main(arguments: list[str] | None = None) -> int:
                 "Removed frozen deployment generation: "
                 f"{options.deployment} {options.frozen_generation}"
             )
+        elif options.operation == "journal-inspect":
+            print(inspect_provider_journal(repository, options.deployment).decode("utf-8"), end="")
         elif options.operation == "journal-retire":
             removed = retire_provider_journal(
                 repository,
@@ -2803,6 +2872,7 @@ _OPERATION_OPTION_POLICY = {
         frozenset({"frozen_generation", "confirm"}),
     ),
     "init": (frozenset(), frozenset()),
+    "journal-inspect": (frozenset(), frozenset()),
     "journal-retire": (frozenset({"confirm"}), frozenset({"confirm"})),
     "logs": (frozenset(), frozenset()),
     "status": (frozenset(), frozenset()),
@@ -2821,6 +2891,7 @@ _OPERATION_FAILURE_HEADLINES = {
     "down": "Provider deployment shutdown failed",
     "generation-remove": "Frozen deployment generation removal failed",
     "init": "Provider deployment initialization failed",
+    "journal-inspect": "Provider journal inspection failed",
     "journal-retire": "Provider journal retirement failed",
     "logs": "Provider log read failed",
     "status": "Provider deployment status read failed",
