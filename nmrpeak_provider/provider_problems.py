@@ -29,6 +29,8 @@ class ProviderProblem:
     body_request_id: str
     code: str | None
     detail: str | None = field(repr=False)
+    conflict_action: str | None = None
+    conflict_description: str | None = field(default=None, repr=False)
     upload_ref: str | None = None
     recovery_mode: str | None = None
     recovery_description: str | None = field(default=None, repr=False)
@@ -71,6 +73,8 @@ def parse_provider_problem(
         transport_request_id=current.header_request_id,
         body_request_id=current.body_request_id, code=current.code,
         detail=current.detail, upload_ref=current.upload_ref,
+        conflict_action=current.conflict_action,
+        conflict_description=current.conflict_description,
         recovery_mode=current.recovery_mode,
         recovery_description=current.recovery_description,
         current_send_effect=current.current_send_effect,

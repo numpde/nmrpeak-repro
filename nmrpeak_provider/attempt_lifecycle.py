@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import math
 import logging
+import json
 import time
 from threading import Event, Thread
 from typing import TYPE_CHECKING
@@ -269,8 +270,27 @@ class TerminalDelivered:
     receipt: ExecutionAttemptCompleted | ExecutionAttemptFailed
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalPublicationHeld:
+    """A durable local hold prevents any automatic terminal resend."""
+
+    record: TerminalPending
+    action: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalReconciliationPending:
+    """Only the retained Attempt read may retry after a terminal refusal."""
+
+    record: TerminalPending
+    evidence: object
+
+
 TerminalDeliveryOutcome = (
     TerminalDelivered
+    | TerminalPublicationHeld
+    | TerminalReconciliationPending
     | AttemptMutationNotCommitted
     | AttemptMutationCommitPossible
 )
@@ -905,6 +925,9 @@ def deliver_terminal(
 
     if type(record) is not TerminalPending:
         raise TypeError("NMRPeak terminal delivery requires a retained command")
+    journal.require_current(record)
+    if record.terminal_hold_action is not None:
+        return _reconcile_terminal(api, journal, record) if record.terminal_reconciling else _terminal_held(record)
     _LOG.info(
         'Sending retained %s command; job=%s attempt=%s',
         record.terminal_operation.value,
@@ -919,6 +942,17 @@ def deliver_terminal(
         else interpret_execution_attempt_fail(prepared, sent)
     )
     if type(outcome) is not AttemptMutationCommitted:
+        evidence = getattr(outcome, "evidence", None)
+        if type(evidence) is ProviderProblem and evidence.status == 409:
+            problem = evidence
+            if problem.conflict_action is None:
+                return outcome
+            held = replace(record, terminal_hold_action=problem.conflict_action,
+                           terminal_hold_description=problem.conflict_description or problem.detail or "API conflict requires operator reconciliation",
+                           terminal_hold_code=problem.code, terminal_hold_detail=problem.detail,
+                           terminal_hold_request_id=problem.transport_request_id)
+            journal.replace(record, held)
+            return _reconcile_terminal(api, journal, held) if held.terminal_reconciling else _terminal_held(held)
         return outcome
     receipt = outcome.receipt
     # Record the confirmed API effect even if the following journal update fails.
@@ -940,6 +974,51 @@ def deliver_terminal(
         record.execution_attempt_ref,
     )
     return TerminalDelivered(receipt)
+
+
+def terminal_recovery_facts(record: TerminalPending) -> dict:
+    """Describe retained local recovery without creating an HTTP outcome."""
+    pending = record.terminal_reconciling
+    return {"job_ref": record.job_ref, "execution_attempt_ref": record.execution_attempt_ref,
+            "operation": record.terminal_operation.value, "command_fingerprint": record.terminal_request_fingerprint,
+            "command_retained": True, "delivery": "unconfirmed", "automatic_resends": "stopped_including_restart",
+            "automatic_reads": "retry_with_backoff" if pending else "stopped", "new_work_for_attempt": "stopped",
+            "action": record.terminal_hold_action, "description": record.terminal_hold_description,
+            "code": record.terminal_hold_code, "detail": record.terminal_hold_detail,
+            "request_id": record.terminal_hold_request_id, "observed_state": record.terminal_observed_state,
+            "next_actor": "provider" if pending else "provider_operator",
+            "next_action": "retry only the Attempt read" if pending else "reconcile the original command and API outcome; involve the provider developer to investigate mismatches"}
+
+
+def _log_terminal_recovery(record):
+    facts = terminal_recovery_facts(record)
+    _LOG.warning(
+        "Attempt %s: exact %s command retained; delivery is unconfirmed. Automatic publication stays stopped across restart. "
+        "API code %s; request %s; cause: %s; guidance: %s; observed state: %s. Next actor %s must %s. recovery=%s",
+        facts["execution_attempt_ref"], facts["operation"], facts["code"], facts["request_id"], facts["detail"],
+        facts["description"], facts["observed_state"], facts["next_actor"], facts["next_action"], json.dumps(facts),
+    )
+
+
+def _terminal_held(record):
+    _log_terminal_recovery(record)
+    return TerminalPublicationHeld(record, record.terminal_hold_action, record.terminal_hold_description)
+
+
+def _reconcile_terminal(api, journal, record):
+    observed = observe_attempt(api=api, record=record)
+    if type(observed) is AttemptObservationFailed:
+        evidence = observed.evidence
+        if type(evidence) is ProviderProblem and evidence.status == 404:
+            state = "not_visible"
+        else:
+            _log_terminal_recovery(record)
+            return TerminalReconciliationPending(record, evidence)
+    else:
+        state = observed.snapshot.state.value
+    held = replace(record, terminal_observed_state=state)
+    journal.replace(record, held)
+    return _terminal_held(held)
 
 
 def reconcile_record(
@@ -979,6 +1058,9 @@ def reconcile_record(
             record=decision.record,
         )
 
+    if type(record) is TerminalPending and record.terminal_hold_action is not None:
+        return deliver_terminal(api=api, journal=journal, record=record)
+
     observed = observe_attempt(api=api, record=record)
     if type(observed) is AttemptObservationFailed:
         return observed
@@ -1005,6 +1087,11 @@ def reconcile_record(
         journal.replace(decision.record, terminal)
         return InterruptedFailurePending(terminal)
     if type(decision) in {ObserveUntilExpiry, RetainTerminalConflict}:
+        if type(decision) is RetainTerminalConflict and type(record) is TerminalPending and record.terminal_hold_action is None:
+            action = "do_not_resend" if observed.snapshot.state is AttemptState.EXPIRED else "reconcile_original"
+            held = replace(record, terminal_hold_action=action, terminal_observed_state=observed.snapshot.state.value, terminal_hold_description=("The Attempt expired before the exact terminal report was confirmed; do not resend." if action == "do_not_resend" else "The API reports a conflicting terminal state; reconcile the retained exact terminal report before any action."))
+            journal.replace(record, held)
+            return RetainTerminalConflict(held)
         return decision
     if type(decision) is ReplayTerminal:
         return deliver_terminal(

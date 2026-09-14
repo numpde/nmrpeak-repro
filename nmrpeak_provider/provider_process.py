@@ -22,6 +22,7 @@ from .attempt_journal_store import (
 )
 from .attempt_lifecycle import (
     AttemptObservationFailed,
+    TerminalReconciliationPending,
     FeedReadFailed,
     InputInterpretationUnavailable,
     InputReadFailed,
@@ -688,6 +689,7 @@ def _remote_failure_evidence(outcome: object) -> object | None:
     if type(outcome) in {
         AttemptInventoryReadFailed,
         AttemptObservationFailed,
+        TerminalReconciliationPending,
         FeedReadFailed,
         InputReadFailed,
         InputInterpretationUnavailable,

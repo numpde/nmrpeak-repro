@@ -15,6 +15,8 @@ from .canonical_json import (
     parse_canonical_json_bytes,
 )
 from .provider_https import ProviderOperation
+from ._nmr_api_failure_contract import CONFLICT_RECOVERY, EVIDENCE
+from ._nmr_api_failures import _text as admitted_evidence_text
 from .provider_requests import (
     _PreparedProviderRequest,
     prepare_execution_attempt_complete,
@@ -97,12 +99,22 @@ class ActiveAttempt(_AttemptRecord):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TerminalPending(_AttemptRecord):
-    """Exact terminal command bytes retained until receipt or expiry."""
+    """Exact terminal command bytes retained until a matching receipt."""
 
     execution_attempt_ref: str
     terminal_operation: TerminalOperation
     terminal_request_body: bytes = field(repr=False)
     terminal_request_fingerprint: str
+    terminal_hold_action: str | None = field(default=None)
+    terminal_hold_description: str | None = field(default=None, repr=False)
+    terminal_hold_code: str | None = None
+    terminal_hold_detail: str | None = field(default=None, repr=False)
+    terminal_hold_request_id: str | None = None
+    terminal_observed_state: str | None = None
+
+    @property
+    def terminal_reconciling(self) -> bool:
+        return self.terminal_hold_action == "reconcile_state" and self.terminal_observed_state is None
 
     def __post_init__(self) -> None:
         _AttemptRecord.__post_init__(self)
@@ -123,6 +135,28 @@ class TerminalPending(_AttemptRecord):
             self.terminal_operation,
             self.terminal_request_body,
         )
+        if (self.terminal_hold_action is None) != (self.terminal_hold_description is None):
+            raise ValueError("Attempt journal hold requires action and description together")
+        if self.terminal_hold_action is not None:
+            if self.terminal_hold_action not in {"do_not_resend", "reconcile_original", "reconcile_state"}:
+                raise ValueError("Attempt journal terminal hold action is invalid")
+            if (type(self.terminal_hold_description) is not str or not self.terminal_hold_description
+                    or len(self.terminal_hold_description.encode("utf-8")) > 4096
+                    or not self.terminal_hold_description.isprintable()):
+                raise ValueError("Attempt journal terminal hold description is invalid")
+
+        evidence = (self.terminal_hold_code, self.terminal_hold_detail, self.terminal_hold_request_id)
+        if self.terminal_hold_action is None and (any(value is not None for value in evidence) or self.terminal_observed_state is not None):
+            raise ValueError("Attempt journal recovery evidence requires a hold")
+        if any(value is not None for value in evidence):
+            operation = "execution_attempt_" + self.terminal_operation.value
+            if type(self.terminal_hold_code) is not str or self.terminal_hold_code not in CONFLICT_RECOVERY[operation]:
+                raise ValueError("Attempt journal API conflict code is invalid for its operation")
+            for value, name in ((self.terminal_hold_detail, "detail"), (self.terminal_hold_request_id, "request_id")):
+                if admitted_evidence_text(value, EVIDENCE[name]) is None:
+                    raise ValueError("Attempt journal API hold evidence is invalid")
+        if self.terminal_observed_state not in {None, "in_progress", "succeeded", "failed", "expired", "not_visible"}:
+            raise ValueError("Attempt journal observed state is invalid")
 
 
 AttemptJournalRecord = StartPending | ActiveAttempt | TerminalPending
@@ -168,6 +202,12 @@ def journal_record_bytes(record: AttemptJournalRecord) -> bytes:
             ).decode("ascii"),
             "terminal_request_fingerprint": record.terminal_request_fingerprint,
         }
+        if record.terminal_hold_action is not None:
+            document["record_kind"] = "terminal_reconciling" if record.terminal_reconciling else "terminal_hold"
+            document["terminal_hold_action"] = record.terminal_hold_action
+            document["terminal_hold_description"] = record.terminal_hold_description
+            for name in ("terminal_hold_code", "terminal_hold_detail", "terminal_hold_request_id", "terminal_observed_state"):
+                document[name] = getattr(record, name)
     encoded = canonical_json_bytes(document)
     if len(encoded) > MAX_JOURNAL_RECORD_BYTES:
         raise ValueError("Attempt journal record exceeds its durable size limit")
@@ -203,18 +243,11 @@ def parse_journal_record(raw: bytes) -> AttemptJournalRecord:
                 execution_attempt_ref=document["execution_attempt_ref"],
                 local_phase=LocalExecutionPhase(document["local_phase"]),
             )
-        elif kind == "terminal_pending":
-            _require_fields(
-                document,
-                _COMMON_FIELDS
-                | {
-                    "record_kind",
-                    "execution_attempt_ref",
-                    "terminal_operation",
-                    "terminal_request_base64",
-                    "terminal_request_fingerprint",
-                },
-            )
+        elif kind in {"terminal_pending", "terminal_hold", "terminal_reconciling"}:
+            fields = _COMMON_FIELDS | {"record_kind", "execution_attempt_ref", "terminal_operation", "terminal_request_base64", "terminal_request_fingerprint"}
+            if kind in {"terminal_hold", "terminal_reconciling"}:
+                fields |= {"terminal_hold_action", "terminal_hold_description", "terminal_hold_code", "terminal_hold_detail", "terminal_hold_request_id", "terminal_observed_state"}
+            _require_fields(document, fields)
             body_base64 = document["terminal_request_base64"]
             if type(body_base64) is not str:
                 raise ValueError("Attempt journal terminal request is not base64 text")
@@ -229,6 +262,12 @@ def parse_journal_record(raw: bytes) -> AttemptJournalRecord:
                 terminal_request_fingerprint=document[
                     "terminal_request_fingerprint"
                 ],
+                terminal_hold_action=document.get("terminal_hold_action"),
+                terminal_hold_description=document.get("terminal_hold_description"),
+                terminal_hold_code=document.get("terminal_hold_code"),
+                terminal_hold_detail=document.get("terminal_hold_detail"),
+                terminal_hold_request_id=document.get("terminal_hold_request_id"),
+                terminal_observed_state=document.get("terminal_observed_state"),
             )
         else:
             raise ValueError("Attempt journal record kind is unsupported")
@@ -396,8 +435,10 @@ def _terminal_restart(
     record: TerminalPending,
     snapshot: ExecutionAttemptSnapshot,
 ) -> RestartDecision:
+    if record.terminal_hold_action is not None:
+        return RetainTerminalConflict(record)
     if snapshot.state is AttemptState.EXPIRED:
-        return RetireResolved(record, snapshot.state)
+        return RetainTerminalConflict(record)
     expected_state = (
         AttemptState.SUCCEEDED
         if record.terminal_operation is TerminalOperation.COMPLETE

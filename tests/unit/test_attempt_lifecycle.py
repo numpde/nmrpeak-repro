@@ -1198,6 +1198,10 @@ class AttemptLifecycleTests(unittest.TestCase):
         api = CapturingApi(success_response(terminal_receipt(terminal, replayed=False)))
 
         class BrokenJournal:
+            def require_current(self, record):
+                if record != terminal:
+                    raise AssertionError("Unexpected retained command")
+
             def retire(self, record):
                 raise OSError("journal retirement failed")
 
@@ -1681,7 +1685,14 @@ class AttemptLifecycleTests(unittest.TestCase):
                         record=record,
                     )
                     self.assertIs(type(outcome), expected_type)
-                    self.assertEqual(journal.records(), (record,))
+                    retained, = journal.records()
+                    self.assertEqual(outcome.record, retained)
+                    if type(record) is TerminalPending:
+                        self.assertEqual(retained.terminal_request_body, record.terminal_request_body)
+                        self.assertEqual(retained.terminal_request_fingerprint, record.terminal_request_fingerprint)
+                        self.assertIsNotNone(retained.terminal_hold_action)
+                    else:
+                        self.assertEqual(retained, record)
 
     def test_restart_replays_terminal_or_retires_authoritatively_resolved_work(self) -> None:
         terminal = terminal_pending(TerminalOperation.COMPLETE)

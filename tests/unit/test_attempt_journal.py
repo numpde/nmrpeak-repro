@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import unittest
 
 from nmrpeak_provider.attempt_journal import (
@@ -64,6 +65,28 @@ class AttemptJournalRecordTests(unittest.TestCase):
                 self.assertEqual(parse_journal_record(raw), record)
                 self.assertNotIn(terminal.terminal_request_body, repr(record).encode())
         self.assertEqual("1" * 64 + ".json", journal_record_name(start))
+
+    def test_hold_is_part_of_the_exact_record_identity(self) -> None:
+        terminal = retain_terminal_command(active_attempt(), prepare_execution_attempt_fail(
+            execution_attempt_ref=ATTEMPT_REF, failure_code="input_rejected",
+            failure_message="The input is not supported."))
+        held = replace(terminal, terminal_hold_action="do_not_resend",
+                       terminal_hold_description="This command cannot be applied.")
+        self.assertNotEqual(terminal, held, "Stale callers must not retire a newly held command")
+        self.assertEqual(parse_journal_record(journal_record_bytes(held)), held)
+
+    def test_held_record_cannot_downgrade_or_admit_unbounded_evidence(self) -> None:
+        terminal = retain_terminal_command(active_attempt(), prepare_execution_attempt_fail(
+            execution_attempt_ref=ATTEMPT_REF, failure_code="input_rejected",
+            failure_message="The input is not supported."))
+        document = json.loads(journal_record_bytes(replace(terminal, terminal_hold_action="do_not_resend",
+            terminal_hold_description="This command cannot be applied.")))
+        for change in ({"terminal_hold_action": None}, {"terminal_hold_description": None},
+                       {"terminal_hold_description": ""}, {"terminal_hold_description": "é" * 2049}):
+            with self.subTest(field=next(iter(change))), self.assertRaises((TypeError, ValueError)):
+                parse_journal_record(canonical_json_bytes(document | change))
+        with self.assertRaises((TypeError, ValueError)):
+            replace(terminal, terminal_hold_description="An action is required.")
 
     def test_record_loader_rejects_shape_version_and_identity_drift(self) -> None:
         document = json.loads(journal_record_bytes(start_pending()))
@@ -237,7 +260,7 @@ class AttemptRestartDecisionTests(unittest.TestCase):
             "provider_execution_interrupted",
         )
 
-    def test_terminal_restart_requires_receipt_or_authoritative_expiry(self) -> None:
+    def test_terminal_restart_retains_reports_until_exact_receipt(self) -> None:
         complete = retain_terminal_command(
             active_attempt(),
             prepare_execution_attempt_complete(
@@ -260,7 +283,8 @@ class AttemptRestartDecisionTests(unittest.TestCase):
             (complete, AttemptState.FAILED, RetainTerminalConflict),
             (fail, AttemptState.FAILED, ReplayTerminal),
             (fail, AttemptState.SUCCEEDED, RetainTerminalConflict),
-            (fail, AttemptState.EXPIRED, RetireResolved),
+            (fail, AttemptState.EXPIRED, RetainTerminalConflict),
+            (complete, AttemptState.EXPIRED, RetainTerminalConflict),
         )
         for record, state, expected_type in cases:
             with self.subTest(operation=record.terminal_operation, state=state):
@@ -330,3 +354,19 @@ def snapshot(
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TerminalReconciliationJournalTests(unittest.TestCase):
+    def test_pending_kind_is_closed_and_canonical_api_evidence_round_trips(self):
+        terminal = retain_terminal_command(active_attempt(), prepare_execution_attempt_fail(
+            execution_attempt_ref=ATTEMPT_REF, failure_code="input_rejected", failure_message="Input unsupported."))
+        pending = replace(terminal, terminal_hold_action="reconcile_state", terminal_hold_description="Reconcile state.",
+                          terminal_hold_code="operation_conflict", terminal_hold_detail="A valid\u00a0detail.", terminal_hold_request_id="request:test")
+        document = json.loads(journal_record_bytes(pending))
+        self.assertEqual(document["record_kind"], "terminal_reconciling")
+        self.assertEqual(parse_journal_record(journal_record_bytes(pending)), pending)
+        for change in ({"record_kind": "terminal_hold"}, {"terminal_observed_state": "expired"},
+                       {"terminal_hold_action": "do_not_resend"}, {"terminal_hold_detail": " leading"},
+                       {"terminal_hold_request_id": "bad request"}, {"terminal_hold_code": "unknown_ascii_code"}):
+            with self.subTest(change=change), self.assertRaises((TypeError, ValueError)):
+                parse_journal_record(canonical_json_bytes(document | change))

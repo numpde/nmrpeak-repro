@@ -10,7 +10,7 @@ import json
 import re
 from urllib.parse import quote
 
-from ._nmr_api_failure_contract import EVIDENCE, OPERATIONS, PROFILES, RECOVERY, SEND_EFFECTS
+from ._nmr_api_failure_contract import EVIDENCE, OPERATIONS, PROFILES, RECOVERY, SEND_EFFECTS, CONFLICT_RECOVERY
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +32,8 @@ class FailureInterpretation:
     recovery_description: str | None = None
     # This send only; a later refusal never clears uncertainty about earlier sends.
     current_send_effect: str | None = None
+    conflict_action: str | None = None
+    conflict_description: str | None = None
 
 
 def _text(value: object, profile: dict) -> str | None:
@@ -135,7 +137,9 @@ The decoded body's fields are never evidence of success or an earlier outcome.
     result = replace(result, instance=expected_instance)
     if result.header_request_id != result.body_request_id:
         return replace(result, rejection="request_id_mismatch")
+    conflict = CONFLICT_RECOVERY.get(operation, {}).get(result.code, {}) if status == 409 else {}
     return replace(result, verified=True, rejection=None,
                    recovery_mode=RECOVERY[operation]["mode"],
                    recovery_description=RECOVERY[operation]["description"],
-                   current_send_effect=SEND_EFFECTS[operation][status][result.problem_type][result.code])
+                   current_send_effect=SEND_EFFECTS[operation][status][result.problem_type][result.code],
+                   conflict_action=conflict.get("action"), conflict_description=conflict.get("description"))

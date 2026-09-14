@@ -1,5 +1,5 @@
 """Generated provider Problem wire facts; do not edit."""
-OPENAPI_SHA256 = '078ec9942e257ec8ce098189918209c303162731b86df4b4008defcd77724071'
+OPENAPI_SHA256 = '7450ccc376717c32a9e7d941b3b7ad3d45632cafb162f8cedee0b08cb37b45cf'
 EVIDENCE = {'detail': {'maxLength': 1024,
             'minLength': 1,
             'not': {'pattern': '^[\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000]|[\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000](?![\\s\\S])|[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ud800-\\udfff\\ufeff\\ufff9-\\ufffb]'},
@@ -1368,6 +1368,701 @@ SEND_EFFECTS = {'execution_attempt_complete': {400: {'urn:nmr-api:problem:bad-re
                                                                       'upload_finalize_storage_request_idle_timeout': 'no_assertion',
                                                                       'upload_finalize_storage_request_timeout': 'no_assertion',
                                                                       'upload_finalize_storage_slots_exhausted': 'no_assertion'}}}}
+CONFLICT_RECOVERY = {'execution_attempt_complete': {'deployment_upload_record_limit_reached': {'action': 'reconcile_state',
+                                                                           'description': 'For '
+                                                                                          'other '
+                                                                                          'conflicts, '
+                                                                                          'reconcile '
+                                                                                          'current '
+                                                                                          'state '
+                                                                                          'and '
+                                                                                          'durable '
+                                                                                          'replay '
+                                                                                          'facts; '
+                                                                                          'retry '
+                                                                                          'only an '
+                                                                                          'exact '
+                                                                                          'replay.'},
+                                'deployment_upload_reserved_bytes_limit_exceeded': {'action': 'reconcile_state',
+                                                                                    'description': 'For '
+                                                                                                   'other '
+                                                                                                   'conflicts, '
+                                                                                                   'reconcile '
+                                                                                                   'current '
+                                                                                                   'state '
+                                                                                                   'and '
+                                                                                                   'durable '
+                                                                                                   'replay '
+                                                                                                   'facts; '
+                                                                                                   'retry '
+                                                                                                   'only '
+                                                                                                   'an '
+                                                                                                   'exact '
+                                                                                                   'replay.'},
+                                'execution_attempt_completion_after_failure': {'action': 'do_not_resend',
+                                                                               'description': 'For '
+                                                                                              'execution_attempt_completion_after_failure, '
+                                                                                              'do '
+                                                                                              'not '
+                                                                                              'resend '
+                                                                                              'completion; '
+                                                                                              'only '
+                                                                                              'the '
+                                                                                              'original '
+                                                                                              'failure '
+                                                                                              'report '
+                                                                                              'can '
+                                                                                              'be '
+                                                                                              'replayed.'},
+                                'execution_attempt_completion_replay_mismatch': {'action': 'reconcile_original',
+                                                                                 'description': 'For '
+                                                                                                'execution_attempt_completion_replay_mismatch, '
+                                                                                                'only '
+                                                                                                'the '
+                                                                                                'original '
+                                                                                                'unchanged '
+                                                                                                'completion '
+                                                                                                'request '
+                                                                                                'can '
+                                                                                                'be '
+                                                                                                'replayed; '
+                                                                                                'detail '
+                                                                                                'identifies '
+                                                                                                'changed '
+                                                                                                'fields '
+                                                                                                'without '
+                                                                                                'values.'},
+                                'execution_attempt_failure_after_success': {'action': 'do_not_resend',
+                                                                            'description': 'For '
+                                                                                           'execution_attempt_failure_after_success, '
+                                                                                           'do not '
+                                                                                           'resend '
+                                                                                           'failure; '
+                                                                                           'only '
+                                                                                           'the '
+                                                                                           'original '
+                                                                                           'completion '
+                                                                                           'request '
+                                                                                           'can be '
+                                                                                           'replayed.'},
+                                'execution_attempt_failure_replay_mismatch': {'action': 'reconcile_original',
+                                                                              'description': 'For '
+                                                                                             'execution_attempt_failure_replay_mismatch, '
+                                                                                             'only '
+                                                                                             'the '
+                                                                                             'original '
+                                                                                             'unchanged '
+                                                                                             'failure '
+                                                                                             'report '
+                                                                                             'can '
+                                                                                             'be '
+                                                                                             'replayed; '
+                                                                                             'detail '
+                                                                                             'identifies '
+                                                                                             'changed '
+                                                                                             'fields '
+                                                                                             'without '
+                                                                                             'values.'},
+                                'execution_attempt_outcome_expired': {'action': 'do_not_resend',
+                                                                      'description': 'For '
+                                                                                     'execution_attempt_outcome_expired, '
+                                                                                     'follow '
+                                                                                     'detail; do '
+                                                                                     'not resend '
+                                                                                     'completion '
+                                                                                     'or failure '
+                                                                                     'to the '
+                                                                                     'expired '
+                                                                                     'Attempt.'},
+                                'execution_attempt_progress_regression': {'action': 'reconcile_state',
+                                                                          'description': 'For '
+                                                                                         'other '
+                                                                                         'conflicts, '
+                                                                                         'reconcile '
+                                                                                         'current '
+                                                                                         'state '
+                                                                                         'and '
+                                                                                         'durable '
+                                                                                         'replay '
+                                                                                         'facts; '
+                                                                                         'retry '
+                                                                                         'only an '
+                                                                                         'exact '
+                                                                                         'replay.'},
+                                'execution_attempt_progress_terminal': {'action': 'reconcile_state',
+                                                                        'description': 'For other '
+                                                                                       'conflicts, '
+                                                                                       'reconcile '
+                                                                                       'current '
+                                                                                       'state and '
+                                                                                       'durable '
+                                                                                       'replay '
+                                                                                       'facts; '
+                                                                                       'retry only '
+                                                                                       'an exact '
+                                                                                       'replay.'},
+                                'job_attempt_limit_reached': {'action': 'reconcile_state',
+                                                              'description': 'For other conflicts, '
+                                                                             'reconcile current '
+                                                                             'state and durable '
+                                                                             'replay facts; retry '
+                                                                             'only an exact '
+                                                                             'replay.'},
+                                'job_open_pending_uploads': {'action': 'reconcile_state',
+                                                             'description': 'For other conflicts, '
+                                                                            'reconcile current '
+                                                                            'state and durable '
+                                                                            'replay facts; retry '
+                                                                            'only an exact '
+                                                                            'replay.'},
+                                'job_provider_attempt_limit_reached': {'action': 'reconcile_state',
+                                                                       'description': 'For other '
+                                                                                      'conflicts, '
+                                                                                      'reconcile '
+                                                                                      'current '
+                                                                                      'state and '
+                                                                                      'durable '
+                                                                                      'replay '
+                                                                                      'facts; '
+                                                                                      'retry only '
+                                                                                      'an exact '
+                                                                                      'replay.'},
+                                'job_state_change_cancelled': {'action': 'reconcile_state',
+                                                               'description': 'For other '
+                                                                              'conflicts, '
+                                                                              'reconcile current '
+                                                                              'state and durable '
+                                                                              'replay facts; retry '
+                                                                              'only an exact '
+                                                                              'replay.'},
+                                'job_upload_selection_cancelled': {'action': 'reconcile_state',
+                                                                   'description': 'For other '
+                                                                                  'conflicts, '
+                                                                                  'reconcile '
+                                                                                  'current state '
+                                                                                  'and durable '
+                                                                                  'replay facts; '
+                                                                                  'retry only an '
+                                                                                  'exact replay.'},
+                                'job_upload_selection_pending': {'action': 'reconcile_state',
+                                                                 'description': 'For other '
+                                                                                'conflicts, '
+                                                                                'reconcile current '
+                                                                                'state and durable '
+                                                                                'replay facts; '
+                                                                                'retry only an '
+                                                                                'exact replay.'},
+                                'job_upload_selection_removal_scheduled': {'action': 'reconcile_state',
+                                                                           'description': 'For '
+                                                                                          'other '
+                                                                                          'conflicts, '
+                                                                                          'reconcile '
+                                                                                          'current '
+                                                                                          'state '
+                                                                                          'and '
+                                                                                          'durable '
+                                                                                          'replay '
+                                                                                          'facts; '
+                                                                                          'retry '
+                                                                                          'only an '
+                                                                                          'exact '
+                                                                                          'replay.'},
+                                'job_upload_selection_retention_expired': {'action': 'reconcile_state',
+                                                                           'description': 'For '
+                                                                                          'other '
+                                                                                          'conflicts, '
+                                                                                          'reconcile '
+                                                                                          'current '
+                                                                                          'state '
+                                                                                          'and '
+                                                                                          'durable '
+                                                                                          'replay '
+                                                                                          'facts; '
+                                                                                          'retry '
+                                                                                          'only an '
+                                                                                          'exact '
+                                                                                          'replay.'},
+                                'operation_conflict': {'action': 'reconcile_state',
+                                                       'description': 'For other conflicts, '
+                                                                      'reconcile current state and '
+                                                                      'durable replay facts; retry '
+                                                                      'only an exact replay.'},
+                                'operation_reference_conflict': {'action': 'reconcile_state',
+                                                                 'description': 'For other '
+                                                                                'conflicts, '
+                                                                                'reconcile current '
+                                                                                'state and durable '
+                                                                                'replay facts; '
+                                                                                'retry only an '
+                                                                                'exact replay.'},
+                                'project_job_limit_reached': {'action': 'reconcile_state',
+                                                              'description': 'For other conflicts, '
+                                                                             'reconcile current '
+                                                                             'state and durable '
+                                                                             'replay facts; retry '
+                                                                             'only an exact '
+                                                                             'replay.'},
+                                'project_operation_record_limit_reached': {'action': 'reconcile_state',
+                                                                           'description': 'For '
+                                                                                          'other '
+                                                                                          'conflicts, '
+                                                                                          'reconcile '
+                                                                                          'current '
+                                                                                          'state '
+                                                                                          'and '
+                                                                                          'durable '
+                                                                                          'replay '
+                                                                                          'facts; '
+                                                                                          'retry '
+                                                                                          'only an '
+                                                                                          'exact '
+                                                                                          'replay.'},
+                                'project_purge_in_progress': {'action': 'reconcile_state',
+                                                              'description': 'For other conflicts, '
+                                                                             'reconcile current '
+                                                                             'state and durable '
+                                                                             'replay facts; retry '
+                                                                             'only an exact '
+                                                                             'replay.'},
+                                'project_upload_record_limit_reached': {'action': 'reconcile_state',
+                                                                        'description': 'For other '
+                                                                                       'conflicts, '
+                                                                                       'reconcile '
+                                                                                       'current '
+                                                                                       'state and '
+                                                                                       'durable '
+                                                                                       'replay '
+                                                                                       'facts; '
+                                                                                       'retry only '
+                                                                                       'an exact '
+                                                                                       'replay.'},
+                                'project_upload_reserved_bytes_limit_exceeded': {'action': 'reconcile_state',
+                                                                                 'description': 'For '
+                                                                                                'other '
+                                                                                                'conflicts, '
+                                                                                                'reconcile '
+                                                                                                'current '
+                                                                                                'state '
+                                                                                                'and '
+                                                                                                'durable '
+                                                                                                'replay '
+                                                                                                'facts; '
+                                                                                                'retry '
+                                                                                                'only '
+                                                                                                'an '
+                                                                                                'exact '
+                                                                                                'replay.'},
+                                'provider_attempt_key_conflict': {'action': 'reconcile_state',
+                                                                  'description': 'For other '
+                                                                                 'conflicts, '
+                                                                                 'reconcile '
+                                                                                 'current state '
+                                                                                 'and durable '
+                                                                                 'replay facts; '
+                                                                                 'retry only an '
+                                                                                 'exact replay.'},
+                                'upload_byte_length_limit_exceeded': {'action': 'reconcile_state',
+                                                                      'description': 'For other '
+                                                                                     'conflicts, '
+                                                                                     'reconcile '
+                                                                                     'current '
+                                                                                     'state and '
+                                                                                     'durable '
+                                                                                     'replay '
+                                                                                     'facts; retry '
+                                                                                     'only an '
+                                                                                     'exact '
+                                                                                     'replay.'},
+                                'upload_finalize_bytes_absent': {'action': 'reconcile_state',
+                                                                 'description': 'For other '
+                                                                                'conflicts, '
+                                                                                'reconcile current '
+                                                                                'state and durable '
+                                                                                'replay facts; '
+                                                                                'retry only an '
+                                                                                'exact replay.'},
+                                'upload_finalize_bytes_incomplete': {'action': 'reconcile_state',
+                                                                     'description': 'For other '
+                                                                                    'conflicts, '
+                                                                                    'reconcile '
+                                                                                    'current state '
+                                                                                    'and durable '
+                                                                                    'replay facts; '
+                                                                                    'retry only an '
+                                                                                    'exact '
+                                                                                    'replay.'},
+                                'upload_finalize_removal_scheduled': {'action': 'reconcile_state',
+                                                                      'description': 'For other '
+                                                                                     'conflicts, '
+                                                                                     'reconcile '
+                                                                                     'current '
+                                                                                     'state and '
+                                                                                     'durable '
+                                                                                     'replay '
+                                                                                     'facts; retry '
+                                                                                     'only an '
+                                                                                     'exact '
+                                                                                     'replay.'},
+                                'upload_linked_to_job': {'action': 'reconcile_state',
+                                                         'description': 'For other conflicts, '
+                                                                        'reconcile current state '
+                                                                        'and durable replay facts; '
+                                                                        'retry only an exact '
+                                                                        'replay.'},
+                                'upload_publish_already_finalized': {'action': 'reconcile_state',
+                                                                     'description': 'For other '
+                                                                                    'conflicts, '
+                                                                                    'reconcile '
+                                                                                    'current state '
+                                                                                    'and durable '
+                                                                                    'replay facts; '
+                                                                                    'retry only an '
+                                                                                    'exact '
+                                                                                    'replay.'},
+                                'upload_publish_removal_scheduled': {'action': 'reconcile_state',
+                                                                     'description': 'For other '
+                                                                                    'conflicts, '
+                                                                                    'reconcile '
+                                                                                    'current state '
+                                                                                    'and durable '
+                                                                                    'replay facts; '
+                                                                                    'retry only an '
+                                                                                    'exact '
+                                                                                    'replay.'},
+                                'upload_read_not_finalized': {'action': 'reconcile_state',
+                                                              'description': 'For other conflicts, '
+                                                                             'reconcile current '
+                                                                             'state and durable '
+                                                                             'replay facts; retry '
+                                                                             'only an exact '
+                                                                             'replay.'},
+                                'upload_read_removal_scheduled': {'action': 'reconcile_state',
+                                                                  'description': 'For other '
+                                                                                 'conflicts, '
+                                                                                 'reconcile '
+                                                                                 'current state '
+                                                                                 'and durable '
+                                                                                 'replay facts; '
+                                                                                 'retry only an '
+                                                                                 'exact replay.'}},
+ 'execution_attempt_fail': {'deployment_upload_record_limit_reached': {'action': 'reconcile_state',
+                                                                       'description': 'For other '
+                                                                                      'conflicts, '
+                                                                                      'reconcile '
+                                                                                      'current '
+                                                                                      'state and '
+                                                                                      'durable '
+                                                                                      'replay '
+                                                                                      'facts; '
+                                                                                      'retry only '
+                                                                                      'an exact '
+                                                                                      'replay.'},
+                            'deployment_upload_reserved_bytes_limit_exceeded': {'action': 'reconcile_state',
+                                                                                'description': 'For '
+                                                                                               'other '
+                                                                                               'conflicts, '
+                                                                                               'reconcile '
+                                                                                               'current '
+                                                                                               'state '
+                                                                                               'and '
+                                                                                               'durable '
+                                                                                               'replay '
+                                                                                               'facts; '
+                                                                                               'retry '
+                                                                                               'only '
+                                                                                               'an '
+                                                                                               'exact '
+                                                                                               'replay.'},
+                            'execution_attempt_completion_after_failure': {'action': 'do_not_resend',
+                                                                           'description': 'For '
+                                                                                          'execution_attempt_completion_after_failure, '
+                                                                                          'do not '
+                                                                                          'resend '
+                                                                                          'completion; '
+                                                                                          'only '
+                                                                                          'the '
+                                                                                          'original '
+                                                                                          'failure '
+                                                                                          'report '
+                                                                                          'can be '
+                                                                                          'replayed.'},
+                            'execution_attempt_completion_replay_mismatch': {'action': 'reconcile_original',
+                                                                             'description': 'For '
+                                                                                            'execution_attempt_completion_replay_mismatch, '
+                                                                                            'only '
+                                                                                            'the '
+                                                                                            'original '
+                                                                                            'unchanged '
+                                                                                            'completion '
+                                                                                            'request '
+                                                                                            'can '
+                                                                                            'be '
+                                                                                            'replayed; '
+                                                                                            'detail '
+                                                                                            'identifies '
+                                                                                            'changed '
+                                                                                            'fields '
+                                                                                            'without '
+                                                                                            'values.'},
+                            'execution_attempt_failure_after_success': {'action': 'do_not_resend',
+                                                                        'description': 'For '
+                                                                                       'execution_attempt_failure_after_success, '
+                                                                                       'do not '
+                                                                                       'resend '
+                                                                                       'failure; '
+                                                                                       'only the '
+                                                                                       'original '
+                                                                                       'completion '
+                                                                                       'request '
+                                                                                       'can be '
+                                                                                       'replayed.'},
+                            'execution_attempt_failure_replay_mismatch': {'action': 'reconcile_original',
+                                                                          'description': 'For '
+                                                                                         'execution_attempt_failure_replay_mismatch, '
+                                                                                         'only the '
+                                                                                         'original '
+                                                                                         'unchanged '
+                                                                                         'failure '
+                                                                                         'report '
+                                                                                         'can be '
+                                                                                         'replayed; '
+                                                                                         'detail '
+                                                                                         'identifies '
+                                                                                         'changed '
+                                                                                         'fields '
+                                                                                         'without '
+                                                                                         'values.'},
+                            'execution_attempt_outcome_expired': {'action': 'do_not_resend',
+                                                                  'description': 'For '
+                                                                                 'execution_attempt_outcome_expired, '
+                                                                                 'follow detail; '
+                                                                                 'do not resend '
+                                                                                 'completion or '
+                                                                                 'failure to the '
+                                                                                 'expired '
+                                                                                 'Attempt.'},
+                            'execution_attempt_progress_regression': {'action': 'reconcile_state',
+                                                                      'description': 'For other '
+                                                                                     'conflicts, '
+                                                                                     'reconcile '
+                                                                                     'current '
+                                                                                     'state and '
+                                                                                     'durable '
+                                                                                     'replay '
+                                                                                     'facts; retry '
+                                                                                     'only an '
+                                                                                     'exact '
+                                                                                     'replay.'},
+                            'execution_attempt_progress_terminal': {'action': 'reconcile_state',
+                                                                    'description': 'For other '
+                                                                                   'conflicts, '
+                                                                                   'reconcile '
+                                                                                   'current state '
+                                                                                   'and durable '
+                                                                                   'replay facts; '
+                                                                                   'retry only an '
+                                                                                   'exact replay.'},
+                            'job_attempt_limit_reached': {'action': 'reconcile_state',
+                                                          'description': 'For other conflicts, '
+                                                                         'reconcile current state '
+                                                                         'and durable replay '
+                                                                         'facts; retry only an '
+                                                                         'exact replay.'},
+                            'job_open_pending_uploads': {'action': 'reconcile_state',
+                                                         'description': 'For other conflicts, '
+                                                                        'reconcile current state '
+                                                                        'and durable replay facts; '
+                                                                        'retry only an exact '
+                                                                        'replay.'},
+                            'job_provider_attempt_limit_reached': {'action': 'reconcile_state',
+                                                                   'description': 'For other '
+                                                                                  'conflicts, '
+                                                                                  'reconcile '
+                                                                                  'current state '
+                                                                                  'and durable '
+                                                                                  'replay facts; '
+                                                                                  'retry only an '
+                                                                                  'exact replay.'},
+                            'job_state_change_cancelled': {'action': 'reconcile_state',
+                                                           'description': 'For other conflicts, '
+                                                                          'reconcile current state '
+                                                                          'and durable replay '
+                                                                          'facts; retry only an '
+                                                                          'exact replay.'},
+                            'job_upload_selection_cancelled': {'action': 'reconcile_state',
+                                                               'description': 'For other '
+                                                                              'conflicts, '
+                                                                              'reconcile current '
+                                                                              'state and durable '
+                                                                              'replay facts; retry '
+                                                                              'only an exact '
+                                                                              'replay.'},
+                            'job_upload_selection_pending': {'action': 'reconcile_state',
+                                                             'description': 'For other conflicts, '
+                                                                            'reconcile current '
+                                                                            'state and durable '
+                                                                            'replay facts; retry '
+                                                                            'only an exact '
+                                                                            'replay.'},
+                            'job_upload_selection_removal_scheduled': {'action': 'reconcile_state',
+                                                                       'description': 'For other '
+                                                                                      'conflicts, '
+                                                                                      'reconcile '
+                                                                                      'current '
+                                                                                      'state and '
+                                                                                      'durable '
+                                                                                      'replay '
+                                                                                      'facts; '
+                                                                                      'retry only '
+                                                                                      'an exact '
+                                                                                      'replay.'},
+                            'job_upload_selection_retention_expired': {'action': 'reconcile_state',
+                                                                       'description': 'For other '
+                                                                                      'conflicts, '
+                                                                                      'reconcile '
+                                                                                      'current '
+                                                                                      'state and '
+                                                                                      'durable '
+                                                                                      'replay '
+                                                                                      'facts; '
+                                                                                      'retry only '
+                                                                                      'an exact '
+                                                                                      'replay.'},
+                            'operation_conflict': {'action': 'reconcile_state',
+                                                   'description': 'For other conflicts, reconcile '
+                                                                  'current state and durable '
+                                                                  'replay facts; retry only an '
+                                                                  'exact replay.'},
+                            'operation_reference_conflict': {'action': 'reconcile_state',
+                                                             'description': 'For other conflicts, '
+                                                                            'reconcile current '
+                                                                            'state and durable '
+                                                                            'replay facts; retry '
+                                                                            'only an exact '
+                                                                            'replay.'},
+                            'project_job_limit_reached': {'action': 'reconcile_state',
+                                                          'description': 'For other conflicts, '
+                                                                         'reconcile current state '
+                                                                         'and durable replay '
+                                                                         'facts; retry only an '
+                                                                         'exact replay.'},
+                            'project_operation_record_limit_reached': {'action': 'reconcile_state',
+                                                                       'description': 'For other '
+                                                                                      'conflicts, '
+                                                                                      'reconcile '
+                                                                                      'current '
+                                                                                      'state and '
+                                                                                      'durable '
+                                                                                      'replay '
+                                                                                      'facts; '
+                                                                                      'retry only '
+                                                                                      'an exact '
+                                                                                      'replay.'},
+                            'project_purge_in_progress': {'action': 'reconcile_state',
+                                                          'description': 'For other conflicts, '
+                                                                         'reconcile current state '
+                                                                         'and durable replay '
+                                                                         'facts; retry only an '
+                                                                         'exact replay.'},
+                            'project_upload_record_limit_reached': {'action': 'reconcile_state',
+                                                                    'description': 'For other '
+                                                                                   'conflicts, '
+                                                                                   'reconcile '
+                                                                                   'current state '
+                                                                                   'and durable '
+                                                                                   'replay facts; '
+                                                                                   'retry only an '
+                                                                                   'exact replay.'},
+                            'project_upload_reserved_bytes_limit_exceeded': {'action': 'reconcile_state',
+                                                                             'description': 'For '
+                                                                                            'other '
+                                                                                            'conflicts, '
+                                                                                            'reconcile '
+                                                                                            'current '
+                                                                                            'state '
+                                                                                            'and '
+                                                                                            'durable '
+                                                                                            'replay '
+                                                                                            'facts; '
+                                                                                            'retry '
+                                                                                            'only '
+                                                                                            'an '
+                                                                                            'exact '
+                                                                                            'replay.'},
+                            'provider_attempt_key_conflict': {'action': 'reconcile_state',
+                                                              'description': 'For other conflicts, '
+                                                                             'reconcile current '
+                                                                             'state and durable '
+                                                                             'replay facts; retry '
+                                                                             'only an exact '
+                                                                             'replay.'},
+                            'upload_byte_length_limit_exceeded': {'action': 'reconcile_state',
+                                                                  'description': 'For other '
+                                                                                 'conflicts, '
+                                                                                 'reconcile '
+                                                                                 'current state '
+                                                                                 'and durable '
+                                                                                 'replay facts; '
+                                                                                 'retry only an '
+                                                                                 'exact replay.'},
+                            'upload_finalize_bytes_absent': {'action': 'reconcile_state',
+                                                             'description': 'For other conflicts, '
+                                                                            'reconcile current '
+                                                                            'state and durable '
+                                                                            'replay facts; retry '
+                                                                            'only an exact '
+                                                                            'replay.'},
+                            'upload_finalize_bytes_incomplete': {'action': 'reconcile_state',
+                                                                 'description': 'For other '
+                                                                                'conflicts, '
+                                                                                'reconcile current '
+                                                                                'state and durable '
+                                                                                'replay facts; '
+                                                                                'retry only an '
+                                                                                'exact replay.'},
+                            'upload_finalize_removal_scheduled': {'action': 'reconcile_state',
+                                                                  'description': 'For other '
+                                                                                 'conflicts, '
+                                                                                 'reconcile '
+                                                                                 'current state '
+                                                                                 'and durable '
+                                                                                 'replay facts; '
+                                                                                 'retry only an '
+                                                                                 'exact replay.'},
+                            'upload_linked_to_job': {'action': 'reconcile_state',
+                                                     'description': 'For other conflicts, '
+                                                                    'reconcile current state and '
+                                                                    'durable replay facts; retry '
+                                                                    'only an exact replay.'},
+                            'upload_publish_already_finalized': {'action': 'reconcile_state',
+                                                                 'description': 'For other '
+                                                                                'conflicts, '
+                                                                                'reconcile current '
+                                                                                'state and durable '
+                                                                                'replay facts; '
+                                                                                'retry only an '
+                                                                                'exact replay.'},
+                            'upload_publish_removal_scheduled': {'action': 'reconcile_state',
+                                                                 'description': 'For other '
+                                                                                'conflicts, '
+                                                                                'reconcile current '
+                                                                                'state and durable '
+                                                                                'replay facts; '
+                                                                                'retry only an '
+                                                                                'exact replay.'},
+                            'upload_read_not_finalized': {'action': 'reconcile_state',
+                                                          'description': 'For other conflicts, '
+                                                                         'reconcile current state '
+                                                                         'and durable replay '
+                                                                         'facts; retry only an '
+                                                                         'exact replay.'},
+                            'upload_read_removal_scheduled': {'action': 'reconcile_state',
+                                                              'description': 'For other conflicts, '
+                                                                             'reconcile current '
+                                                                             'state and durable '
+                                                                             'replay facts; retry '
+                                                                             'only an exact '
+                                                                             'replay.'}}}
 PROFILES = ({'fixed_details': {},
   'properties': {'code': {'enum': ['provider_request_invalid', 'request_content_not_supported']},
                  'detail': {'maxLength': 1024,

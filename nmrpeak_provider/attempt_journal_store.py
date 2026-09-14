@@ -112,6 +112,13 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             self._replace_record(target, journal_record_bytes(record))
             return record
 
+    def require_current(self, expected: AttemptJournalRecord) -> None:
+        """Authorize effects only for the exact current writable obligation."""
+        with self._lock:
+            self._require_usable()
+            self._require_writable()
+            self._require_current(journal_record_name(expected), expected)
+
     def replace(
         self,
         expected: AttemptJournalRecord,
