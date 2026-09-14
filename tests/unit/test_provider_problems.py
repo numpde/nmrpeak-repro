@@ -15,6 +15,53 @@ from nmrpeak_provider.provider_problems import (
 
 
 class ProviderProblemTests(unittest.TestCase):
+    def test_current_authorization_refusal_reaches_operator_explanation(self) -> None:
+        # Current provider API, revision 1708afc2: authorization Problems disclose
+        # code/detail; those fields are evidence, not a malformed-response cause.
+        from nmrpeak_provider.provider_process import _remote_evidence_message
+
+        detail = (
+            "The API could not authorize this request. The account or credentials "
+            "may lack permission, or a resource referenced by the request may be "
+            "missing or unavailable. For privacy, this response does not "
+            "distinguish these cases."
+        )
+        document = _basic_document(
+            403, "urn:nmr-api:problem:authorization-denied", "Authorization denied"
+        ) | {"code": "authorization_denied", "detail": detail,
+             "instance": "urn:nmr-api:request:body-request"}
+        outcome = parse_provider_problem(
+            ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
+            _problem_response(403, document, header_request_id="body-request"),
+        )
+        self.assertIs(type(outcome), ProviderProblem)
+        message = _remote_evidence_message(outcome)
+        self.assertIn(detail, message)
+        self.assertIn("authorization_denied", message)
+        self.assertIn("body-request", message)
+
+    def test_current_refusal_with_bad_correlation_keeps_unverified_explanation(self) -> None:
+        from nmrpeak_provider.provider_process import _remote_evidence_message
+
+        for header, instance in (
+            ("different-request", "urn:nmr-api:request:body-request"),
+            ("body-request", "urn:nmr-api:request:different-request"),
+        ):
+            with self.subTest(header=header, instance=instance):
+                document = _basic_document(
+                    403, "urn:nmr-api:problem:authorization-denied", "Authorization denied"
+                ) | {"code": "authorization_denied", "detail": "Check account permissions.",
+                     "instance": instance}
+                outcome = parse_provider_problem(
+                    ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
+                    _problem_response(403, document, header_request_id=header),
+                )
+                self.assertIs(type(outcome), ProviderProblemRejected)
+                message = _remote_evidence_message(outcome)
+                self.assertIn("unverified", message)
+                self.assertIn("Check account permissions.", message)
+                self.assertIn("body-request", message)
+
     def test_noncanonical_problem_json_preserves_independent_request_ids(self) -> None:
         response = _problem_response(
             400,

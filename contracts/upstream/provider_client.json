@@ -1,0 +1,16 @@
+{
+  "api_contract_revision": "1708afc2b1a213b4b7c71d6ac4421284b9983834",
+  "inputs": {
+    "nmr_api/provider/openapi/openapi.v1.json": "89ea12cafc2b1ce339bf593fc86d41576e40280d6640b599a416c61c0e19eb9a"
+  },
+  "interpreter_source_revision": "9c880b44e68b957b73ce827d5919f2b04c80afdf",
+  "outputs": {
+    "_nmr_api_failure_contract.py": "5e61d2b1ea19a353447c044d040b4b2f3765853c41042fba08b96dc3988f6660",
+    "_nmr_api_failures.py": "cf1cffa6ea794cd392b7d072ab0042029233e156790320e26bbbd05e69342673"
+  },
+  "sources": {
+    "clients/provider_python/_nmr_api_failures.py": "cf1cffa6ea794cd392b7d072ab0042029233e156790320e26bbbd05e69342673",
+    "clients/provider_python/project.py": "ecf0ec64ed57a1d727ace35d63274e585eafe7a4345d210ec00263914c86241c",
+    "clients/provider_python/render_failure_contract.py": "f03c730ec9430e879b00f1424af712974c3c0b869c93180fd800821da02969d1"
+  }
+}

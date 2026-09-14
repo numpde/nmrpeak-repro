@@ -710,6 +710,18 @@ def _remote_evidence_message(evidence: object) -> str:
             f"body request {evidence.body_request_id}{detail})"
         )
     if type(evidence) is ProviderProblemRejected:
+        if evidence.diagnostic is not None:
+            diagnostic = evidence.diagnostic
+            details = [f"the HTTP {evidence.status} response is unverified ({diagnostic.rejection})"]
+            for label, value in (
+                ("reported code", diagnostic.code),
+                ("reported explanation", diagnostic.detail),
+                ("transport request", diagnostic.header_request_id),
+                ("body request", diagnostic.body_request_id),
+            ):
+                if value is not None:
+                    details.append(f"{label}: {value}")
+            return "; ".join(details)
         return (
             f"the HTTP {evidence.status} problem response failed validation "
             f"({evidence.reason.value})"

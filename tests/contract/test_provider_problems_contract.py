@@ -1,4 +1,4 @@
-"""Exercise every released operation/problem pair through the explicit parser."""
+"""Exercise migrated authorization and remaining historical Problem profiles."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ CONTRACT_ROOT = Path(__file__).parents[2] / "contracts/upstream/nmr_api_v1"
 
 
 class ProviderProblemContractTests(unittest.TestCase):
-    def test_every_released_problem_shape_is_admitted_for_its_operation(self) -> None:
+    def test_migrated_authorization_and_remaining_profiles_are_admitted(self) -> None:
         release = load_provider_http_contract_release(CONTRACT_ROOT)
         for path_item in release.openapi["paths"].values():
             for operation_document in path_item.values():
@@ -41,11 +41,17 @@ class ProviderProblemContractTests(unittest.TestCase):
                     if "code" in schema["properties"]:
                         document["code"] = schema["properties"]["code"]["enum"][0]
                         document["detail"] = "Correct the provider request."
+                    if status == 403:
+                        # Authorization migrated to API1708; the archived release
+                        # remains evidence only for statuses still awaiting migration.
+                        document.update(code="authorization_denied",
+                                        detail="Check the provider account permissions.",
+                                        instance="urn:nmr-api:request:body-contract-request")
                     response = ProviderHttpResponse(
                         status=status,
                         topology="dev-local",
                         content_type="application/problem+json",
-                        request_id="header-contract-request",
+                        request_id=("body-contract-request" if status == 403 else "header-contract-request"),
                         body=json.dumps(document).encode("utf-8"),
                     )
                     with self.subTest(operation=operation.value, status=status):

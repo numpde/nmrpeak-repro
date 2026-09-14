@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import re
 
+from ._nmr_api_failures import FailureInterpretation, interpret_problem
+
 from .provider_https import (
     ProviderHttpResponse,
     ProviderOperation,
@@ -26,7 +28,6 @@ _STATUS_IDENTITY = {
         "urn:nmr-api:problem:authentication-failed",
         "Request authentication failed",
     ),
-    403: ("urn:nmr-api:problem:authorization-denied", "Authorization denied"),
     404: ("urn:nmr-api:problem:not-found", "Resource not found"),
     408: ("urn:nmr-api:problem:request-body-timeout", "Request body timeout"),
     409: ("urn:nmr-api:problem:operation-conflict", "Operation conflict"),
@@ -73,6 +74,7 @@ class ProblemRejection(Enum):
     """Closed reasons a problem document cannot enter provider policy."""
 
     NOT_A_PROBLEM_RESPONSE = "not_a_problem_response"
+    INVALID_CURRENT_CONTRACT = "invalid_current_contract"
     INVALID_JSON = "invalid_json"
     INVALID_FIELDS = "invalid_fields"
     INVALID_IDENTITY = "invalid_identity"
@@ -101,6 +103,7 @@ class ProviderProblemRejected:
     reason: ProblemRejection
     status: int
     cause: BaseException | None = field(default=None, compare=False, repr=False)
+    diagnostic: FailureInterpretation | None = field(default=None, repr=False)
 
 
 def parse_provider_problem(
@@ -113,6 +116,24 @@ def parse_provider_problem(
         raise TypeError("Provider problem parsing requires an admitted operation")
     if type(response) is not ProviderHttpResponse:
         raise TypeError("Provider problem parsing requires an admitted HTTP response")
+    current = interpret_problem(
+        operation=operation.value, status=response.status,
+        content_type=response.content_type, header_request_id=response.request_id,
+        body=response.body,
+    )
+    if current.supported:
+        if not current.verified:
+            return ProviderProblemRejected(
+                ProblemRejection.INVALID_CURRENT_CONTRACT, response.status,
+                diagnostic=current,
+            )
+        return ProviderProblem(
+            status=current.status, problem_type=current.problem_type,
+            title=current.title, instance=current.instance,
+            transport_request_id=current.header_request_id,
+            body_request_id=current.body_request_id, code=current.code,
+            detail=current.detail,
+        )
     if response.status == 200 or response.content_type != "application/problem+json":
         return ProviderProblemRejected(
             ProblemRejection.NOT_A_PROBLEM_RESPONSE,

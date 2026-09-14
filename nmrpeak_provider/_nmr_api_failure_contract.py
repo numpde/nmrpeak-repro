@@ -1,0 +1,27 @@
+"""Generated provider 403 wire facts; do not edit."""
+OPENAPI_SHA256 = '89ea12cafc2b1ce339bf593fc86d41576e40280d6640b599a416c61c0e19eb9a'
+OPERATIONS = ('execution_attempt_complete',
+ 'execution_attempt_fail',
+ 'execution_attempt_progress',
+ 'execution_attempt_read',
+ 'execution_attempt_start',
+ 'execution_attempts_list',
+ 'job_input_read',
+ 'job_upload_read_capability',
+ 'job_upload_set_read',
+ 'jobs_list',
+ 'provider_hello')
+PROFILE = {'code': {'enum': ['authorization_denied']},
+ 'detail': {'maxLength': 1024,
+            'minLength': 1,
+            'not': {'pattern': '^[\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000]|[\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000](?![\\s\\S])|[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ud800-\\udfff\\ufeff\\ufff9-\\ufffb]'},
+            'type': 'string',
+            'x-nmr-max-utf8-bytes': 1024},
+ 'instance': {'maxLength': 404, 'minLength': 1, 'type': 'string'},
+ 'request_id': {'maxLength': 128,
+                'minLength': 1,
+                'pattern': '^[\\u0021-\\u007e]+(?![\\s\\S])',
+                'type': 'string'},
+ 'status': {'const': 403},
+ 'title': {'const': 'Authorization denied'},
+ 'type': {'const': 'urn:nmr-api:problem:authorization-denied'}}

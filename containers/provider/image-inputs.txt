@@ -1,6 +1,8 @@
 containers/provider/Dockerfile
 containers/provider/Dockerfile.dockerignore
 nmrpeak_provider/__init__.py
+nmrpeak_provider/_nmr_api_failure_contract.py
+nmrpeak_provider/_nmr_api_failures.py
 nmrpeak_provider/attempt_identity.py
 nmrpeak_provider/attempt_inventory.py
 nmrpeak_provider/attempt_journal.py

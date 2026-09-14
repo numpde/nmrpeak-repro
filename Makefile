@@ -271,3 +271,14 @@ checkpoint/recover:
 	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-volume.sh" \
 		recover "$(VOLUME)" "$(CONFIRM)"
+
+# Current shared failure interpretation has its own source and API revisions;
+# the historical RELEASE projection above keeps its original meaning.
+.PHONY: provider-client/check provider-client/write
+provider-client/check provider-client/write: private export NMR_API_V1_DIR_INPUT := $(value NMR_API_V1_DIR)
+provider-client/check provider-client/write:
+	@test "$(origin NMR_API_V1_DIR)" = command\ line || { echo 'NMR_API_V1_DIR must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) "$$NMR_API_V1_DIR_INPUT/clients/provider_python/project.py" "$(@F)" \
+		--api-repository "$$NMR_API_V1_DIR_INPUT" \
+		--package "$(REPOSITORY_ROOT)/nmrpeak_provider" \
+		--manifest "$(REPOSITORY_ROOT)/contracts/upstream/provider_client.json"
