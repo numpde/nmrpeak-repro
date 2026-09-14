@@ -79,7 +79,7 @@ class ProviderOutcomeTests(unittest.TestCase):
                     failure_message="The input is not supported.",
                 ),
                 400,
-                AttemptMutationNotCommitted,
+                AttemptMutationCommitPossible,
             ),
         )
         for prepared, status, expected_type in cases:
@@ -278,13 +278,16 @@ def _problem_response(status: int) -> ProviderHttpResponse:
         "type": problem_type,
         "title": title,
         "status": status,
-        "instance": "/provider/v1/problems/test",
+        "instance": "urn:nmr-api:request:body-request",
         "request_id": "body-request",
     }
-    if status in {400, 413, 414, 431}:
+    if status in {400, 408, 409, 413, 414, 431, 500}:
         document |= {
             "code": {
                 400: "request_query_not_supported",
+                408: "request_body_timeout",
+                409: "operation_conflict",
+                500: "internal_error",
                 413: "request_content_too_large",
                 414: "request_path_too_large",
                 431: "request_header_bytes_too_large",
@@ -295,7 +298,7 @@ def _problem_response(status: int) -> ProviderHttpResponse:
         status,
         document,
         content_type="application/problem+json",
-        request_id="header-request",
+        request_id="body-request",
     )
 
 

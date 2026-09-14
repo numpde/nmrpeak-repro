@@ -15,6 +15,12 @@ from nmrpeak_provider.provider_problems import (
 
 
 class ProviderProblemTests(unittest.TestCase):
+    def assertRejected(self, actual, expected):
+        self.assertIs(type(actual), ProviderProblemRejected)
+        self.assertEqual(actual.status, expected.status)
+        self.assertEqual(actual.reason, expected.reason)
+        self.assertFalse(actual.diagnostic.verified)
+
     def test_current_authorization_refusal_reaches_operator_explanation(self) -> None:
         # Current provider API, revision 1708afc2: authorization Problems disclose
         # code/detail; those fields are evidence, not a malformed-response cause.
@@ -62,24 +68,24 @@ class ProviderProblemTests(unittest.TestCase):
                 self.assertIn("Check account permissions.", message)
                 self.assertIn("body-request", message)
 
-    def test_noncanonical_problem_json_preserves_independent_request_ids(self) -> None:
+    def test_noncanonical_problem_json_preserves_correlated_request_ids(self) -> None:
         response = _problem_response(
             400,
             {
                 "detail": "Correct the signed request.",
                 "code": "provider_request_invalid",
                 "request_id": "body-request",
-                "instance": "/provider/v1/problems/example",
+                "instance": "urn:nmr-api:request:body-request",
                 "status": 400,
                 "title": "Bad request",
                 "type": "urn:nmr-api:problem:bad-request",
             },
-            header_request_id="header-request",
+            header_request_id="body-request",
             pretty=True,
         )
         outcome = parse_provider_problem(ProviderOperation.JOBS_LIST, response)
         self.assertIs(type(outcome), ProviderProblem)
-        self.assertEqual(outcome.transport_request_id, "header-request")
+        self.assertEqual(outcome.transport_request_id, "body-request")
         self.assertEqual(outcome.body_request_id, "body-request")
         self.assertEqual(outcome.code, "provider_request_invalid")
 
@@ -155,12 +161,12 @@ class ProviderProblemTests(unittest.TestCase):
                     "urn:nmr-api:problem:request-content-too-large",
                     "Request content too large",
                 ) | {"code": "request_content_too_large", "detail": detail}
-                self.assertEqual(
+                self.assertRejected(
                     parse_provider_problem(
                         ProviderOperation.EXECUTION_ATTEMPT_START,
                         _problem_response(413, document),
                     ),
-                    ProviderProblemRejected(ProblemRejection.INVALID_DIAGNOSTIC, 413),
+                    ProviderProblemRejected(ProblemRejection.INVALID_CURRENT_CONTRACT, 413),
                 )
 
     def test_closed_shape_duplicate_json_and_identity_drift_are_rejected(self) -> None:
@@ -168,26 +174,26 @@ class ProviderProblemTests(unittest.TestCase):
             401,
             "urn:nmr-api:problem:authentication-failed",
             "Request authentication failed",
-        )
+        ) | {"code": "authentication_failed", "detail": "Authentication failed."}
+        self.assertIs(type(parse_provider_problem(
+            ProviderOperation.JOBS_LIST, _problem_response(401, document))), ProviderProblem)
         extra = document | {"extra": True}
         wrong_title = document | {"title": "No"}
         cases = (
-            (_problem_response(401, extra), ProblemRejection.INVALID_FIELDS),
-            (_problem_response(401, wrong_title), ProblemRejection.INVALID_IDENTITY),
+            (_problem_response(401, extra), ProblemRejection.INVALID_CURRENT_CONTRACT),
+            (_problem_response(401, wrong_title), ProblemRejection.INVALID_CURRENT_CONTRACT),
             (
                 _raw_problem_response(
                     401,
                     b'{"type":"x","type":"y"}',
                 ),
-                ProblemRejection.INVALID_JSON,
+                ProblemRejection.INVALID_CURRENT_CONTRACT,
             ),
         )
         for response, reason in cases:
             with self.subTest(reason=reason):
                 outcome = parse_provider_problem(ProviderOperation.JOBS_LIST, response)
-                self.assertEqual(outcome, ProviderProblemRejected(reason, 401))
-                if reason is ProblemRejection.INVALID_JSON:
-                    self.assertIsInstance(outcome.cause, ValueError)
+                self.assertRejected(outcome, ProviderProblemRejected(reason, 401))
 
     def test_status_must_be_declared_by_the_operation(self) -> None:
         response = _problem_response(
@@ -198,19 +204,19 @@ class ProviderProblemTests(unittest.TestCase):
                 "Operation conflict",
             ),
         )
-        self.assertEqual(
+        self.assertRejected(
             parse_provider_problem(ProviderOperation.JOBS_LIST, response),
             ProviderProblemRejected(ProblemRejection.NOT_A_PROBLEM_RESPONSE, 409),
         )
 
     def test_parser_owned_json_and_diagnostic_boundaries_are_closed(self) -> None:
         deeply_nested = b"[" * 2_000 + b"]" * 2_000
-        self.assertEqual(
+        self.assertRejected(
             parse_provider_problem(
                 ProviderOperation.JOBS_LIST,
                 _raw_problem_response(400, deeply_nested),
             ),
-            ProviderProblemRejected(ProblemRejection.INVALID_JSON, 400),
+            ProviderProblemRejected(ProblemRejection.INVALID_CURRENT_CONTRACT, 400),
         )
 
         bool_status = _basic_document(
@@ -222,12 +228,12 @@ class ProviderProblemTests(unittest.TestCase):
             "code": "provider_request_invalid",
             "detail": "Correct the request.",
         }
-        self.assertEqual(
+        self.assertRejected(
             parse_provider_problem(
                 ProviderOperation.JOBS_LIST,
                 _problem_response(400, bool_status),
             ),
-            ProviderProblemRejected(ProblemRejection.INVALID_IDENTITY, 400),
+            ProviderProblemRejected(ProblemRejection.INVALID_CURRENT_CONTRACT, 400),
         )
 
         for detail, accepted in (
@@ -258,7 +264,7 @@ def _basic_document(status: int, problem_type: str, title: str) -> dict[str, obj
         "type": problem_type,
         "title": title,
         "status": status,
-        "instance": "/provider/v1/problems/example",
+        "instance": "urn:nmr-api:request:body-request",
         "request_id": "body-request",
     }
 
@@ -267,7 +273,7 @@ def _problem_response(
     status: int,
     document: dict[str, object],
     *,
-    header_request_id: str = "header-request",
+    header_request_id: str = "body-request",
     pretty: bool = False,
 ) -> ProviderHttpResponse:
     separators = None if pretty else (",", ":")
@@ -282,7 +288,7 @@ def _raw_problem_response(
     status: int,
     body: bytes,
     *,
-    header_request_id: str = "header-request",
+    header_request_id: str = "body-request",
 ) -> ProviderHttpResponse:
     return ProviderHttpResponse(
         status=status,

@@ -343,12 +343,14 @@ class ProviderHttpsTests(unittest.TestCase):
             "type": "urn:nmr-api:problem:service-unavailable",
             "title": "Service unavailable",
             "status": 503,
-            "instance": "/provider/v1/problems/test",
+            "code": "database_work_slots_exhausted",
+            "detail": "The database work slots are exhausted.",
+            "instance": "urn:nmr-api:request:body-request",
             "request_id": "body-request",
         }
         headers = _valid_response_headers(
             content_type="application/problem+json",
-            request_id="header-request",
+            request_id="body-request",
         )
         with _tls_server(
             self._certificate_directory,

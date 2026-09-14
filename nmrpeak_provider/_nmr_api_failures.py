@@ -1,6 +1,6 @@
-"""Interpret the current provider 403 envelope without owning recovery actions.
+"""Interpret current operation-specific Problems without owning recovery actions.
 
-Other statuses are explicitly unsupported in this first shared client slice.
+Only generated operation/status profiles are supported.
 A verified refusal describes this response; it never resolves an earlier mutation.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ import json
 import re
 from urllib.parse import quote
 
-from ._nmr_api_failure_contract import OPERATIONS, PROFILE
+from ._nmr_api_failure_contract import EVIDENCE, OPERATIONS, PROFILES, RECOVERY, SEND_EFFECTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +26,12 @@ class FailureInterpretation:
     body_request_id: str | None = None
     header_request_id: str | None = None
     instance: str | None = field(default=None, repr=False)
+    upload_ref: str | None = field(default=None, repr=False)
+    # Operation constraints, not retry permission or proof of any send outcome.
+    recovery_mode: str | None = None
+    recovery_description: str | None = None
+    # This send only; a later refusal never clears uncertainty about earlier sends.
+    current_send_effect: str | None = None
 
 
 def _text(value: object, profile: dict) -> str | None:
@@ -64,10 +70,12 @@ def interpret_problem(*, operation: str, status: int, content_type: str | None,
 The transport supplies one header value; duplicates must be passed as None.
 The decoded body's fields are never evidence of success or an earlier outcome.
 """
+    indices = (OPERATIONS.get(operation, {}).get(status, ())
+               if type(status) is int and type(operation) is str else ())
     result = FailureInterpretation(
-        supported=type(status) is int and status == 403 and type(operation) is str and operation in OPERATIONS,
+        supported=bool(indices),
         verified=False, rejection="unsupported", status=status,
-        header_request_id=_text(header_request_id, PROFILE["request_id"]),
+        header_request_id=_text(header_request_id, EVIDENCE["request_id"]),
     )
     if not result.supported:
         return result
@@ -85,27 +93,49 @@ The decoded body's fields are never evidence of success or an earlier outcome.
         return replace(result, rejection="invalid_json")
     if type(document) is not dict:
         return replace(result, rejection="invalid_fields")
+    candidates = [PROFILES[index] for index in indices]
+    selected = next((profile for profile in candidates
+                     if document.get("type") == profile["properties"]["type"]["const"]), None)
+    properties = selected["properties"] if selected is not None else None
     result = replace(result,
-        problem_type=PROFILE["type"]["const"] if document.get("type") == PROFILE["type"]["const"] else None,
-        title=PROFILE["title"]["const"] if document.get("title") == PROFILE["title"]["const"] else None,
-        code=document.get("code") if type(document.get("code")) is str and document["code"] in PROFILE["code"]["enum"] else None,
-        detail=_text(document.get("detail"), PROFILE["detail"]),
-        body_request_id=_text(document.get("request_id"), PROFILE["request_id"]),
+        problem_type=properties["type"]["const"] if properties is not None else None,
+        title=(properties["title"]["const"] if properties is not None and
+               document.get("title") == properties["title"]["const"] else None),
+        code=(document["code"] if type(document.get("code")) is str and
+              any(document["code"] in profile["properties"]["code"]["enum"]
+                  for profile in candidates) else None),
+        detail=_text(document.get("detail"), EVIDENCE["detail"]),
+        body_request_id=_text(document.get("request_id"), EVIDENCE["request_id"]),
     )
-    if set(document) != set(PROFILE):
-        return replace(result, rejection="invalid_fields")
-    if type(document["status"]) is not int or document["status"] != status or result.problem_type is None or result.title is None:
+    if selected is None:
         return replace(result, rejection="invalid_identity")
-    if result.code is None or result.detail is None:
+    required = set(properties) - {"upload_ref"}
+    needs_upload = result.code in selected["upload_codes"]
+    if set(document) != required | ({"upload_ref"} if needs_upload else set()):
+        return replace(result, rejection="invalid_fields")
+    if type(document["status"]) is not int or document["status"] != status or result.title is None:
+        return replace(result, rejection="invalid_identity")
+    if result.code not in properties["code"]["enum"] or result.detail is None:
         return replace(result, rejection="invalid_diagnostic")
+    if (result.code in selected["fixed_details"] and
+            result.detail != selected["fixed_details"][result.code]):
+        return replace(result, rejection="invalid_diagnostic")
+    if needs_upload:
+        reference = document["upload_ref"]
+        if type(reference) is not str or re.search(properties["upload_ref"]["pattern"], reference) is None:
+            return replace(result, rejection="invalid_upload_ref")
+        result = replace(result, upload_ref=reference)
     if result.body_request_id is None or result.header_request_id is None:
         return replace(result, rejection="invalid_request_id")
     # Source authority: nmr_api/security/problems.py:_send_problem correlates
     # header/body IDs and encodes this occurrence URN; OpenAPI cannot express it.
     expected_instance = "urn:nmr-api:request:" + quote(result.body_request_id, safe="")
-    if _text(document["instance"], PROFILE["instance"]) != expected_instance:
+    if _text(document["instance"], EVIDENCE["instance"]) != expected_instance:
         return replace(result, rejection="invalid_instance")
     result = replace(result, instance=expected_instance)
     if result.header_request_id != result.body_request_id:
         return replace(result, rejection="request_id_mismatch")
-    return replace(result, verified=True, rejection=None)
+    return replace(result, verified=True, rejection=None,
+                   recovery_mode=RECOVERY[operation]["mode"],
+                   recovery_description=RECOVERY[operation]["description"],
+                   current_send_effect=SEND_EFFECTS[operation][status][result.problem_type][result.code])

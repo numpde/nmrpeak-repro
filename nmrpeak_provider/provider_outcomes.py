@@ -151,11 +151,6 @@ def interpret_execution_attempt_fail(
     return _receipt_outcome(parse_execution_attempt_fail_success(prepared, response))
 
 
-_PROBLEMS_PROVING_NO_COMMIT = frozenset(
-    {400, 401, 403, 404, 408, 413, 414, 431}
-)
-
-
 def _success_response_or_send_outcome(
     operation: ProviderOperation,
     outcome: ProviderHttpsOutcome,
@@ -167,7 +162,7 @@ def _success_response_or_send_outcome(
         return (
             AttemptMutationNotCommitted(problem)
             if type(problem) is ProviderProblem
-            and problem.status in _PROBLEMS_PROVING_NO_COMMIT
+            and problem.current_send_effect == "no_domain_change"
             else AttemptMutationCommitPossible(problem)
         )
     if type(outcome) is ProviderTlsRejected:
