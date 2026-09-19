@@ -1,5 +1,27 @@
 """Generated provider Problem wire facts; do not edit."""
-OPENAPI_SHA256 = '7450ccc376717c32a9e7d941b3b7ad3d45632cafb162f8cedee0b08cb37b45cf'
+OPENAPI_SHA256 = '9557bf3bbf91e3c9f814851920ea2d83ae1ce39de6dd517ae5e292fadad53eff'
+TERMINAL_REPORT_CONDITIONS = {'conditions': {'held': {'code': 'terminal_report_delivery_held',
+                         'message': 'At its latest update, the provider reported that it had '
+                                    'retained an outcome report and paused publication for '
+                                    'operator review. Delivery is not confirmed.',
+                         'next_action': 'Contact the provider operator with the Attempt '
+                                        'reference.'},
+                'reconciling': {'code': 'terminal_report_delivery_reconciling',
+                                'message': 'At its latest update, the provider reported that it '
+                                           'had retained an outcome report and was checking the '
+                                           'API outcome before publishing again. Delivery is not '
+                                           'confirmed.',
+                                'next_action': "Wait for the provider's checks. If this remains "
+                                               'unresolved, contact the provider operator with the '
+                                               'Attempt reference.'},
+                'retrying': {'code': 'terminal_report_delivery_retryable',
+                             'message': 'At its latest update, the provider reported that it had '
+                                        'retained an outcome report and that automatic retries '
+                                        'were pending. Delivery is not confirmed.',
+                             'next_action': 'Wait for an update. If this remains unresolved, '
+                                            'contact the provider operator with the Attempt '
+                                            'reference.'}},
+ 'version': 1}
 EVIDENCE = {'detail': {'maxLength': 1024,
             'minLength': 1,
             'not': {'pattern': '^[\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000]|[\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000](?![\\s\\S])|[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ud800-\\udfff\\ufeff\\ufff9-\\ufffb]'},

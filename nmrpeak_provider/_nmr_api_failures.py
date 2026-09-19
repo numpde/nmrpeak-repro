@@ -10,7 +10,15 @@ import json
 import re
 from urllib.parse import quote
 
-from ._nmr_api_failure_contract import EVIDENCE, OPERATIONS, PROFILES, RECOVERY, SEND_EFFECTS, CONFLICT_RECOVERY
+from ._nmr_api_failure_contract import EVIDENCE, OPERATIONS, PROFILES, RECOVERY, SEND_EFFECTS, CONFLICT_RECOVERY, TERMINAL_REPORT_CONDITIONS
+
+
+def terminal_report_condition(automation: object) -> str:
+    """Select a historical observation from actual native recovery scheduling."""
+    conditions = TERMINAL_REPORT_CONDITIONS["conditions"]
+    if type(automation) is not str or automation not in conditions:
+        raise ValueError("Terminal report condition requires retrying, reconciling, or held automation")
+    return conditions[automation]["code"]
 
 
 def attempt_is_closed(state: object) -> bool:

@@ -1,0 +1,38 @@
+Terminal report conditions and phase provenance
+==============================================
+
+The API owns the historical condition meanings and the automation-to-code
+selector. contracts/upstream/provider_client.json pins both source and wire
+contract to 27614dc63b20f90446a974da4d1be14327d7f706. Refresh with the existing
+clients/provider_python/project.py tool, selecting both immutable revisions;
+make provider-client/check verifies the recorded projection. No copied local
+condition vocabulary or interpretation policy is introduced.
+
+TerminalPending retains the prior native local execution phase. Its optional
+serialized local_phase preserves legacy record bytes when absent. Legacy
+unknown phase is not guessed: local logs identify the missing provenance and
+retained journal for provider ops; terminal recovery remains available.
+
+The exact terminal command is always attempted first when native recovery
+allows it. After a nonterminal outcome, one bounded native HTTP request may
+publish the latest condition. Existing process scheduling owns terminal/read
+retry and backoff. Read-only reconciliation uses reconciling, intervention uses
+held, and continuing exact terminal recovery uses retrying. This observation is
+disposable and is never a durable stale progress replay obligation. It cannot
+retire the terminal record, change terminal certainty, rerun computation or
+replace a terminal failure with a progress failure. HTTP deadlines bound the
+additional call; there is no nested observation retry loop. Known closed or
+not-visible observations suppress obsolete condition sends.
+
+A condition receipt proves only API acceptance of that observation, logged with
+its timestamp. Its absence remains unconfirmed and is logged independently.
+Public rendering requires the authorized GUI catalog integration and real API
+acceptance; these native checks alone do not prove user delivery. Total API
+isolation cannot disclose provider-local facts to end users.
+
+Checks first demonstrated absent phase retention and absent condition delivery.
+Tests cover preparation/execution phase, legacy compatibility, exact terminal
+retry priority, unconfirmed progress, closed race, held recovery and a restart
+from read reconciliation to held without stale condition replay. The existing
+TLS lifecycle fixture now represents changed-progress rejection on an already
+terminal Attempt, exercised after a lost completion receipt.

@@ -105,6 +105,7 @@ class TerminalPending(_AttemptRecord):
     terminal_operation: TerminalOperation
     terminal_request_body: bytes = field(repr=False)
     terminal_request_fingerprint: str
+    local_phase: LocalExecutionPhase | None = None
     terminal_hold_action: str | None = field(default=None)
     terminal_hold_description: str | None = field(default=None, repr=False)
     terminal_hold_code: str | None = None
@@ -123,6 +124,8 @@ class TerminalPending(_AttemptRecord):
             _ATTEMPT_REF,
             "ExecutionAttempt reference",
         )
+        if self.local_phase is not None and type(self.local_phase) is not LocalExecutionPhase:
+            raise TypeError("Terminal phase provenance is invalid")
         if type(self.terminal_operation) is not TerminalOperation:
             raise TypeError("Attempt journal terminal operation is invalid")
         if type(self.terminal_request_body) is not bytes:
@@ -202,6 +205,8 @@ def journal_record_bytes(record: AttemptJournalRecord) -> bytes:
             ).decode("ascii"),
             "terminal_request_fingerprint": record.terminal_request_fingerprint,
         }
+        if record.local_phase is not None:
+            document["local_phase"] = record.local_phase.value
         if record.terminal_hold_action is not None:
             document["record_kind"] = "terminal_reconciling" if record.terminal_reconciling else "terminal_hold"
             document["terminal_hold_action"] = record.terminal_hold_action
@@ -247,6 +252,8 @@ def parse_journal_record(raw: bytes) -> AttemptJournalRecord:
             fields = _COMMON_FIELDS | {"record_kind", "execution_attempt_ref", "terminal_operation", "terminal_request_base64", "terminal_request_fingerprint"}
             if kind in {"terminal_hold", "terminal_reconciling"}:
                 fields |= {"terminal_hold_action", "terminal_hold_description", "terminal_hold_code", "terminal_hold_detail", "terminal_hold_request_id", "terminal_observed_state"}
+            if "local_phase" in document:
+                fields.add("local_phase")
             _require_fields(document, fields)
             body_base64 = document["terminal_request_base64"]
             if type(body_base64) is not str:
@@ -262,6 +269,7 @@ def parse_journal_record(raw: bytes) -> AttemptJournalRecord:
                 terminal_request_fingerprint=document[
                     "terminal_request_fingerprint"
                 ],
+                local_phase=LocalExecutionPhase(document["local_phase"]) if "local_phase" in document else None,
                 terminal_hold_action=document.get("terminal_hold_action"),
                 terminal_hold_description=document.get("terminal_hold_description"),
                 terminal_hold_code=document.get("terminal_hold_code"),
@@ -325,6 +333,7 @@ def retain_terminal_command(
         **_common_record_values(record),
         execution_attempt_ref=record.execution_attempt_ref,
         terminal_operation=operation,
+        local_phase=record.local_phase,
         terminal_request_body=prepared.body,
         terminal_request_fingerprint=_fingerprint(prepared.body),
     )

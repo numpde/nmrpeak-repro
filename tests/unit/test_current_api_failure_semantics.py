@@ -20,6 +20,19 @@ from nmrpeak_provider.provider_requests import prepare_execution_attempt_complet
 from tests.unit import test_attempt_lifecycle as lifecycle
 
 
+class TerminalEvidenceApi(lifecycle.CapturingApi):
+    """Keep terminal/read assertions separate from disposable observation sends."""
+    def __init__(self, *responses):
+        super().__init__(*responses)
+        self.condition_requests = []
+
+    def send(self, request):
+        if request.operation is ProviderOperation.EXECUTION_ATTEMPT_PROGRESS:
+            self.condition_requests.append(request)
+            return lifecycle.ProviderRequestUnavailable(lifecycle.RequestDelivery.NOT_SENT)
+        return super().send(request)
+
+
 # Concrete API 2076ddf3 wire evidence, not a local interpretation policy.
 _ADMISSION_DETAIL = (
     "This server has reached its limit for simultaneous requests. "
@@ -103,7 +116,7 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
         for operation in lifecycle.TerminalOperation:
             with self.subTest(operation=operation), lifecycle.journal_directory() as root:
                 record = lifecycle.terminal_pending(operation)
-                api = lifecycle.CapturingApi(lifecycle.success_response(lifecycle.attempt_snapshot(
+                api = TerminalEvidenceApi(lifecycle.success_response(lifecycle.attempt_snapshot(
                     execution_attempt_ref=record.execution_attempt_ref, job_ref=record.job_ref,
                     state="expired", job_state="open")))
                 with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
@@ -118,7 +131,7 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
                     self.assertEqual(retained.terminal_observed_state, "expired")
                 from nmrpeak_provider.attempt_lifecycle import terminal_recovery_facts
                 with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
-                    api = lifecycle.CapturingApi()
+                    api = TerminalEvidenceApi()
                     recovered = lifecycle.reconcile_record(runtime=lifecycle.generation_runtime(), api=api,
                                                            journal=journal, record=journal.records()[0])
                     self.assertEqual(terminal_recovery_facts(recovered.record)["observed_state"], "expired")
@@ -136,7 +149,7 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
                     record = lifecycle.terminal_pending(operation)
                     refusal = problem_response(409, "operation-conflict", "Operation conflict", code,
                                                "Reconcile the retained terminal command; do not change its payload.")
-                    api = lifecycle.CapturingApi(
+                    api = TerminalEvidenceApi(
                         lifecycle.ProviderRequestUnavailable(lifecycle.RequestDelivery.POSSIBLE), refusal, refusal)
                     with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
                         lifecycle.persist_terminal(journal, record)
@@ -158,7 +171,7 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
                 generation = lifecycle.chf_generation()
                 record = (lifecycle.pending_start(generation) if terminal_operation is None
                           else lifecycle.terminal_pending(terminal_operation))
-                api = lifecycle.CapturingApi(
+                api = TerminalEvidenceApi(
                     lifecycle.ProviderRequestUnavailable(lifecycle.RequestDelivery.POSSIBLE),
                     admission_response(),
                 )
@@ -189,26 +202,26 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
         record = lifecycle.terminal_pending(lifecycle.TerminalOperation.COMPLETE)
         refusal = problem_response(409, "operation-conflict", "Operation conflict", "operation_conflict", "Reconcile current state.")
         with lifecycle.journal_directory() as root:
-            api = lifecycle.CapturingApi(refusal, lifecycle.ProviderRequestUnavailable(lifecycle.RequestDelivery.POSSIBLE))
+            api = TerminalEvidenceApi(refusal, lifecycle.ProviderRequestUnavailable(lifecycle.RequestDelivery.POSSIBLE))
             with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
                 lifecycle.persist_terminal(journal, record)
                 outcome = lifecycle.deliver_terminal(api=api, journal=journal, record=record)
                 self.assertIsNotNone(_remote_failure_evidence(outcome))
                 self.assertEqual([request.operation for request in api.requests], [ProviderOperation.EXECUTION_ATTEMPT_COMPLETE, ProviderOperation.EXECUTION_ATTEMPT_READ])
                 self.assertEqual(json.loads(next(root.glob("*.json")).read_bytes())["record_kind"], "terminal_reconciling")
-            api = lifecycle.CapturingApi(lifecycle.ProviderRequestUnavailable(lifecycle.RequestDelivery.POSSIBLE))
+            api = TerminalEvidenceApi(lifecycle.ProviderRequestUnavailable(lifecycle.RequestDelivery.POSSIBLE))
             with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
                 outcome = lifecycle.reconcile_record(runtime=lifecycle.generation_runtime(), api=api, journal=journal, record=journal.records()[0])
                 self.assertIsNotNone(_remote_failure_evidence(outcome))
                 self.assertEqual([request.operation for request in api.requests], [ProviderOperation.EXECUTION_ATTEMPT_READ])
-            api = lifecycle.CapturingApi(lifecycle.success_response(lifecycle.attempt_snapshot(execution_attempt_ref=record.execution_attempt_ref, job_ref=record.job_ref, state="in_progress", job_state="open")))
+            api = TerminalEvidenceApi(lifecycle.success_response(lifecycle.attempt_snapshot(execution_attempt_ref=record.execution_attempt_ref, job_ref=record.job_ref, state="in_progress", job_state="open")))
             with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
                 outcome = lifecycle.reconcile_record(runtime=lifecycle.generation_runtime(), api=api, journal=journal, record=journal.records()[0])
                 self.assertIs(type(outcome), TerminalPublicationHeld)
                 self.assertEqual(journal.records()[0].terminal_request_body, record.terminal_request_body)
                 self.assertEqual([request.operation for request in api.requests], [ProviderOperation.EXECUTION_ATTEMPT_READ])
             with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
-                api = lifecycle.CapturingApi()
+                api = TerminalEvidenceApi()
                 outcome = lifecycle.reconcile_record(runtime=lifecycle.generation_runtime(), api=api, journal=journal, record=journal.records()[0])
                 self.assertIs(type(outcome), TerminalPublicationHeld)
                 self.assertEqual(api.requests, [])
@@ -218,10 +231,10 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
         with lifecycle.journal_directory() as root:
             with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
                 lifecycle.persist_terminal(journal, record)
-                api = lifecycle.CapturingApi(problem_response(409, "operation-conflict", "Operation conflict", "execution_attempt_outcome_expired", "The Attempt expired."))
+                api = TerminalEvidenceApi(problem_response(409, "operation-conflict", "Operation conflict", "execution_attempt_outcome_expired", "The Attempt expired."))
                 lifecycle.deliver_terminal(api=api, journal=journal, record=record)
             with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
-                api = lifecycle.CapturingApi()
+                api = TerminalEvidenceApi()
                 lifecycle.reconcile_record(runtime=lifecycle.generation_runtime(), api=api, journal=journal, record=journal.records()[0])
                 self.assertEqual(api.requests, [])
 
@@ -254,7 +267,7 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
         record = lifecycle.terminal_pending(lifecycle.TerminalOperation.COMPLETE)
         with lifecycle.journal_directory() as root, lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
             lifecycle.persist_terminal(journal, record)
-            api = lifecycle.CapturingApi(problem_response(409, "operation-conflict", "Operation conflict", "operation_conflict", "Conflict."))
+            api = TerminalEvidenceApi(problem_response(409, "operation-conflict", "Operation conflict", "operation_conflict", "Conflict."))
             with patch.object(journal, "replace", side_effect=AttemptJournalWriteFailed("Storage unavailable")):
                 with self.assertRaises(AttemptJournalWriteFailed):
                     lifecycle.deliver_terminal(api=api, journal=journal, record=record)
@@ -265,10 +278,10 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
         record = lifecycle.terminal_pending(lifecycle.TerminalOperation.COMPLETE)
         with lifecycle.journal_directory() as root, lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
             lifecycle.persist_terminal(journal, record)
-            api = lifecycle.CapturingApi(problem_response(409, "operation-conflict", "Operation conflict", "execution_attempt_outcome_expired", "Attempt expired."))
+            api = TerminalEvidenceApi(problem_response(409, "operation-conflict", "Operation conflict", "execution_attempt_outcome_expired", "Attempt expired."))
             lifecycle.deliver_terminal(api=api, journal=journal, record=record)
             held = journal.records()[0]
-            stale_api = lifecycle.CapturingApi()
+            stale_api = TerminalEvidenceApi()
             with self.assertRaises(AttemptJournalConflict):
                 lifecycle.deliver_terminal(api=stale_api, journal=journal, record=record)
             self.assertEqual(stale_api.requests, [])
@@ -285,13 +298,13 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
                     if state == "closed":
                         journal.close()
                     if state != "readonly":
-                        api = lifecycle.CapturingApi()
+                        api = TerminalEvidenceApi()
                         with self.assertRaises(RuntimeError):
                             lifecycle.deliver_terminal(api=api, journal=journal, record=record)
                         self.assertEqual(api.requests, [])
                 if state == "readonly":
                     with lifecycle.AttemptJournalStore(root, maximum_records=1, read_only=True) as journal:
-                        api = lifecycle.CapturingApi()
+                        api = TerminalEvidenceApi()
                         with self.assertRaises(RuntimeError):
                             lifecycle.deliver_terminal(api=api, journal=journal, record=record)
                         self.assertEqual(api.requests, [])
@@ -303,7 +316,7 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
             state = "failed" if operation is lifecycle.TerminalOperation.COMPLETE else "succeeded"
             with self.subTest(operation=operation), lifecycle.journal_directory() as root:
                 record = lifecycle.terminal_pending(operation)
-                api = lifecycle.CapturingApi(lifecycle.success_response(lifecycle.attempt_snapshot(
+                api = TerminalEvidenceApi(lifecycle.success_response(lifecycle.attempt_snapshot(
                     execution_attempt_ref=record.execution_attempt_ref, job_ref=record.job_ref,
                     state=state, job_state="open")))
                 with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
@@ -311,7 +324,7 @@ class CurrentApiFailureSemanticsTests(unittest.TestCase):
                     lifecycle.reconcile_record(runtime=lifecycle.generation_runtime(), api=api, journal=journal, record=record)
                     self.assertEqual(journal.records()[0].terminal_observed_state, state)
                 with lifecycle.AttemptJournalStore(root, maximum_records=1) as journal:
-                    api = lifecycle.CapturingApi()
+                    api = TerminalEvidenceApi()
                     recovered = lifecycle.reconcile_record(runtime=lifecycle.generation_runtime(), api=api,
                                                            journal=journal, record=journal.records()[0])
                     facts = terminal_recovery_facts(recovered.record)

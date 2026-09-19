@@ -34,6 +34,7 @@ from .attempt_journal import (
 )
 from .attempt_journal_store import AttemptJournalStore
 from .generation_runtime import GenerationRuntime, GenerationRuntimeRejected
+from ._nmr_api_failures import terminal_report_condition
 from .lifecycle_lane import LifecycleLane
 from .interpreter import (
     InterpretationRejected,
@@ -928,6 +929,47 @@ def select_completion(
 
 
 def deliver_terminal(
+    *, api: ProviderApiClient, journal: AttemptJournalStore, record: TerminalPending,
+) -> TerminalDeliveryOutcome:
+    """Prioritize the retained terminal report, then one disposable observation."""
+    outcome = _deliver_terminal(api=api, journal=journal, record=record)
+    if type(outcome) is not TerminalDelivered:
+        latest = outcome.record if type(outcome) in {TerminalPublicationHeld, TerminalReconciliationPending} else record
+        automation = ("reconciling" if type(outcome) is TerminalReconciliationPending else
+                      "held" if latest.terminal_hold_action is not None else "retrying")
+        _report_terminal_condition(api, latest, automation)
+    return outcome
+
+
+def _report_terminal_condition(api, record, automation):
+    if record.terminal_observed_state in {"succeeded", "failed", "expired", "not_visible"}:
+        return
+    if record.local_phase is None:
+        _LOG.warning("Attempt %s: phase provenance is unavailable; no condition was sent. "
+                     "Exact terminal report remains retained; provider ops can inspect this legacy journal record.",
+                     record.execution_attempt_ref)
+        return
+    phase = "preparing" if record.local_phase is LocalExecutionPhase.PRE_EXECUTION else "running"
+    condition = terminal_report_condition(automation)
+    command = prepare_execution_attempt_progress(execution_attempt_ref=record.execution_attempt_ref,
+                                                 phase=phase, condition_code=condition)
+    # Native HTTP deadlines bound this single attempt. Never enqueue stale progress,
+    # change terminal certainty, or let observation failure replace its outcome.
+    try:
+        observed = interpret_execution_attempt_progress(command, api.send(command))
+    except Exception as error:
+        _LOG.warning("Attempt %s: condition %s delivery is unconfirmed (%s); terminal recovery is unchanged.",
+                     record.execution_attempt_ref, condition, type(error).__name__)
+        return
+    if type(observed) is AttemptMutationCommitted:
+        _LOG.info("Attempt %s: API accepted condition %s at %s; this does not confirm terminal delivery.",
+                  record.execution_attempt_ref, condition, observed.receipt.updated_at)
+    else:
+        _LOG.warning("Attempt %s: condition %s delivery is unconfirmed; terminal recovery is unchanged. Evidence: %r",
+                     record.execution_attempt_ref, condition, observed)
+
+
+def _deliver_terminal(
     *,
     api: ProviderApiClient,
     journal: AttemptJournalStore,

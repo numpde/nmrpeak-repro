@@ -73,6 +73,15 @@ class ServerA:
             with self._lock:
                 self._require_signed_request(headers, body)
                 self.requests.append((method, raw_target, body))
+                if (method == "PUT" and raw_target == f"/provider/v1/execution-attempts/{_ATTEMPT_REF}/progress"
+                        and self.attempt is not None and self.attempt.state != "in_progress"):
+                    command = _json_command(body)
+                    assert prepare_execution_attempt_progress(execution_attempt_ref=_ATTEMPT_REF,
+                        phase=command["phase"], condition_code=command["condition_code"]).body == body
+                    return 409, {"type": "urn:nmr-api:problem:operation-conflict", "title": "Operation conflict",
+                                 "status": 409, "code": "execution_attempt_progress_terminal",
+                                 "detail": "The Attempt is already terminal.", "request_id": "fake-server-request",
+                                 "instance": "urn:nmr-api:request:fake-server-request"}
                 response = self._dispatch(method, raw_target, body)
                 if self._lose_committed_response(method, raw_target):
                     return None
@@ -211,7 +220,7 @@ class ServerA:
             "schema_id": "nmr.provider.execution_attempt_progress_response.v1",
             "execution_attempt_ref": _ATTEMPT_REF,
             "phase": command["phase"],
-            "condition_code": None,
+            "condition_code": command["condition_code"],
             "updated_at": "2026-08-24T12:01:00Z",
         }
 
