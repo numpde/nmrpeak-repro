@@ -3,7 +3,7 @@ Terminal report conditions and phase provenance
 
 The API owns the historical condition meanings and the automation-to-code
 selector. contracts/upstream/provider_client.json pins both source and wire
-contract to 27614dc63b20f90446a974da4d1be14327d7f706. Refresh with the existing
+contract to 27c8b94075961ffb057f1ad28e5d52e9f991acd6. Refresh with the existing
 clients/provider_python/project.py tool, selecting both immutable revisions;
 make provider-client/check verifies the recorded projection. No copied local
 condition vocabulary or interpretation policy is introduced.

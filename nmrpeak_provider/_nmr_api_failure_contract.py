@@ -1,5 +1,5 @@
 """Generated provider Problem wire facts; do not edit."""
-OPENAPI_SHA256 = '9557bf3bbf91e3c9f814851920ea2d83ae1ce39de6dd517ae5e292fadad53eff'
+OPENAPI_SHA256 = 'f538c902dd0466355a602d583c267eac3b626474d2cbe0ba4abc3c43f6a7153c'
 TERMINAL_REPORT_CONDITIONS = {'conditions': {'held': {'code': 'terminal_report_delivery_held',
                          'message': 'At its latest update, the provider reported that it had '
                                     'retained an outcome report and paused publication for '
@@ -8,9 +8,9 @@ TERMINAL_REPORT_CONDITIONS = {'conditions': {'held': {'code': 'terminal_report_d
                                         'reference.'},
                 'reconciling': {'code': 'terminal_report_delivery_reconciling',
                                 'message': 'At its latest update, the provider reported that it '
-                                           'had retained an outcome report and was checking the '
-                                           'API outcome before publishing again. Delivery is not '
-                                           'confirmed.',
+                                           'had retained an outcome report and paused publication '
+                                           'while automatically checking the API outcome. Delivery '
+                                           'is not confirmed.',
                                 'next_action': "Wait for the provider's checks. If this remains "
                                                'unresolved, contact the provider operator with the '
                                                'Attempt reference.'},
