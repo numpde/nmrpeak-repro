@@ -720,7 +720,19 @@ def prepare_execution(
                 provider_attempt_key=record.provider_attempt_key,
             )
         except InputRejected as rejection:
-            return _retain_input_rejection(journal, record, str(rejection))
+            _LOG.warning(
+                'Input preparation rejected before structure generation; '
+                'job=%s attempt=%s reason=%s; provider ops: '
+                'inspect input admission and interpretation',
+                record.job_ref, record.execution_attempt_ref, rejection.reason.value,
+            )
+            return _retain_input_rejection(
+                journal, record,
+                "The provider could not prepare valid input for structure generation. "
+                "Structure generation did not start, and your submitted Job input was not changed. "
+                "Structure generation will not start automatically for this Attempt. "
+                "Ask the provider operator to investigate using this Attempt's reference.",
+            )
         except ReportedInputProblem as problem:
             return _retain_input_rejection(journal, record, problem.message)
         except InterpretationRejected as rejection:
@@ -1208,7 +1220,7 @@ def _retain_input_rejection(
     terminal = retain_terminal_command(record, prepared)
     journal.replace(record, terminal)
     _LOG.info(
-        'Input rejected; failure retained for API delivery; job=%s attempt=%s reason=%r',
+        'Input rejected; failure retained for API delivery; job=%s attempt=%s message=%r',
         record.job_ref,
         record.execution_attempt_ref,
         message,

@@ -608,11 +608,14 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(len(channel.received_frames), 1)
         self.assertIs(type(channel.received_frames[0]), ValidateFrame)
 
-    def test_product_rejection_reason_reaches_the_durable_failure(self) -> None:
+    def test_preparation_rejection_retains_human_failure_and_exact_diagnostic(self) -> None:
         canonical_input = b"{}"
         active = active_attempt(canonical_input)
         api = CapturingApi(success_response(progress_receipt()))
-        with journal_directory() as root:
+        with (
+            journal_directory() as root,
+            self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as logs,
+        ):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
@@ -632,8 +635,16 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(terminal_body["failure_code"], "input_rejected")
         self.assertEqual(
             terminal_body["failure_message"],
-            InputRejectionReason.INVALID_STRUCTURE.value,
+            "The provider could not prepare valid input for structure generation. "
+            "Structure generation did not start, and your submitted Job input was not changed. "
+            "Structure generation will not start automatically for this Attempt. "
+            "Ask the provider operator to investigate using this Attempt's reference.",
         )
+        diagnostic = "\n".join(logs.output)
+        self.assertIn("reason=invalid_structure", diagnostic)
+        self.assertIn(f"job={active.job_ref}", diagnostic)
+        self.assertIn(f"attempt={active.execution_attempt_ref}", diagnostic)
+        self.assertIn("inspect input admission and interpretation", diagnostic)
         self.assertEqual(
             [request.operation for request in api.requests],
             [ProviderOperation.EXECUTION_ATTEMPT_PROGRESS],
@@ -1382,7 +1393,12 @@ class AttemptLifecycleTests(unittest.TestCase):
                     "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
                     "execution_attempt_ref": active.execution_attempt_ref,
                     "failure_code": "input_rejected",
-                    "failure_message": InputRejectionReason.INVALID_STRUCTURE.value,
+                    "failure_message": (
+                        "The provider could not prepare valid input for structure generation. "
+                        "Structure generation did not start, and your submitted Job input was not changed. "
+                        "Structure generation will not start automatically for this Attempt. "
+                        "Ask the provider operator to investigate using this Attempt's reference."
+                    ),
                     "committed_at": "2026-08-24T12:02:00Z",
                     "replayed": False,
                 }

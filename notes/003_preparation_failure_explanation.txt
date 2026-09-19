@@ -1,0 +1,15 @@
+Preparation failure explanation (2026-09-14)
+============================================
+The actual API/GUI rehearsal exposed only invalid_structure to the user.
+InputRejected can originate in source admission or interpreted model input;
+its internal reason is not proof that the user supplied incorrect data.
+
+The lifecycle owns the explanation because it knows structure generation has
+not started and the Job input has only been read. Preserve failure_code and
+validation semantics. Send an explanation of the stopped Attempt and ask the
+user to contact provider ops with its reference. Do not prescribe a new Job.
+Keep the exact reason and Job/Attempt references in provider diagnostics, with
+input admission and interpretation as the investigation boundary. Retain the
+failure through the existing exact-command journal and delivery path; preparing
+a failure report is not evidence that the user received it. Shared API cause
+interpretation stays API-owned; this is a provider-local preparation failure.
