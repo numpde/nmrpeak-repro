@@ -936,9 +936,11 @@ The host Makefile is the operator index:
     make provider/deployment/config DEPLOYMENT=<name>
     make provider/deployment/config/localhost DEPLOYMENT=<name> \
         LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
-    make provider/deployment/up DEPLOYMENT=<name>
+    make provider/deployment/up DEPLOYMENT=<name> \
+        EXPECTED_PLAN_SHA256=<sha256-of-config-output>
     make provider/deployment/up/localhost DEPLOYMENT=<name> \
-        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt
+        LOCALHOST_CA_CERTIFICATE=/absolute/ca.crt \
+        EXPECTED_PLAN_SHA256=<sha256-of-config-output>
     make provider/deployment/status DEPLOYMENT=<name>
     make provider/logs DEPLOYMENT=<name>
     make provider/deployment/down DEPLOYMENT=<name>

@@ -934,6 +934,35 @@ Its secret-free canonical plan is retained privately at
 `0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`.
 No provider or runner was restarted, and no Job or Attempt was created.
 
+A later read-only preview exposed local image-tag drift: the disposable GUI
+smoke had rebuilt the same provider input closure under a later, test-only
+revision label and moved its input-addressed Docker tag. That preview selected
+provider image `sha256:ef7c1ad2d3a7649638596a8edd7ac28c1c6241403fb1135b39479cd997458bec`
+and a different frozen generation, so it was not an approval basis for the
+reviewed image trio. The two provider images have the same input identity and
+installed NMRPeak package-file hash, but the original image
+`sha256:2da18e57303fe8fc33bcfa1f94c4b5efd55051e4a7b794e7d0e9dac562016c36`
+has the same `628fece` revision label as both runners. Restoring only that
+local Docker tag changed no running container. A fresh read-only preview then
+matched the previously reviewed 13,505 bytes exactly, including SHA-256
+`0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`
+and frozen generation `sha256:384e58cf4cc1220d2c8ba28f3ec239c5d56521d9a81c4e167dce5ed4840a687e`.
+The provider and both runners still run their older images.
+
+Before the approved maintenance stop, rerender and compare the entire preview
+and all three immutable image IDs. Stop if any byte differs. Both Makefile `up`
+targets now require `EXPECTED_PLAN_SHA256`, computed over the exact
+newline-terminated `config` output. Startup independently rerenders the plan
+under the deployment lock and rejects a digest mismatch before materializing
+inputs or starting Docker services. For this reviewed plan the required value
+is `0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`.
+Keep image builds and tag changes quiescent through startup. After stopping, inspect
+every retained journal obligation with the v1/v2 reader before starting a v2
+writer; stop for unreadable, held, execution-entered, or otherwise unresolved
+records rather than retiring, archiving, or blindly replaying them. Verify the
+three running image IDs and provider health after `up` before submitting test
+Jobs. A v1-only rollback is forbidden once any v2 record exists.
+
 The next live step changes a running external service: inspect retained
 journal state in a stopped maintenance window, start the matched v2 provider
 and runners, then submit a synthetic HF and CHF Job and verify the signed

@@ -35,8 +35,10 @@ originals still count as generation references, so ordinary generation cleanup
 preserves the interpretation provenance. Archives never re-enter execution.
 
 Success explains the observed API state, preserved work, unconfirmed delivery,
-and stopped automation. The operator may restart the owning deployment with
-make provider/deployment/up DEPLOYMENT=<name> to admit eligible work. Restart
+and stopped automation. After reviewing the current `config` output, the
+operator may restart the owning deployment with
+`make provider/deployment/up DEPLOYMENT=<name> EXPECTED_PLAN_SHA256=<sha256-of-config-output>`
+to admit eligible work. Restart
 does not resend the archived report. There is no end-user API/GUI update from
 archival; do not tell users their archived result was delivered.
 

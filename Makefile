@@ -60,11 +60,11 @@ help:
 		'      Install the matching API-issued private provider credential.' \
 		'  make provider/deployment/config DEPLOYMENT=<name>' \
 		'      Validate and render a public-trust deployment without starting it.' \
-		'  make provider/deployment/up DEPLOYMENT=<name>' \
+		'  make provider/deployment/up DEPLOYMENT=<name> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
 		'      Load the reviewed checkpoints and start signed API activity using public trust.' \
 		'  make provider/deployment/config/localhost DEPLOYMENT=<name> LOCALHOST_CA_CERTIFICATE=<path>' \
 		'      Validate and render a same-host private-CA deployment without starting it.' \
-		'  make provider/deployment/up/localhost DEPLOYMENT=<name> LOCALHOST_CA_CERTIFICATE=<path>' \
+		'  make provider/deployment/up/localhost DEPLOYMENT=<name> LOCALHOST_CA_CERTIFICATE=<path> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
 		'      Load the reviewed checkpoints and start signed API activity using the supplied private CA.' \
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
 		'      Report the owned provider and runner container state.' \
@@ -176,21 +176,27 @@ provider/deployment/config:
 		$(PYTHON) -m deployment.provider_deployment config "$$DEPLOYMENT_INPUT"
 
 provider/deployment/up: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/up: private export EXPECTED_PLAN_SHA256_INPUT := $(value EXPECTED_PLAN_SHA256)
 provider/deployment/up:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin EXPECTED_PLAN_SHA256)" = command\ line || { echo 'EXPECTED_PLAN_SHA256 must be set on the make command line from the reviewed config output' >&2; exit 2; }
 	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'LOCALHOST_CA_CERTIFICATE is accepted only by provider/deployment/config/localhost or provider/deployment/up/localhost' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m deployment.provider_deployment up "$$DEPLOYMENT_INPUT"
+		$(PYTHON) -m deployment.provider_deployment up "$$DEPLOYMENT_INPUT" \
+		--expected-plan-sha256 "$$EXPECTED_PLAN_SHA256_INPUT"
 
 provider/deployment/config/localhost provider/deployment/up/localhost: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/config/localhost provider/deployment/up/localhost: private export LOCALHOST_CA_CERTIFICATE_INPUT := $(value LOCALHOST_CA_CERTIFICATE)
+provider/deployment/up/localhost: private export EXPECTED_PLAN_SHA256_INPUT := $(value EXPECTED_PLAN_SHA256)
 provider/deployment/config/localhost provider/deployment/up/localhost:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LOCALHOST_CA_CERTIFICATE)" = command\ line || { echo 'LOCALHOST_CA_CERTIFICATE must be set on the make command line' >&2; exit 2; }
+	@test "$@" != provider/deployment/up/localhost || test "$(origin EXPECTED_PLAN_SHA256)" = command\ line || { echo 'EXPECTED_PLAN_SHA256 must be set on the make command line from the reviewed config output' >&2; exit 2; }
 	@operation="$(notdir $(@D))"; \
+		set -- "$$operation" "$$DEPLOYMENT_INPUT" --localhost-ca-certificate "$$LOCALHOST_CA_CERTIFICATE_INPUT"; \
+		if [ "$$operation" = up ]; then set -- "$$@" --expected-plan-sha256 "$$EXPECTED_PLAN_SHA256_INPUT"; fi; \
 	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m deployment.provider_deployment "$$operation" "$$DEPLOYMENT_INPUT" \
-		--localhost-ca-certificate "$$LOCALHOST_CA_CERTIFICATE_INPUT"
+		$(PYTHON) -m deployment.provider_deployment "$$@"
 
 provider/deployment/status provider/deployment/down: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/status provider/deployment/down:

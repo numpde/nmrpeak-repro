@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext, redirect_stderr
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
+from hashlib import sha256
 from io import BytesIO, StringIO
 import json
 from pathlib import Path
@@ -399,6 +400,7 @@ class ProviderDeploymentTests(unittest.TestCase):
     def test_start_admits_every_input_before_compose_and_readiness_proof(self) -> None:
         with render_repository() as repository:
             plan = test_plan(repository)
+            preview_sha256 = sha256(deployment_plan_bytes(plan) + b"\n").hexdigest()
 
             events: list[str] = []
             with (
@@ -444,7 +446,11 @@ class ProviderDeploymentTests(unittest.TestCase):
                 ),
             ):
                 self.assertEqual(
-                    start_deployment(repository, "production"),
+                    start_deployment(
+                        repository,
+                        "production",
+                        expected_plan_sha256=preview_sha256,
+                    ),
                     plan,
                 )
 
@@ -467,6 +473,56 @@ class ProviderDeploymentTests(unittest.TestCase):
                     / plan.generation.frozen_generation_id.removeprefix("sha256:")
                     / "frozen/manifest.json"
                 ).is_file()
+            )
+
+    def test_start_rejects_changed_preview_before_materialization_or_engine_effects(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+            with (
+                patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                patch.object(provider_deployment, "_materialize_locked") as materialize,
+                patch.object(provider_deployment, "_admit_installed_credential") as credential,
+                patch.object(provider_deployment, "ensure_provider_state_volumes") as volumes,
+                patch.object(provider_deployment, "_run_compose_plan") as compose_up,
+                self.assertRaisesRegex(DeploymentOperationRejected, "differs from reviewed preview"),
+            ):
+                start_deployment(
+                    repository,
+                    "production",
+                    expected_plan_sha256="0" * 64,
+                )
+            materialize.assert_not_called()
+            credential.assert_not_called()
+            volumes.assert_not_called()
+            compose_up.assert_not_called()
+
+    def test_start_rejects_malformed_preview_digest_before_state_access(self) -> None:
+        with render_repository() as repository:
+            with (
+                patch.object(provider_deployment, "_ensure_deployment_state_root") as state_root,
+                patch.object(provider_deployment, "render_deployment_plan") as render,
+                self.assertRaisesRegex(DeploymentOperationRejected, "64 lowercase hexadecimal"),
+            ):
+                start_deployment(
+                    repository,
+                    "production",
+                    expected_plan_sha256="SHA256:" + "A" * 64,
+                )
+            state_root.assert_not_called()
+            render.assert_not_called()
+
+    def test_config_output_digest_is_the_expected_start_digest(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+            output = StringIO()
+            with (
+                patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(provider_deployment.main(["config", "production"]), 0)
+            self.assertEqual(
+                sha256(output.getvalue().encode("utf-8")).hexdigest(),
+                sha256(deployment_plan_bytes(plan) + b"\n").hexdigest(),
             )
 
     def test_start_stops_before_engine_effects_when_input_access_fails(self) -> None:
@@ -507,7 +563,11 @@ class ProviderDeploymentTests(unittest.TestCase):
                     "input access operation was rejected",
                 ),
             ):
-                start_deployment(repository, "production")
+                start_deployment(
+                    repository,
+                    "production",
+                    expected_plan_sha256=sha256(deployment_plan_bytes(plan) + b"\n").hexdigest(),
+                )
 
             verify_hf.assert_not_called()
             verify_chf.assert_not_called()
@@ -820,7 +880,11 @@ class ProviderDeploymentTests(unittest.TestCase):
             ),
             (["logs", "localhost", "--confirm", "x"], "logs does not accept --confirm"),
             (["status", "localhost", "--replace"], "status does not accept --replace"),
-            (["up", "localhost", "--replace"], "up does not accept --replace"),
+            (["up", "localhost", "--expected-plan-sha256", "0" * 64, "--replace"],
+             "up does not accept --replace"),
+            (["up", "localhost"], "up requires --expected-plan-sha256"),
+            (["config", "localhost", "--expected-plan-sha256", "0" * 64],
+             "config does not accept --expected-plan-sha256"),
         )
         for arguments, expected in cases:
             with self.subTest(arguments=arguments):
@@ -849,7 +913,9 @@ class ProviderDeploymentTests(unittest.TestCase):
             ),
             redirect_stderr(stderr),
         ):
-            status = provider_deployment.main(["up", "localhost"])
+            status = provider_deployment.main(
+                ["up", "localhost", "--expected-plan-sha256", "0" * 64]
+            )
 
         self.assertEqual(status, 2)
         rendered = stderr.getvalue()

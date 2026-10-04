@@ -440,6 +440,7 @@ def start_deployment(
     repository: Path,
     deployment: str,
     *,
+    expected_plan_sha256: str,
     localhost_ca_certificate: Path | None = None,
     docker: Path = _DOCKER,
 ) -> DeploymentPlan:
@@ -451,6 +452,13 @@ def start_deployment(
             "Deployment repository must be one resolved directory"
         )
     _require_deployment_name(deployment)
+    if (
+        type(expected_plan_sha256) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", expected_plan_sha256) is None
+    ):
+        raise DeploymentOperationRejected(
+            "Expected deployment plan SHA-256 must be 64 lowercase hexadecimal characters"
+        )
     state_root = _ensure_deployment_state_root(root, deployment)
     with _locked_deployment_state(state_root):
         plan = render_deployment_plan(
@@ -460,6 +468,14 @@ def start_deployment(
             docker=docker,
         )
         _validate_deployment_plan(plan)
+        # Match the exact newline-terminated bytes printed by `config`.
+        actual_plan_sha256 = sha256(deployment_plan_bytes(plan) + b"\n").hexdigest()
+        if actual_plan_sha256 != expected_plan_sha256:
+            raise DeploymentOperationRejected(
+                "Deployment plan differs from reviewed preview: "
+                f"expected SHA-256 {expected_plan_sha256}, "
+                f"rendered SHA-256 {actual_plan_sha256}"
+            )
         _materialize_locked(state_root, plan)
         _admit_installed_credential(state_root, plan.provider_ref)
         _admit_interpreter_configs(state_root)
@@ -2874,6 +2890,7 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--record-digest")
     parser.add_argument("--reason")
     parser.add_argument("--localhost-ca-certificate", type=Path)
+    parser.add_argument("--expected-plan-sha256")
     options = parser.parse_args(arguments)
     _validate_operation_options(parser, options)
     repository = Path(__file__).resolve().parents[1]
@@ -2929,6 +2946,7 @@ def main(arguments: list[str] | None = None) -> int:
             plan = start_deployment(
                 repository,
                 options.deployment,
+                expected_plan_sha256=options.expected_plan_sha256,
                 localhost_ca_certificate=options.localhost_ca_certificate,
             )
             print(
@@ -2984,7 +3002,7 @@ _OPERATION_OPTION_POLICY = {
     "journal-retire": (frozenset({"confirm"}), frozenset({"confirm"})),
     "logs": (frozenset(), frozenset()),
     "status": (frozenset(), frozenset()),
-    "up": (frozenset(), frozenset({"localhost_ca_certificate"})),
+    "up": (frozenset({"expected_plan_sha256"}), frozenset({"localhost_ca_certificate", "expected_plan_sha256"})),
 }
 _OPTION_NAMES = {
     "nmr_api_v1": "--nmr-api-v1",
@@ -2995,6 +3013,7 @@ _OPTION_NAMES = {
     "record_digest": "--record-digest",
     "reason": "--reason",
     "localhost_ca_certificate": "--localhost-ca-certificate",
+    "expected_plan_sha256": "--expected-plan-sha256",
 }
 _OPERATION_FAILURE_HEADLINES = {
     "config": "Provider deployment preview failed",
