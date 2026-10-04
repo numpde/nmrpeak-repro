@@ -772,6 +772,18 @@ prior signed GUI lifecycle regression passed again after the shared fixture
 extraction. This does not establish live model behavior, runner execution, or
 long-running deployment behavior. Production containers and Jobs were untouched.
 
+The signed acceptance at nmr-gui-v1@6a991c06 extends that disposable stack
+with distinct fake HF/CHF API_KEY markers in the Job sources. Its deterministic
+model report copies the complete admitted source and script/SVG markup. The
+provider's retained signed FAIL omits both, and the real test API's authorized
+Attempt lists plus both GUI failure views show only the fixed policy text.
+Automatic Jobs reads after project selection are recorded separately from
+explicit refreshes, so a transient automatic 503 does not stand in for a
+successful manual read. The final adversarial smoke passed. The unchanged
+signed lifecycle regression passed on rerun after one Playwright response-body
+error in its intentional lost-response case. This acceptance still does not
+exercise the live interpreter or a production rollout.
+
 The configured `codah-openai-gpt-5-6-luna` model was called through the
 production HF/CHF prompt, schema, adapter, and constructor. Normal and forced
 repair point-value cases passed in both lanes; CHF missing-carbon reporting
@@ -865,9 +877,9 @@ message; the marker is absent from the v2 journal record, stopped inspection,
 terminal command, local TLS fake's FAIL receipt, and exact replay. The full
 offline `make test` lane passed (497 unit, 9 API contract, 3 HTTP integration,
 6 model-behavior harness, 17 repository tests). The TLS fake does not prove
-the real API/GUI display boundary for this marker. The existing signed
-acceptance proves the fixed failure pair and literal markup rendering, not
-this credential-like marker's end-to-end absence.
+the real API/GUI display boundary for this exact marker. The separate signed
+acceptance at nmr-gui-v1@6a991c06 proves that boundary for distinct synthetic
+credential-like source echoes and markup with a deterministic report.
 
 Deployment preflight (2026-10-04)
 ---------------------------------
