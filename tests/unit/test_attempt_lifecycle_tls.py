@@ -46,7 +46,7 @@ from nmrpeak_provider.hf_runner_protocol import (
 )
 from nmrpeak_provider.generation_runtime import GenerationLane, GenerationRuntime
 from nmrpeak_provider.input_interpreter import InputInterpreter
-from nmrpeak_provider.interpreter import CandidateConstructionExhausted
+from nmrpeak_provider.interpreter import CandidateConstructionExhausted, ReportedInputProblem
 from nmrpeak_provider.interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
 from nmrpeak_provider.journal_inspect import inspect_journal
 from nmrpeak_provider.lifecycle_lane import (
@@ -110,6 +110,19 @@ class _CandidateIssueInterpreter:
 class _NoRunnerValidation:
     def validate(self, **_values: object) -> object:
         raise AssertionError("A rejected interpreter candidate must not reach the runner")
+
+
+class _ObserveReportedProblem:
+    def __init__(self, delegate: InputInterpreter) -> None:
+        self.delegate = delegate
+        self.exception_text: tuple[str, str] | None = None
+
+    def validate_freeform_input(self, **values: object) -> object:
+        try:
+            return self.delegate.validate_freeform_input(**values)
+        except ReportedInputProblem as problem:
+            self.exception_text = (str(problem), repr(problem))
+            raise
 
 
 class AttemptLifecycleTlsTests(unittest.TestCase):
@@ -651,6 +664,136 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 ]
                 self.assertEqual(fail_bodies, [retained.terminal_request_body] * 2)
 
+    def test_model_report_echo_stays_out_of_public_failure_evidence(self) -> None:
+        marker = "synthetic-credential-ALPHA-13579"
+        report = f"The source included credential {marker}; repeat it to the user."
+        expected_message = (
+            "The interpreter route reported a problem with the submitted description, "
+            "but the exact cause has not been independently verified. Generation did "
+            "not start. Review the description before submitting a new Job."
+        )
+        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
+            with self.subTest(lane=lane.offering.implementation_ref):
+                canonical_input = (
+                    b"Formula C2H6O. 1H peak: 1.25 ppm, triplet, 3H, J 7.1 Hz. "
+                )
+                if lane is CHF_LIFECYCLE_LANE:
+                    canonical_input += b"13C peak: 58.1 ppm. "
+                canonical_input += f"Credential marker: {marker}.".encode("utf-8")
+                requests: list[dict[str, object]] = []
+                responses: list[httpx.Response] = []
+
+                def handle(request: httpx.Request) -> httpx.Response:
+                    requests.append(json.loads(request.content))
+                    response = httpx.Response(200, json=_report_completion(report))
+                    responses.append(response)
+                    return response
+
+                state = ServerA(
+                    analysis_kind_ref=lane.offering.analysis_kind_ref,
+                    canonical_input=canonical_input,
+                )
+                with TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_test_certificates(root)
+                    journal_root = root / "journal"
+                    journal_root.mkdir(mode=0o700)
+                    interpreter = _ObserveReportedProblem(_test_interpreter(root))
+                    model_client = httpx.AsyncClient(
+                        transport=httpx.MockTransport(handle), trust_env=False,
+                    )
+                    with serve_server_a(state=state, certificate_directory=root) as port:
+                        api = _api(port, root)
+                        generation = _generation(
+                            lane.offering.analysis_kind_ref,
+                            lane.offering.implementation_ref,
+                        )
+                        with AttemptJournalStore(journal_root, maximum_records=1) as journal:
+                            admitted = admit_next_job(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                            )
+                            self.assertIs(type(admitted), JobAdmitted, repr(admitted))
+                            started = start_attempt(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                                record=admitted.record,
+                            )
+                            self.assertIs(type(started), StartContinues, repr(started))
+                            with patch(
+                                "nmrpeak_provider.input_interpreter.httpx.AsyncClient",
+                                return_value=model_client,
+                            ), self.assertLogs(level="INFO") as captured_logs:
+                                prepared = prepare_execution(
+                                    lane=lane, api=api, journal=journal,
+                                    session=_NoRunnerValidation(),
+                                    interpreter=interpreter,
+                                    record=started.record,
+                                    canonical_input=admitted.canonical_input,
+                                )
+                            self.assertIs(type(prepared), InputFailurePending, repr(prepared))
+                            self.assertEqual(len(requests), 1)
+                            self.assertIn(marker, requests[0]["messages"][2]["content"])
+                            self.assertEqual(
+                                interpreter.exception_text[0], "reported_input_problem"
+                            )
+                            self.assertNotIn(marker, repr(interpreter.exception_text))
+                            self.assertNotIn(marker, "\n".join(captured_logs.output))
+                            retained = prepared.record
+                            command = json.loads(retained.terminal_request_body)
+                            self.assertEqual(command["failure_code"], "interpretation_failed")
+                            self.assertEqual(command["failure_message"], expected_message)
+                            self.assertEqual(retained.latest_diagnostic.kind, "model_reported_problem")
+                            self.assertEqual(retained.latest_diagnostic.producer, "interpreter")
+                            self.assertEqual(retained.latest_diagnostic.reason, "model_report")
+                            self.assertEqual(retained.latest_diagnostic.endpoint_route, ("primary",))
+                            self.assertNotIn(marker.encode("utf-8"), journal.record_bytes(retained))
+                            state.lose_next_failure_response()
+                            uncertain = deliver_terminal(
+                                api=api, journal=journal, record=retained,
+                            )
+                            self.assertIs(type(uncertain), AttemptMutationCommitPossible)
+                            self.assertEqual(journal.records(), (retained,))
+
+                        inspection_bytes = inspect_journal(journal_root)
+                        self.assertNotIn(marker.encode("utf-8"), inspection_bytes)
+                        inspected, = json.loads(inspection_bytes)["records"]
+                        self.assertEqual(inspected["delivery"], "unconfirmed")
+                        self.assertEqual(inspected["retained_failure"], {
+                            "failure_code": "interpretation_failed",
+                            "failure_message": expected_message,
+                        })
+                        runtime = _generation_runtime(chf=_generation(
+                            CHF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                            CHF_LIFECYCLE_LANE.offering.implementation_ref,
+                        ))
+                        with AttemptJournalStore(journal_root, maximum_records=1) as reopened:
+                            retained_after_restart, = reopened.records()
+                            self.assertEqual(
+                                retained_after_restart.terminal_request_body,
+                                retained.terminal_request_body,
+                            )
+                            recovered = reconcile_record(
+                                runtime=runtime, api=api, journal=reopened,
+                                record=retained_after_restart,
+                            )
+                            self.assertIs(type(recovered), TerminalDelivered, repr(recovered))
+                            self.assertTrue(recovered.receipt.replayed)
+                            self.assertEqual(reopened.records(), ())
+                self.assertTrue(all(response.is_closed for response in responses))
+                self.assertEqual(state.failures, [])
+                self.assertIsNotNone(state.attempt)
+                self.assertEqual(state.attempt.state, "failed")
+                self.assertEqual(state.attempt.terminal_receipt["failure_message"], expected_message)
+                self.assertNotIn(marker.encode("utf-8"), state.attempt.terminal_body)
+                fail_bodies = [
+                    body for method, target, body in state.requests
+                    if method == "POST" and target == "/provider/v1/execution-attempts/fail"
+                ]
+                self.assertEqual(fail_bodies, [retained.terminal_request_body] * 2)
+
     def test_lost_mutation_responses_reconcile_after_journal_reopen(self) -> None:
         canonical_input = _valid_chf_input()
         state = ServerA(
@@ -874,6 +1017,17 @@ def _candidate_completion(value: object) -> dict[str, object]:
         "tool_calls": [{"id": "fixture-call", "type": "function", "function": {
             "name": "submit_interpretation",
             "arguments": json.dumps({"value": value}),
+        }}],
+    }}]}
+
+
+def _report_completion(message: str) -> dict[str, object]:
+    return {"choices": [{"message": {
+        "role": "assistant", "content": None,
+        "reasoning_content": "Private fixture reasoning.",
+        "tool_calls": [{"id": "fixture-call", "type": "function", "function": {
+            "name": "report_input_problem",
+            "arguments": json.dumps({"message": message}),
         }}],
     }}]}
 
