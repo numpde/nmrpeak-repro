@@ -784,6 +784,18 @@ signed lifecycle regression passed on rerun after one Playwright response-body
 error in its intentional lost-response case. This acceptance still does not
 exercise the live interpreter or a production rollout.
 
+The signed acceptance at nmr-gui-v1@09a8078f adds a deterministic
+`CandidateConstructionExhausted` case in each HF/CHF lane alongside the two
+model-report cases. It uses the committed NMRPeak provider image's lifecycle,
+typed candidate issue, policy, signed FAIL, and exact replay against the real
+disposable API. The authorized Attempt lists and both GUI failure views show
+the exact path-bearing `interpretation_failed` sentence; the synthetic source
+credential markers and unsupported `xy` scalar are absent from retained FAIL
+and public failure text. The four-case setup and verification passed. The
+candidate is injected at the interpreter boundary, so this proves downstream
+publication and disclosure behavior, not live model repair or its choice to
+exhaust candidates.
+
 The configured `codah-openai-gpt-5-6-luna` model was called through the
 production HF/CHF prompt, schema, adapter, and constructor. Normal and forced
 repair point-value cases passed in both lanes; CHF missing-carbon reporting
