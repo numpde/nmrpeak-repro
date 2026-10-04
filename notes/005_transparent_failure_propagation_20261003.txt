@@ -840,6 +840,21 @@ candidate-exhaustion branch; the fake checks signed-header presence, while the
 disposable real API acceptance above proves signatures for the model-report
 branch.
 
+Connected repair-to-completion verification at 24a990e covers the other
+outcome after an invalid first model tool value. For each complete HF/CHF
+`ethanol_point` source, a controlled first submit uses unsupported `xy` and
+the second uses the exact source-backed `t` fixture. The production adapter,
+`InputInterpreter`, and constructor request one correction; the feedback tool
+names the rejected field without echoing `xy`. The fake runner receives one
+VALIDATE carrying exactly the fixture's typed model input, including CHF
+carbon data, then one GENERATE. Lifecycle sends COMPLETE with no FAIL, and
+the local TLS Server A fake confirms exact completion replay. The full
+offline `make test` lane passed after adding this case (496 unit, 9 API
+contract, 3 HTTP integration, 6 model-behavior harness, 17 repository tests);
+the final typed runner-input assertion passed its focused test. This is
+deterministic path evidence; it does not show which action the live model will
+choose for a new source.
+
 Deployment preflight (2026-10-04)
 ---------------------------------
 
