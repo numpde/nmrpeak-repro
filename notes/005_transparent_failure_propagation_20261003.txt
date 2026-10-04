@@ -727,9 +727,9 @@ Before production enablement, perform a read-only census of eligible open
 Jobs and retained PRE_EXECUTION Attempts for bracket-led prose, using refs,
 fingerprints, and prefix category only in the report. Verify the selected
 generation window does not reinterpret an old obligation. Run the adapted
-HF/CHF live model-behavior cases, including forced repair and repeated
-observations of candidate-only exhaustion, before approving the one-cycle
-terminal budget. Repeated observations measure the present one-cycle policy;
+HF/CHF live model-behavior cases, including forced repair and attempts to
+observe candidate-only exhaustion, before reviewing the one-cycle terminal
+budget. Repeated observations measure the present one-cycle policy;
 they are not a comparison with a hypothetical two-cycle policy. If that
 comparison is needed, first specify and implement its persisted counter and
 configuration fingerprint as a separate experiment.
@@ -758,6 +758,20 @@ A separate markup-like failure message remained literal text in both views.
 This proves the API/GUI delivery boundary in the test stack, not a live
 NMRPeak provider send.
 
+A subsequent disposable acceptance at nmr-gui-v1@ebe574ce ran a one-shot
+sidecar from a committed NMRPeak provider image against the real test API.
+The image's committed provider-input closure matched the current NMRPeak
+checkout. The sidecar used NMRPeak admission, Attempt start, preparation
+policy, v2 journal, signed FAIL, and exact replay. The API accepted the
+signature and retained the failure pair; its authorized public Attempt list
+and both GUI views showed the exact text. A shared GUI fixture is compared
+with the provider-produced pair, so policy-text drift fails the acceptance.
+The final test passed with separate synthetic HF and CHF Jobs, each through
+its committed NMRPeak lane and policy, and a deterministic model report. The
+prior signed GUI lifecycle regression passed again after the shared fixture
+extraction. This does not establish live model behavior, runner execution, or
+long-running deployment behavior. Production containers and Jobs were untouched.
+
 The configured `codah-openai-gpt-5-6-luna` model was called through the
 production HF/CHF prompt, schema, adapter, and constructor. Normal and forced
 repair point-value cases passed in both lanes; CHF missing-carbon reporting
@@ -771,15 +785,39 @@ unobserved. The harness now marks all model-authored unsupported-source
 reports `REVIEW` and requires same-run private capture of exact report text;
 it does not treat keyword matching as semantic proof.
 
+Natural live candidate-only exhaustion cannot be forced under the unchanged
+production prompt, tools, and endpoint route: after a candidate rejection the
+model may correctly report a source-supported problem. The controlled tests
+prove that the exhaustion branch retains candidate provenance; they do not
+turn an unobserved live branch into observed model behavior. If further live
+cases also do not choose that branch, record it as unobserved and bring the
+one-cycle budget decision to the rollout review with that limitation visible.
+
 An offline connected v2 FAIL test now covers ambiguous terminal send, journal
 reopen, unchanged retained command and diagnostic, unconfirmed inspection,
-exact replay, a valid 409 hold, and restart without automatic resend. Rebuilt
-provider/HF/CHF images and production send/replay remain unqualified. Before
+exact replay, a valid 409 hold, and restart without automatic resend. The
+rebuilt provider image passed the disposable signed API/GUI smoke; the runner
+images and production send/replay remain unqualified. Before
 enablement, select and audit the generation window and any local retained
-journal, perform the rebuilt-image smoke, and obtain live candidate-only
-exhaustion evidence before approving the one-cycle terminal budget.
+journal, perform the rebuilt-image smoke, and seek live candidate-only
+exhaustion evidence. If that branch remains unobserved, rollout review must
+explicitly decide whether deterministic branch proof and live source-grounded
+reports suffice for the one-cycle budget; do not claim live coverage.
 The subsequent full offline `make test` lane passed: 492 unit, 9 API contract,
 3 HTTP integration, 6 model-behavior harness, and 17 repository tests.
+
+Additional lifecycle verification at 3b7bed3 exercises both HF and CHF
+through the production admission, start, and preparation code over local TLS.
+For a direct structured source issue and a candidate-construction issue, it
+checks the distinct failure code, exact rendered message, diagnostic producer,
+field path, and endpoint route. The fake Server A commits a terminal FAIL but
+loses its response; after journal reopen the provider sends identical retained
+bytes and accepts the replay receipt. The fake checks signed-header presence,
+not signature cryptography. The real API test stack owns that check. The full
+offline `make test` lane passed after the first added lifecycle tests (494
+unit, 9 API contract, 3 HTTP integration, 6 model-behavior harness, and 17
+repository tests); the subsequent candidate-origin replay extension passed its
+focused TLS test in both lanes.
 
 Deployment preflight (2026-10-04)
 ---------------------------------
