@@ -823,6 +823,23 @@ unit, 9 API contract, 3 HTTP integration, 6 model-behavior harness, and 17
 repository tests); the subsequent candidate-origin replay extension passed its
 focused TLS test in both lanes.
 
+Connected offline qualification at 57e5717 closes the gap between those
+separate proofs. For each HF/CHF unsupported-multiplicity source fixture, the
+production OpenAI adapter receives three controlled submit-tool responses
+through MockTransport. The production `InputInterpreter` and product constructor
+reject the unchanged `xy` candidate on all three turns; the feedback tool and
+correction messages omit `xy`, while the feedback tool names the owned path.
+No runner validation occurs. Lifecycle retains a candidate-attributed
+`interpretation_failed` command with typed reason, path, and endpoint route.
+The local TLS Server A fake commits the FAIL and drops the response; stopped
+journal inspection reports delivery unconfirmed, and restart replays the exact
+retained bytes. The full offline `make test` lane passed (495 unit, 9 API
+contract, 3 HTTP integration, 6 model-behavior harness, 17 repository tests).
+This deterministic case does not show that a live model will choose the
+candidate-exhaustion branch; the fake checks signed-header presence, while the
+disposable real API acceptance above proves signatures for the model-report
+branch.
+
 Deployment preflight (2026-10-04)
 ---------------------------------
 
