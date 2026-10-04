@@ -258,7 +258,12 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                     expected_producer = "provider"
                     expected_route = ()
                 else:
-                    canonical_input = b"Formula C2H6O with a proton triplet at 1.2 ppm."
+                    canonical_input = (
+                        b"Formula C2H6O. 1H peaks: triplet 1.2 ppm (3H), "
+                        b"quartet 3.7 ppm (2H), singlet 2.5 ppm (1H)."
+                    )
+                    if lane is CHF_LIFECYCLE_LANE:
+                        canonical_input += b" 13C peaks: 18 ppm and 58 ppm."
                     interpreter = _CandidateIssueInterpreter()
                     expected_code = "interpretation_failed"
                     expected_message = candidate_message
