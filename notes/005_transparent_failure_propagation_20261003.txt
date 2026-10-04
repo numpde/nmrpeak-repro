@@ -855,6 +855,20 @@ the final typed runner-input assertion passed its focused test. This is
 deterministic path evidence; it does not show which action the live model will
 choose for a new source.
 
+Adversarial report-disclosure verification at 6b63596 sends an actual
+`report_input_problem` tool response containing a synthetic credential marker
+copied from the submitted HF/CHF prose. The production adapter and
+`InputInterpreter` preserve the report as model-authored evidence, while
+exception string/repr and captured preparation logs omit the marker.
+Lifecycle stores the fixed, attribution-qualified `interpretation_failed`
+message; the marker is absent from the v2 journal record, stopped inspection,
+terminal command, local TLS fake's FAIL receipt, and exact replay. The full
+offline `make test` lane passed (497 unit, 9 API contract, 3 HTTP integration,
+6 model-behavior harness, 17 repository tests). The TLS fake does not prove
+the real API/GUI display boundary for this marker. The existing signed
+acceptance proves the fixed failure pair and literal markup rendering, not
+this credential-like marker's end-to-end absence.
+
 Deployment preflight (2026-10-04)
 ---------------------------------
 
