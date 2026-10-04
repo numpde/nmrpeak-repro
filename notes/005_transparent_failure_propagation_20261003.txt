@@ -784,6 +784,10 @@ not choose candidate-only exhaustion in those runs, so that live path remains
 unobserved. The harness now marks all model-authored unsupported-source
 reports `REVIEW` and requires same-run private capture of exact report text;
 it does not treat keyword matching as semantic proof.
+The current deployment configuration has exactly one interpreter endpoint,
+so the harness's per-endpoint run uses the same endpoint route as this
+deployment. A future multi-endpoint configuration needs a full ordered-route
+live run before claiming equivalent route coverage.
 
 Natural live candidate-only exhaustion cannot be forced under the unchanged
 production prompt, tools, and endpoint route: after a candidate rejection the
