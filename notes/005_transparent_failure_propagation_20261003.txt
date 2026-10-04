@@ -881,6 +881,21 @@ the real API/GUI display boundary for this exact marker. The separate signed
 acceptance at nmr-gui-v1@6a991c06 proves that boundary for distinct synthetic
 credential-like source echoes and markup with a deterministic report.
 
+An actual-process crash test now covers the two local terminal-delivery windows
+with a temporary v2 journal and parent-hosted TLS Server A fake. A spawned CHF
+provider child exits immediately after durable FAIL retention, before any
+terminal FAIL send;
+the parent finds one intact unconfirmed record, no API FAIL, and replays its
+exact command to a first committed receipt. In a separate run, the child exits
+after the API commits the signed FAIL and the provider receives its receipt,
+immediately before journal retirement. The parent finds the original record
+bytes and an unconfirmed inspection, then replays the identical command and
+accepts a replay receipt before retirement. Both child exits and the full
+offline `make test` lane passed. The fake checks signed-header presence, not
+signature cryptography; the disposable real-API signed acceptance above covers
+that separate boundary. These crashes are offline evidence, not production
+rollout qualification.
+
 Deployment preflight (2026-10-04)
 ---------------------------------
 
