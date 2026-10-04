@@ -42,12 +42,14 @@ from nmrpeak_provider.hf_runner_protocol import (
     HF_RUNNER_CONTRACT_ID,
 )
 from nmrpeak_provider.generation_runtime import GenerationLane, GenerationRuntime
+from nmrpeak_provider.interpreter import CandidateConstructionExhausted
 from nmrpeak_provider.lifecycle_lane import (
     CHF_LIFECYCLE_LANE,
     HF_LIFECYCLE_LANE,
 )
 from nmrpeak_provider.runner_protocol import ReadyFrame, RunnerFrameCodec
 from nmrpeak_provider.runner_session import RunnerDeadlines, RunnerSession
+from nmrpeak_provider.product_input import InputIssue, InputRejectionReason
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
     HF_RESULT_IDENTITY,
@@ -83,6 +85,17 @@ _HF_RUNNER_FACTS = ProviderResultFacts(
     checkpoint_ref="sha256:" + "7" * 64,
     image_input_ref="sha256:" + "8" * 64,
 )
+
+
+class _CandidateIssueInterpreter:
+    def validate_freeform_input(self, **_values: object) -> object:
+        raise CandidateConstructionExhausted(
+            InputIssue(
+                InputRejectionReason.UNSUPPORTED_MULTIPLICITY,
+                ("model_input", "spectra", "1H", "peaks", 0, "multiplicity"),
+            ),
+            ("primary", "fallback"),
+        )
 
 
 class AttemptLifecycleTlsTests(unittest.TestCase):
@@ -215,21 +228,42 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 self.assertEqual(len(terminal_requests), 2)
                 self.assertEqual(terminal_requests[0], terminal_requests[1])
 
-    def test_each_lane_retains_exact_source_failure_across_tls_replay(self) -> None:
+    def test_each_lane_retains_exact_failure_origin_across_tls_replay(self) -> None:
         cases = (
             (CHF_LIFECYCLE_LANE, CHF_RUNNER_CODEC, _CHF_RUNNER_FACTS, _valid_chf_input()),
             (HF_LIFECYCLE_LANE, HF_RUNNER_CODEC, _HF_RUNNER_FACTS, _valid_hf_input()),
         )
-        expected_message = (
+        source_message = (
             "Input rejected at /model_input/spectra/1H/peaks/0/multiplicity: "
             "the proton multiplicity label is unsupported by this model. "
             "Generation did not start. Correct the submitted Job and try again."
         )
+        candidate_message = (
+            "Interpretation failed: the interpreter's candidate at "
+            "/model_input/spectra/1H/peaks/0/multiplicity was rejected after all "
+            "correction routes: the proton multiplicity label is unsupported by "
+            "this model. Generation did not start. Review the submitted "
+            "description; the candidate's defect has not been proven to occur "
+            "in the source."
+        )
         for lane, codec, facts, valid_input in cases:
-            with self.subTest(implementation=lane.offering.implementation_ref):
-                document = json.loads(valid_input)
-                document["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "xy"
-                canonical_input = json.dumps(document, separators=(",", ":")).encode("utf-8")
+            for origin in ("source", "candidate"):
+                if origin == "source":
+                    document = json.loads(valid_input)
+                    document["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "xy"
+                    canonical_input = json.dumps(document, separators=(",", ":")).encode("utf-8")
+                    interpreter = _UNUSED_INTERPRETER
+                    expected_code = "input_rejected"
+                    expected_message = source_message
+                    expected_producer = "provider"
+                    expected_route = ()
+                else:
+                    canonical_input = b"Formula C2H6O with a proton triplet at 1.2 ppm."
+                    interpreter = _CandidateIssueInterpreter()
+                    expected_code = "interpretation_failed"
+                    expected_message = candidate_message
+                    expected_producer = "interpreter_candidate"
+                    expected_route = ("primary", "fallback")
                 state = ServerA(
                     analysis_kind_ref=lane.offering.analysis_kind_ref,
                     canonical_input=canonical_input,
@@ -262,16 +296,18 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                             prepared = prepare_execution(
                                 lane=lane, api=api, journal=journal,
                                 session=_runner_session(codec, facts),
-                                interpreter=_UNUSED_INTERPRETER,
+                                interpreter=interpreter,
                                 record=started.record,
                                 canonical_input=admitted.canonical_input,
                             )
                             self.assertIs(type(prepared), InputFailurePending, repr(prepared))
                             retained = prepared.record
                             command = json.loads(retained.terminal_request_body)
-                            self.assertEqual(command["failure_code"], "input_rejected")
+                            self.assertEqual(command["failure_code"], expected_code)
                             self.assertEqual(command["failure_message"], expected_message)
                             self.assertEqual(retained.latest_diagnostic.reason, "unsupported_multiplicity")
+                            self.assertEqual(retained.latest_diagnostic.producer, expected_producer)
+                            self.assertEqual(retained.latest_diagnostic.endpoint_route, expected_route)
                             self.assertEqual(
                                 retained.latest_diagnostic.path,
                                 "/model_input/spectra/1H/peaks/0/multiplicity",
@@ -303,6 +339,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 self.assertEqual(state.failures, [])
                 self.assertIsNotNone(state.attempt)
                 self.assertEqual(state.attempt.state, "failed")
+                self.assertEqual(state.attempt.terminal_receipt["failure_code"], expected_code)
                 self.assertEqual(state.attempt.terminal_receipt["failure_message"], expected_message)
                 fail_bodies = [
                     body for method, target, body in state.requests
