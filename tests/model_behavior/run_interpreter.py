@@ -12,7 +12,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import AsyncExitStack
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path, PurePosixPath
 import sys
@@ -98,6 +98,7 @@ class _Observation:
     injected_rejections: int
     issue_reason: str | None
     model_outputs: tuple[str, ...]
+    reported_message: str | None = field(repr=False)
     passed: bool
     reason: str
     transport_failure: str | None
@@ -399,6 +400,7 @@ async def _observe(
         injected_rejections=observed_capability.injected_rejections,
         issue_reason=issue_reason,
         model_outputs=tuple(observed_call.model_outputs),
+        reported_message=message if show_model_output else None,
         passed=reason == "ok",
         reason=reason,
         transport_failure=observed_call.transport_failure,
@@ -436,21 +438,16 @@ def _failure_reason(
             return "unhelpful_reported_problem"
         if variant.action == "unsupported_source":
             claim = " ".join(message.casefold().split())
-            unsupported_phrases = (
-                "cannot represent", "can't represent", "not representable",
-                "unsupported", "not supported", "unrecognized",
-                "not recognized", "not a recognized",
-                "unknown multiplicity", "invalid multiplicity",
-            )
             contradicting_phrases = (
                 "not unsupported", "not unrecognized", "not invalid",
-                "is supported", "is recognized", "is valid",
-                "is a standard", "input is fine", "can represent",
+                "xy is supported", "xy is recognized", "xy is valid",
+                "xy is a standard", "which this product supports",
+                "accepted by this product", "is a standard", "input is fine",
             )
-            if not any(phrase in claim for phrase in unsupported_phrases) or any(
-                phrase in claim for phrase in contradicting_phrases
-            ):
+            if any(phrase in claim for phrase in contradicting_phrases):
                 return "unsupported_value_not_explained"
+            # Model-authored semantic claims cannot be proven by a word list.
+            return "unsupported_report_requires_review"
     elif (
         issue_reason != variant.expected_issue_reason
         or observed_capability.constructor_rejections != MAX_TURNS_PER_ENDPOINT
@@ -513,7 +510,7 @@ async def _run(
             await asyncio.sleep(delay)
         next_request_start = monotonic() + _MIN_REQUEST_START_INTERVAL_SECONDS
 
-    checks = failures = executed = behavior_failures = unexecuted = 0
+    checks = failures = executed = behavior_failures = reviews = unexecuted = 0
     runs = tuple(_evaluation_runs(evaluations, repeats))
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(httpx.AsyncClient(
@@ -550,8 +547,10 @@ async def _run(
                     interpretation_timeout_seconds=interpretation_timeout_seconds,
                 )
                 executed += 1
-                behavior_failures += not observed.passed
-                print("PASS" if observed.passed else "FAIL",
+                requires_review = observed.reason == "unsupported_report_requires_review"
+                reviews += requires_review
+                behavior_failures += not observed.passed and not requires_review
+                print("PASS" if observed.passed else ("REVIEW" if requires_review else "FAIL"),
                       f"lane={lane_name}",
                       f"configuration={endpoint.configuration_id}",
                       f"repetition={repetition}",
@@ -572,14 +571,22 @@ async def _run(
                               f"configuration={endpoint.configuration_id}",
                               f"scenario={evaluation.variant.scenario_id}",
                               f"turn={turn}", f"assistant_message={output}", flush=True)
+                    if requires_review and observed.reported_message is not None:
+                        print("REVIEW_MESSAGE", f"lane={lane_name}",
+                              f"configuration={endpoint.configuration_id}",
+                              f"scenario={evaluation.variant.scenario_id}",
+                              f"repetition={repetition}",
+                              "message=" + json.dumps(observed.reported_message, ensure_ascii=False),
+                              flush=True)
                 if observed.transport_failure is not None:
                     unexecuted += len(runs) - index - 1
                     break
     print("SUMMARY", f"lane={lane_name}", f"endpoint_checks={checks}",
           f"endpoint_check_failures={failures}", f"executed={executed}",
-          f"behavior_failures={behavior_failures}", f"unexecuted={unexecuted}",
+          f"behavior_failures={behavior_failures}", f"review_required={reviews}",
+          f"unexecuted={unexecuted}",
           flush=True)
-    return 1 if failures or behavior_failures else 0
+    return 1 if failures or behavior_failures else (2 if reviews else 0)
 
 
 def _arguments() -> argparse.Namespace:

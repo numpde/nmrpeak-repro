@@ -22,6 +22,7 @@ from nmrpeak_provider.attempt_journal import (
     StartPending,
     TerminalOperation,
     TerminalPending,
+    journal_record_name,
     retain_terminal_command,
 )
 from nmrpeak_provider.attempt_journal_store import (
@@ -52,6 +53,7 @@ from nmrpeak_provider.attempt_lifecycle import (
     StartContinues,
     StartResolved,
     TerminalDelivered,
+    TerminalPublicationHeld,
     admit_next_job,
     deliver_terminal,
     execute_prepared,
@@ -69,6 +71,7 @@ from nmrpeak_provider.interpreter import (
     InterpreterUnavailableReason,
     ReportedInputProblem,
 )
+from nmrpeak_provider.journal_inspect import inspect_journal
 from nmrpeak_provider.input_interpreter import InputInterpreter
 from nmrpeak_provider.interpreter_policy import (
     InterpreterPolicy,
@@ -1328,6 +1331,144 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertIn("Sending retained complete command", rendered)
                 self.assertNotIn("API confirmed", rendered)
                 self.assertNotIn("journal record retired", rendered)
+
+    def test_v2_failure_survives_ambiguous_send_reopen_and_409_hold(self) -> None:
+        canonical_input = b"{}"
+        active = active_attempt(canonical_input)
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                pending = pending_from_active(active)
+                journal.admit(pending)
+                journal.replace(pending, active)
+                prepared = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
+                    api=CapturingApi(success_response(progress_receipt())),
+                    journal=journal,
+                    session=UnusedSession(),
+                    interpreter=UnusedInterpreter(),
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+                self.assertIs(type(prepared), InputFailurePending)
+                terminal = prepared.record
+                original_body = terminal.terminal_request_body
+                original_fingerprint = terminal.terminal_request_fingerprint
+                diagnostic = terminal.latest_diagnostic
+                original_raw = journal.record_bytes(terminal)
+                original_digest = fingerprint_of(original_raw)
+                self.assertEqual(
+                    json.loads(original_raw)["schema_id"],
+                    "nmrpeak.attempt_journal_record.v2",
+                )
+
+                uncertain_api = CapturingApi(
+                    ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
+                    ProviderRequestUnavailable(RequestDelivery.NOT_SENT),
+                )
+                with self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as uncertain_logs:
+                    uncertain = deliver_terminal(api=uncertain_api, journal=journal, record=terminal)
+                self.assertIs(type(uncertain), AttemptMutationCommitPossible)
+                self.assertNotIn("API confirmed", "\n".join(uncertain_logs.output))
+                self.assertEqual(journal.records(), (terminal,))
+                self.assertEqual(journal.record_bytes(terminal), original_raw)
+                self.assertEqual(uncertain_api.requests[0].body, original_body)
+                self.assertEqual(
+                    [request.operation for request in uncertain_api.requests],
+                    [ProviderOperation.EXECUTION_ATTEMPT_FAIL, ProviderOperation.EXECUTION_ATTEMPT_PROGRESS],
+                )
+
+            with AttemptJournalStore(root, maximum_records=1) as reopened:
+                retained, = reopened.records()
+                self.assertEqual(reopened.record_bytes(retained), original_raw)
+                self.assertEqual(retained.latest_diagnostic, diagnostic)
+                self.assertEqual(retained.terminal_request_body, original_body)
+
+            pending_inspection, = json.loads(inspect_journal(root))["records"]
+            self.assertEqual(pending_inspection["record_digest"], original_digest)
+            self.assertEqual(pending_inspection["phase"], "terminal_pending")
+            self.assertEqual(pending_inspection["delivery"], "unconfirmed")
+            self.assertEqual(pending_inspection["latest_diagnostic"]["reason"], "invalid_structure")
+            self.assertEqual(
+                pending_inspection["retained_failure"],
+                {key: json.loads(original_body)[key] for key in ("failure_code", "failure_message")},
+            )
+
+            snapshot = success_response(attempt_snapshot(
+                execution_attempt_ref=retained.execution_attempt_ref,
+                job_ref=retained.job_ref,
+                state="in_progress",
+                job_state="open",
+            ))
+            expired = success_response(attempt_snapshot(
+                execution_attempt_ref=retained.execution_attempt_ref,
+                job_ref=retained.job_ref,
+                state="expired",
+                job_state="closed",
+            ))
+            conflict = ProviderHttpResponse(
+                status=409,
+                topology="dev-local",
+                content_type="application/problem+json",
+                request_id="body-request",
+                body=json.dumps({
+                    "type": "urn:nmr-api:problem:operation-conflict",
+                    "title": "Operation conflict",
+                    "status": 409,
+                    "instance": "urn:nmr-api:request:body-request",
+                    "request_id": "body-request",
+                    "code": "operation_conflict",
+                    "detail": "Reconcile the original terminal command.",
+                }, separators=(",", ":")).encode("utf-8"),
+            )
+            conflict_api = CapturingApi(snapshot, conflict, expired)
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                with self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as hold_logs:
+                    held_outcome = reconcile_record(
+                        runtime=generation_runtime(), api=conflict_api,
+                        journal=journal, record=retained,
+                    )
+                self.assertIs(type(held_outcome), TerminalPublicationHeld)
+                self.assertNotIn("API confirmed", "\n".join(hold_logs.output))
+                held = held_outcome.record
+                held_raw = journal.record_bytes(held)
+                self.assertEqual(journal.records(), (held,))
+                self.assertEqual(held.terminal_request_body, original_body)
+                self.assertEqual(held.terminal_request_fingerprint, original_fingerprint)
+                self.assertEqual(held.latest_diagnostic, diagnostic)
+                self.assertEqual(held.terminal_hold_action, "reconcile_state")
+                self.assertEqual(held.terminal_observed_state, "expired")
+            self.assertEqual(
+                [request.operation for request in conflict_api.requests],
+                [ProviderOperation.EXECUTION_ATTEMPT_READ,
+                 ProviderOperation.EXECUTION_ATTEMPT_FAIL,
+                 ProviderOperation.EXECUTION_ATTEMPT_READ],
+            )
+            self.assertEqual(conflict_api.requests[1].body, original_body)
+
+            held_inspection, = json.loads(inspect_journal(root))["records"]
+            self.assertEqual(held_inspection["record_digest"], fingerprint_of(held_raw))
+            self.assertNotEqual(held_inspection["record_digest"], original_digest)
+            self.assertEqual(held_inspection["phase"], "terminal_hold")
+            self.assertEqual(held_inspection["delivery"], "unconfirmed")
+            self.assertEqual(held_inspection["command_fingerprint"], original_fingerprint)
+            self.assertEqual(held_inspection["latest_diagnostic"], pending_inspection["latest_diagnostic"])
+            self.assertEqual(held_inspection["retained_failure"], pending_inspection["retained_failure"])
+            self.assertEqual(held_inspection["recovery"]["observed_state"], "expired")
+            self.assertEqual(held_inspection["on_restart"]["automatic_resends"], "stopped_including_restart")
+
+            no_resend_api = CapturingApi()
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                held, = journal.records()
+                with self.assertLogs("nmrpeak_provider.attempt_lifecycle", level="INFO") as replay_logs:
+                    again = reconcile_record(
+                        runtime=generation_runtime(), api=no_resend_api,
+                        journal=journal, record=held,
+                    )
+                self.assertIs(type(again), TerminalPublicationHeld)
+                self.assertNotIn("API confirmed", "\n".join(replay_logs.output))
+                self.assertEqual(journal.record_bytes(held), held_raw)
+            self.assertEqual(no_resend_api.requests, [])
+            self.assertEqual((root / journal_record_name(held)).read_bytes(), held_raw)
 
     def test_restart_resumes_pre_execution_from_the_retained_input_binding(self) -> None:
         active = active_attempt(valid_chf_input())

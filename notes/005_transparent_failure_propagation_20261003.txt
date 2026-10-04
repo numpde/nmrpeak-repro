@@ -737,3 +737,46 @@ Then verify one signed FAIL through Server A's authorized public Attempt list
 and both GUI presentations, including markup-like text rendered as text.
 Exercise exact journal replay across the retention/send ambiguity, 409 hold,
 and v2 archive/inspection with the rebuilt provider and both runner images.
+
+Qualification evidence and remaining gates (2026-10-04)
+----------------------------------------------------
+
+The local SSH alias `nmr-vps` selected the deployed key and permitted a
+read-only Server A census. Among all currently open Jobs for the two NMRPeak
+analysis kinds, 19 HF and 11 CHF inputs were checked without emitting source
+text. None had an object- or array-bracket prefix after JSON whitespace, and
+there were no in-progress Attempts for those kinds. This is an overinclusive
+open-Job census, not proof of a selected provider generation window or local
+PRE_EXECUTION journal. No NMRPeak checkout or container was present on that
+VPS when checked; production provider-origin smoke still requires deployment.
+
+The signed GUI lifecycle acceptance test at nmr-gui-v1@bcaad74c passed against
+the real test API. It sent exact `interpretation_failed` text from the current
+NMRPeak policy through a signed provider FAIL, read the authorized public Job
+Attempt list, and checked exact code/message in both panel and column views.
+A separate markup-like failure message remained literal text in both views.
+This proves the API/GUI delivery boundary in the test stack, not a live
+NMRPeak provider send.
+
+The configured `codah-openai-gpt-5-6-luna` model was called through the
+production HF/CHF prompt, schema, adapter, and constructor. Normal and forced
+repair point-value cases passed in both lanes; CHF missing-carbon reporting
+and HF hostile-instruction handling passed. Three additional unsupported-
+multiplicity observations per lane each rejected the literal source value in
+the constructor, then reported the source value after one correction turn;
+none substituted a supported label. The six raw synthetic reports were
+reviewed privately and judged source-grounded and corrective. The model did
+not choose candidate-only exhaustion in those runs, so that live path remains
+unobserved. The harness now marks all model-authored unsupported-source
+reports `REVIEW` and requires same-run private capture of exact report text;
+it does not treat keyword matching as semantic proof.
+
+An offline connected v2 FAIL test now covers ambiguous terminal send, journal
+reopen, unchanged retained command and diagnostic, unconfirmed inspection,
+exact replay, a valid 409 hold, and restart without automatic resend. Rebuilt
+provider/HF/CHF images and production send/replay remain unqualified. Before
+enablement, select and audit the generation window and any local retained
+journal, perform the rebuilt-image smoke, and obtain live candidate-only
+exhaustion evidence before approving the one-cycle terminal budget.
+The subsequent full offline `make test` lane passed: 492 unit, 9 API contract,
+3 HTTP integration, 6 model-behavior harness, and 17 repository tests.

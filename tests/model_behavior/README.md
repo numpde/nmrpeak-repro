@@ -32,3 +32,13 @@ turns to the terminal and should be used only in a suitable private session.
 Only fixture validation and offline harness tests run in the default `make test`
 lane. Live endpoint calls are opt-in; use `--repeats N` for repeated live
 observations. Offline checks do not qualify any live model.
+Model-authored unsupported-source reports require semantic review even when
+they mention the expected source value. The harness prints `REVIEW` and exits
+with status 2 for those cases; status 1 means an automated check failed.
+For qualification, enable `--show-model-output` on that same invocation and
+capture stdout to a private file created with mode 0600 (for example, with
+`mktemp`). The `REVIEW_MESSAGE` line retains the exact model report even when
+the adapter's assistant-message envelope omits tool arguments. Inspect it and
+record the human judgement.
+A `REVIEW` from a run without captured output remains unresolved; a later run
+is a different observation.

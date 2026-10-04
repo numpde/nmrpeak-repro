@@ -142,8 +142,22 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
                 ))
-                self.assertTrue(report.passed, report.reason)
+                self.assertFalse(report.passed)
+                self.assertEqual(report.reason, "unsupported_report_requires_review")
                 self.assertEqual(report.action, "report_input_problem")
+                self.assertIsNone(report.reported_message)
+
+                captured_report = asyncio.run(_observe(
+                    endpoint=InterpreterEndpoint("fake-captured-report", reported),
+                    evaluation=evaluation,
+                    show_model_output=True,
+                    interpretation_timeout_seconds=3,
+                ))
+                self.assertEqual(
+                    captured_report.reported_message,
+                    "The source reports multiplicity xy, which this model cannot represent.",
+                )
+                self.assertEqual(captured_report.reason, "unsupported_report_requires_review")
 
                 async def alternate_report(_prompt: object) -> InterpreterTurn:
                     return _turn(
@@ -157,7 +171,53 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
                 ))
-                self.assertTrue(alternate.passed, alternate.reason)
+                self.assertFalse(alternate.passed)
+                self.assertEqual(alternate.reason, "unsupported_report_requires_review")
+
+                async def live_wording(_prompt: object) -> InterpreterTurn:
+                    return _turn(
+                        InterpreterTool.REPORT_INPUT_PROBLEM,
+                        {"message": "The source reports multiplicity xy, but that label cannot be represented here."},
+                    )
+
+                observed_wording = asyncio.run(_observe(
+                    endpoint=InterpreterEndpoint("fake-live-wording", live_wording),
+                    evaluation=evaluation,
+                    show_model_output=False,
+                    interpretation_timeout_seconds=3,
+                ))
+                self.assertFalse(observed_wording.passed)
+                self.assertEqual(observed_wording.reason, "unsupported_report_requires_review")
+
+                async def corrective_wording(_prompt: object) -> InterpreterTurn:
+                    return _turn(
+                        InterpreterTool.REPORT_INPUT_PROBLEM,
+                        {"message": "The source gives multiplicity xy; please provide a multiplicity label this product can represent in a new Job."},
+                    )
+
+                correction = asyncio.run(_observe(
+                    endpoint=InterpreterEndpoint("fake-corrective-wording", corrective_wording),
+                    evaluation=evaluation,
+                    show_model_output=False,
+                    interpretation_timeout_seconds=3,
+                ))
+                self.assertFalse(correction.passed)
+                self.assertEqual(correction.reason, "unsupported_report_requires_review")
+
+                async def contradictory_correction(_prompt: object) -> InterpreterTurn:
+                    return _turn(
+                        InterpreterTool.REPORT_INPUT_PROBLEM,
+                        {"message": "The source reports multiplicity xy, which this product supports. Please provide a multiplicity label this product can represent."},
+                    )
+
+                contradiction = asyncio.run(_observe(
+                    endpoint=InterpreterEndpoint("fake-contradiction", contradictory_correction),
+                    evaluation=evaluation,
+                    show_model_output=False,
+                    interpretation_timeout_seconds=3,
+                ))
+                self.assertFalse(contradiction.passed)
+                self.assertEqual(contradiction.reason, "unsupported_value_not_explained")
 
                 async def falsely_accepted(_prompt: object) -> InterpreterTurn:
                     return _turn(
