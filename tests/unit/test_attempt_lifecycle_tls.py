@@ -6,6 +6,7 @@ must prove authenticated request and body binding.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -16,7 +17,7 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import httpx
 
-from nmrpeak_provider.attempt_journal import prepared_terminal_replay
+from nmrpeak_provider.attempt_journal import TerminalOperation, prepared_terminal_replay
 from nmrpeak_provider.attempt_journal_store import AttemptJournalStore
 from nmrpeak_provider.attempt_lifecycle import (
     CandidatesGenerated,
@@ -52,7 +53,7 @@ from nmrpeak_provider.lifecycle_lane import (
     CHF_LIFECYCLE_LANE,
     HF_LIFECYCLE_LANE,
 )
-from nmrpeak_provider.runner_protocol import ReadyFrame, RunnerFrameCodec
+from nmrpeak_provider.runner_protocol import GenerateFrame, ReadyFrame, RunnerFrameCodec, ValidateFrame
 from nmrpeak_provider.runner_session import RunnerDeadlines, RunnerSession
 from nmrpeak_provider.product_input import InputIssue, InputRejectionReason
 from nmrpeak_provider.product_result import (
@@ -74,6 +75,7 @@ from tests.fakes.runner import FakeRunnerChannel
 from tests.fakes.provider_server import ServerA, serve_server_a
 from tests.fakes.tls_certificates import write_test_certificates
 from tests.model_behavior.run_interpreter import _load_corpus, _select_evaluations
+from tests.model_behavior.test_run_interpreter import _fixture_variant
 
 
 _PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
@@ -240,6 +242,153 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 self.assertEqual(len(terminal_requests), 2)
                 self.assertEqual(terminal_requests[0], terminal_requests[1])
 
+    def test_real_interpreter_repairs_before_runner_completion(self) -> None:
+        corpus = _load_corpus()
+        cases = (
+            (HF_LIFECYCLE_LANE, HF_RUNNER_CODEC, _HF_RUNNER_FACTS),
+            (CHF_LIFECYCLE_LANE, CHF_RUNNER_CODEC, _CHF_RUNNER_FACTS),
+        )
+        for lane, codec, facts in cases:
+            lane_name = lane.offering.implementation_ref
+            with self.subTest(lane=lane_name):
+                variant = _select_evaluations(
+                    corpus, lane_name, case_id="ethanol_point", mode="normal"
+                )[0].variant
+                canonical_input = variant.source_text.encode("utf-8")
+                corrected_value = _fixture_variant(
+                    "ethanol_point", lane_name
+                )["expected_interpretation"]
+                invalid_value = deepcopy(corrected_value)
+                invalid_value["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "xy"
+                requests: list[dict[str, object]] = []
+                responses: list[httpx.Response] = []
+
+                def handle(request: httpx.Request) -> httpx.Response:
+                    value = invalid_value if not requests else corrected_value
+                    requests.append(json.loads(request.content))
+                    response = httpx.Response(200, json=_candidate_completion(value))
+                    responses.append(response)
+                    return response
+
+                state = ServerA(
+                    analysis_kind_ref=lane.offering.analysis_kind_ref,
+                    canonical_input=canonical_input,
+                )
+                with TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_test_certificates(root)
+                    journal_root = root / "journal"
+                    journal_root.mkdir(mode=0o700)
+                    interpreter = _test_interpreter(root)
+                    model_client = httpx.AsyncClient(
+                        transport=httpx.MockTransport(handle), trust_env=False,
+                    )
+                    with (
+                        serve_server_a(state=state, certificate_directory=root) as port,
+                        AttemptJournalStore(journal_root, maximum_records=1) as journal,
+                    ):
+                        api = _api(port, root)
+                        generation = _generation(
+                            lane.offering.analysis_kind_ref,
+                            lane.offering.implementation_ref,
+                        )
+                        admitted = admit_next_job(
+                            lane=lane, api=api, journal=journal,
+                            generation=generation,
+                            frozen_generation_id=_FROZEN_GENERATION_ID,
+                        )
+                        self.assertIs(type(admitted), JobAdmitted, repr(admitted))
+                        started = start_attempt(
+                            lane=lane, api=api, journal=journal,
+                            generation=generation,
+                            frozen_generation_id=_FROZEN_GENERATION_ID,
+                            record=admitted.record,
+                        )
+                        self.assertIs(type(started), StartContinues, repr(started))
+                        session, channel = _runner_session_with_channel(codec, facts)
+                        with patch(
+                            "nmrpeak_provider.input_interpreter.httpx.AsyncClient",
+                            return_value=model_client,
+                        ):
+                            prepared = prepare_execution(
+                                lane=lane, api=api, journal=journal,
+                                session=session,
+                                interpreter=interpreter,
+                                record=started.record,
+                                canonical_input=admitted.canonical_input,
+                            )
+                        self.assertIs(type(prepared), PreparedForExecution, repr(prepared))
+                        self.assertEqual(len(requests), 2)
+                        self.assertEqual(
+                            requests[0]["messages"][2]["content"],
+                            variant.source_text,
+                        )
+                        repair = requests[1]["messages"][-2:]
+                        self.assertEqual([item["role"] for item in repair], ["tool", "user"])
+                        self.assertIn(
+                            "/model_input/spectra/1H/peaks/0/multiplicity",
+                            repair[0]["content"],
+                        )
+                        self.assertNotIn("xy", json.dumps(repair))
+                        validations = [
+                            frame for frame in channel.received_frames
+                            if type(frame) is ValidateFrame
+                        ]
+                        self.assertEqual(len(validations), 1)
+                        self.assertEqual(
+                            validations[0].model_input,
+                            lane.bind_runner_input(variant.expected),
+                        )
+                        generated = execute_prepared(
+                            api=api, journal=journal,
+                            session=session,
+                            prepared=prepared,
+                            observation=ObservationPolicy(0.01, 0.2),
+                        )
+                        self.assertIs(type(generated), CandidatesGenerated, repr(generated))
+                        self.assertEqual(
+                            [type(frame) for frame in channel.received_frames].count(GenerateFrame),
+                            1,
+                        )
+                        completion = select_completion(
+                            journal=journal, generated=generated,
+                        )
+                        self.assertIs(type(completion), CompletionPending)
+                        self.assertIs(
+                            completion.record.terminal_operation,
+                            TerminalOperation.COMPLETE,
+                        )
+                        delivered = deliver_terminal(
+                            api=api, journal=journal,
+                            record=completion.record,
+                        )
+                        self.assertIs(type(delivered), TerminalDelivered, repr(delivered))
+                        self.assertEqual(journal.records(), ())
+                        replay = prepared_terminal_replay(completion.record)
+                        replayed = interpret_execution_attempt_complete(
+                            replay, api.send(replay),
+                        )
+                        self.assertIs(type(replayed), AttemptMutationCommitted, repr(replayed))
+                        self.assertTrue(replayed.receipt.replayed)
+                self.assertTrue(all(response.is_closed for response in responses))
+                self.assertEqual(state.failures, [])
+                self.assertIsNotNone(state.attempt)
+                self.assertEqual(state.attempt.state, "succeeded")
+                self.assertEqual(
+                    state.attempt.terminal_body,
+                    completion.record.terminal_request_body,
+                )
+                self.assertEqual(
+                    [body for method, target, body in state.requests
+                     if method == "POST" and target == "/provider/v1/execution-attempts/fail"],
+                    [],
+                )
+                complete_bodies = [
+                    body for method, target, body in state.requests
+                    if method == "POST" and target == "/provider/v1/execution-attempts/complete"
+                ]
+                self.assertEqual(complete_bodies, [completion.record.terminal_request_body] * 2)
+
     def test_each_lane_retains_exact_failure_origin_across_tls_replay(self) -> None:
         cases = (
             (CHF_LIFECYCLE_LANE, CHF_RUNNER_CODEC, _CHF_RUNNER_FACTS, _valid_chf_input()),
@@ -401,23 +550,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                     write_test_certificates(root)
                     journal_root = root / "journal"
                     journal_root.mkdir(mode=0o700)
-                    endpoint_root = root / "interpreter"
-                    endpoint_root.mkdir(mode=0o700)
-                    (endpoint_root / "05-primary.toml").write_text(
-                        'id = "primary"\nbase_url = "https://primary.example.test/v1"\n'
-                        'api_key = "fixture-only"\nmodel = "fixture-model"\n',
-                        encoding="utf-8",
-                    )
-                    interpreter = InputInterpreter(
-                        endpoint_specs=load_openai_chat_endpoint_specs(endpoint_root),
-                        policy=InterpreterPolicy(
-                            call_policy=OpenAIChatCallPolicy(
-                                request_timeout_seconds=1,
-                                turn_timeout_seconds=3,
-                            ),
-                            interpretation_timeout_seconds=10,
-                        ),
-                    )
+                    interpreter = _test_interpreter(root)
                     model_client = httpx.AsyncClient(
                         transport=httpx.MockTransport(handle), trust_env=False,
                     )
@@ -685,6 +818,14 @@ def _runner_session(
     codec: RunnerFrameCodec,
     facts: ProviderResultFacts,
 ) -> RunnerSession:
+    session, _channel = _runner_session_with_channel(codec, facts)
+    return session
+
+
+def _runner_session_with_channel(
+    codec: RunnerFrameCodec,
+    facts: ProviderResultFacts,
+) -> tuple[RunnerSession, FakeRunnerChannel]:
     ready = ReadyFrame(
         boot_generation="boot:" + "1" * 32,
         runner_ref=facts.identity.runner_ref,
@@ -696,11 +837,33 @@ def _runner_session(
         device="cpu",
         decode_policy_id=facts.identity.decode_policy.decode_policy_id,
     )
-    return RunnerSession.admit(
-        FakeRunnerChannel(codec, ready),
+    channel = FakeRunnerChannel(codec, ready)
+    session = RunnerSession.admit(
+        channel,
         facts,
         RunnerDeadlines(0.2, 0.2, 0.2, 0.2, 0.2),
         codec,
+    )
+    return session, channel
+
+
+def _test_interpreter(root: Path) -> InputInterpreter:
+    endpoint_root = root / "interpreter"
+    endpoint_root.mkdir(mode=0o700)
+    (endpoint_root / "05-primary.toml").write_text(
+        'id = "primary"\nbase_url = "https://primary.example.test/v1"\n'
+        'api_key = "fixture-only"\nmodel = "fixture-model"\n',
+        encoding="utf-8",
+    )
+    return InputInterpreter(
+        endpoint_specs=load_openai_chat_endpoint_specs(endpoint_root),
+        policy=InterpreterPolicy(
+            call_policy=OpenAIChatCallPolicy(
+                request_timeout_seconds=1,
+                turn_timeout_seconds=3,
+            ),
+            interpretation_timeout_seconds=10,
+        ),
     )
 
 
