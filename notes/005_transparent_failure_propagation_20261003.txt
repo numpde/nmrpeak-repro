@@ -780,3 +780,38 @@ journal, perform the rebuilt-image smoke, and obtain live candidate-only
 exhaustion evidence before approving the one-cycle terminal budget.
 The subsequent full offline `make test` lane passed: 492 unit, 9 API contract,
 3 HTTP integration, 6 model-behavior harness, and 17 repository tests.
+
+Deployment preflight (2026-10-04)
+---------------------------------
+
+Server A still stores the cited CHF Attempt as `failed` with `input_rejected`.
+Its 291-character failure-message SHA-256 is
+`9afcb8f0bc0b968184ff64562691648b6721b83980961c6b39b0a30ecb688019`,
+exactly matching the old four-sentence provider literal at f8055ab. This is
+read-only confirmation of the incident class; historical Attempt text must
+not be rewritten. The configured run-generation window begins 2026-08-26.
+A narrower census of open, in-window HF/CHF Jobs without this provider's
+Attempt found zero eligible Jobs in both lanes. A fresh provider would have
+no natural Job with which to exercise a signed provider-origin smoke.
+
+On the local Docker host, the older NMRPeak provider and both runners remain
+running. The 31 GB pinned weight archive and `cpu-x86_64` runner lock checked
+successfully. Three new images built from the clean 628fece checkout without
+restarting them: provider `sha256:2da18e57303fe8fc33bcfa1f94c4b5efd55051e4a7b794e7d0e9dac562016c36`,
+HF runner `sha256:ec829fa5d075c264ef6dd2926bd0838507d292e66a8e71eb1fe75f343f21bb93`,
+and CHF runner `sha256:c04fed311ead831a94c55628851bb186553cd0ed9797212e63f9dcd55f6f2da8`.
+The read-only deployment preview resolved all three exact images and produced
+frozen generation `sha256:384e58cf4cc1220d2c8ba28f3ec239c5d56521d9a81c4e167dce5ed4840a687e`.
+Its secret-free canonical plan is retained privately at
+`/tmp/nmrpeak-deployment-plan.jymSaq.json` with SHA-256
+`0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`.
+No provider or runner was restarted, and no Job or Attempt was created.
+
+The next live step changes a running external service: inspect retained
+journal state in a stopped maintenance window, start the matched v2 provider
+and runners, then submit a synthetic HF and CHF Job and verify the signed
+failure receipt, public list, GUI views, and exact replay. This requires
+explicit operator approval for the maintenance stop/outage, journal inspection,
+restart, and persistent test Jobs. Keep
+the v1/v2 reader-before-writer and no-v1-rollback constraints above visible
+at that approval boundary.
