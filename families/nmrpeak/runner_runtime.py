@@ -9,11 +9,15 @@ from typing import BinaryIO, Callable, Protocol
 
 from nmrpeak_provider.canonical_json import JsonValue
 from nmrpeak_provider.product_decode import DecodePolicy
+from nmrpeak_provider.runner_protocol import (
+    MAXIMUM_TOKENIZED_INPUT_LENGTH,
+    RUNNER_REJECTION_DIAGNOSTICS,
+    RunnerRejectionReason,
+)
 
 
 DICTIONARY_PATH = Path("/opt/nmrpeak/dict/bart/total_dict.txt")
 BART_CONFIG_PATH = Path("/opt/nmrpeak/bart-base/config.json")
-MAXIMUM_TOKENIZED_INPUT_LENGTH = 511
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,12 @@ class TokenizerMode:
 
 class NmrpeakRuntimeInputRejected(ValueError):
     """The loaded tokenizer deterministically rejects one complete input."""
+
+    def __init__(self, reason: RunnerRejectionReason) -> None:
+        if type(reason) is not RunnerRejectionReason:
+            raise TypeError("NMRPeak runtime rejection requires a closed reason")
+        self.reason = reason
+        super().__init__(RUNNER_REJECTION_DIAGNOSTICS[reason])
 
 
 class NmrpeakInferenceStack(Protocol):
@@ -55,12 +65,11 @@ class NmrpeakRuntime:
         tokens = self._tokenize(model_input)
         if not tokens:
             raise NmrpeakRuntimeInputRejected(
-                "The loaded tokenizer produced no model input tokens."
+                RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT
             )
         if len(tokens) > MAXIMUM_TOKENIZED_INPUT_LENGTH:
             raise NmrpeakRuntimeInputRejected(
-                f"The loaded tokenizer produced {len(tokens)} model input tokens; "
-                f"the model accepts at most {MAXIMUM_TOKENIZED_INPUT_LENGTH}."
+                RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
             )
 
     def generate(self, model_input: object) -> JsonValue:
@@ -90,8 +99,7 @@ class LoadedNmrpeakStack:
         model_tokens = tuple(str(token) for token in tokens)
         if any(token not in self._dictionary for token in model_tokens):
             raise NmrpeakRuntimeInputRejected(
-                "The loaded model dictionary does not contain every token produced "
-                "for this input."
+                RunnerRejectionReason.DICTIONARY_TOKEN_MISSING
             )
         return model_tokens
 

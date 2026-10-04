@@ -7,10 +7,10 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .attempt_journal import ActiveAttempt, LocalExecutionPhase, StartPending, TerminalPending
+from .attempt_journal import ActiveAttempt, LocalExecutionPhase, StartPending, TerminalOperation, TerminalPending
 from .attempt_journal_store import AttemptJournalStateRejected, AttemptJournalStore
 from .attempt_lifecycle import terminal_recovery_facts
-from .canonical_json import canonical_json_bytes
+from .canonical_json import canonical_json_bytes, parse_canonical_json_bytes
 from .inspection_document import validate_inspection_document
 from .provider_config import JOURNAL_MAXIMUM_RECORDS, JOURNAL_PATH
 
@@ -28,13 +28,21 @@ def _record_facts(record):
                     if record.local_phase is LocalExecutionPhase.PRE_EXECUTION else
                     "Read current Attempt state; report interrupted execution if still active, without rerunning analysis.")
         return facts | {"phase": "active", "local_phase": record.local_phase.value,
+                        "latest_diagnostic": _diagnostic_facts(record.latest_diagnostic),
                         "restart_behavior": behavior,
                         "next_action": "Preserve this record and restart the owning deployment to reconcile its Attempt."}
     if type(record) is not TerminalPending:
         raise TypeError("Unsupported journal record for inspection")
     facts |= {"operation": record.terminal_operation.value, "delivery": "unconfirmed",
               "command_fingerprint": record.terminal_request_fingerprint,
-              "command_byte_count": len(record.terminal_request_body)}
+              "command_byte_count": len(record.terminal_request_body),
+              "latest_diagnostic": _diagnostic_facts(record.latest_diagnostic)}
+    if record.terminal_operation is TerminalOperation.FAIL:
+        command = parse_canonical_json_bytes(record.terminal_request_body)
+        facts["retained_failure"] = {
+            "failure_code": command["failure_code"],
+            "failure_message": command["failure_message"],
+        }
     if record.terminal_hold_action is None:
         return facts | {"phase": "terminal_pending",
             "restart_behavior": "Read current Attempt state and recover the exact retained command; do not recompute it.",
@@ -51,12 +59,26 @@ def _record_facts(record):
                         if record.terminal_reconciling else recovery["next_action"])}
 
 
+def _diagnostic_facts(diagnostic):
+    if diagnostic is None:
+        return None
+    return {
+        "stage": diagnostic.stage,
+        "kind": diagnostic.kind,
+        "producer": diagnostic.producer,
+        "reason": diagnostic.reason,
+        "observed_at": diagnostic.observed_at,
+        "path": diagnostic.path,
+        "endpoint_route": list(diagnostic.endpoint_route),
+    }
+
+
 def inspect_journal(root: Path) -> bytes:
     """Read validated records without mutation; caller owns stopped deployment exclusion."""
     with AttemptJournalStore(root, maximum_records=JOURNAL_MAXIMUM_RECORDS, read_only=True) as journal:
         records = [_record_facts(record) | {"record_digest": "sha256:" + sha256(journal.record_bytes(record)).hexdigest()}
                    for record in journal.records()]
-    document = {"schema_id": "nmrpeak.journal_inspection.v1",
+    document = {"schema_id": "nmrpeak.journal_inspection.v2",
         "current_automation": "stopped", "observed_at": datetime.now(UTC).isoformat(),
         "stage_counts": dict(Counter(record["phase"] for record in records)), "records": records}
     validate_inspection_document(document)

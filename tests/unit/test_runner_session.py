@@ -25,8 +25,10 @@ from nmrpeak_provider.hf_runner_protocol import (
     HF_RUNNER_CONTRACT_ID,
 )
 from nmrpeak_provider.runner_protocol import (
+    RUNNER_REJECTION_DIAGNOSTICS,
     ReadyFrame,
     RetireFrame,
+    RunnerRejectionReason,
 )
 from nmrpeak_provider.runner_session import (
     RunnerInputRejected,
@@ -34,6 +36,7 @@ from nmrpeak_provider.runner_session import (
     RunnerDeadlines,
     RunnerSession,
     RunnerSessionRetired,
+    RunnerValidationDrift,
     GeneratedRunnerCandidates,
     ValidatedRunnerRequest,
     open_runner_session,
@@ -247,11 +250,32 @@ class RunnerSessionTests(unittest.TestCase):
         rejection = validate(session)
         self.assertIsInstance(rejection, RunnerInputRejected)
         assert isinstance(rejection, RunnerInputRejected)
-        self.assertEqual(rejection.message, "The fake runner rejected this input.")
+        self.assertEqual(rejection.reason, RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED)
+        self.assertEqual(
+            rejection.message,
+            RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED],
+        )
         accepted = validate(session)
         self.assertIsInstance(accepted, ValidatedRunnerRequest)
         assert isinstance(accepted, ValidatedRunnerRequest)
         self.assertEqual(["CCO", "OCC"], session.generate(accepted).value)
+
+    def test_tokenizer_or_dictionary_drift_retires_without_input_rejection(self) -> None:
+        for reason in (
+            RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT,
+            RunnerRejectionReason.DICTIONARY_TOKEN_MISSING,
+        ):
+            with self.subTest(reason=reason):
+                channel = FakeRunnerChannel(
+                    CHF_RUNNER_CODEC, ready_frame(), rejected_validations=1,
+                    rejected_reason=reason,
+                )
+                session = RunnerSession.admit(channel, FACTS, DEADLINES, CHF_RUNNER_CODEC)
+                with self.assertRaises(RunnerValidationDrift) as raised:
+                    validate(session)
+                self.assertEqual(raised.exception.reason, reason)
+                self.assertTrue(session.retired)
+                self.assertTrue(channel.closed)
 
     def test_uncertain_or_wrong_exchange_retires_the_boot(self) -> None:
         faults = (

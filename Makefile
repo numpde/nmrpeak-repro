@@ -2,7 +2,7 @@ PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 .DEFAULT_GOAL := help
 
-.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/integration test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
 	@printf '%s\n' \
@@ -14,6 +14,8 @@ help:
 		'      Requires the dependencies in requirements.lock to be installed; does not install them.' \
 		'  make test/unit' \
 		'  make test/contract' \
+		'  make test/integration' \
+		'  make test/model-behavior-fixtures' \
 		'  make test/repository' \
 		'      Run one part of the default lane.' \
 		'  make check/source' \
@@ -84,7 +86,7 @@ help:
 		'      Remove one unused provider identity lock after exact confirmation.' \
 		'  There is no blanket cleanup target.'
 
-test: test/unit test/contract test/repository
+test: test/unit test/contract test/integration test/model-behavior-fixtures test/repository
 
 test/unit:
 	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \
@@ -95,6 +97,19 @@ test/contract:
 	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \
 		-s "$(REPOSITORY_ROOT)/tests/contract" \
 		-t "$(REPOSITORY_ROOT)" -v
+
+test/integration:
+	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \
+		-s "$(REPOSITORY_ROOT)/tests/integration" \
+		-t "$(REPOSITORY_ROOT)" -v
+
+test/model-behavior-fixtures:
+	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest \
+		tests.model_behavior.test_run_interpreter -v
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT):$${PYTHONPATH:-}" \
+		$(PYTHON) "$(REPOSITORY_ROOT)/tests/model_behavior/run_interpreter.py" --lane hf --list
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT):$${PYTHONPATH:-}" \
+		$(PYTHON) "$(REPOSITORY_ROOT)/tests/model_behavior/run_interpreter.py" --lane chf --list
 
 test/repository:
 	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \

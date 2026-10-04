@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from families.nmrpeak.runner_runtime import NmrpeakRuntimeInputRejected, TokenizerMode
+from families.nmrpeak.runner_runtime import (
+    MAXIMUM_TOKENIZED_INPUT_LENGTH,
+    NmrpeakRuntimeInputRejected,
+    TokenizerMode,
+)
+from nmrpeak_provider.runner_protocol import (
+    RUNNER_REJECTION_DIAGNOSTICS,
+    RunnerRejectionReason,
+)
 from models.nmrpeak_hf_v1.runner.runtime import HF_TOKENIZER_MODE, NmrpeakHfRuntime
 from nmrpeak_provider.hf_binding import HfRunnerInput
 from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
@@ -46,8 +54,20 @@ class HfRuntimeTests(unittest.TestCase):
                 runtime = NmrpeakHfRuntime(
                     RecordingStack(tokens=("token",) * token_count)
                 )
-                with self.assertRaises(NmrpeakRuntimeInputRejected):
+                with self.assertRaises(NmrpeakRuntimeInputRejected) as raised:
                     runtime.validate(MODEL_INPUT)
+                self.assertIs(
+                    raised.exception.reason,
+                    RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT
+                    if token_count == 0 else RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
+                )
+
+    def test_token_limit_diagnostic_matches_runtime_limit(self) -> None:
+        self.assertEqual(MAXIMUM_TOKENIZED_INPUT_LENGTH, 511)
+        self.assertIn(
+            str(MAXIMUM_TOKENIZED_INPUT_LENGTH),
+            RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED],
+        )
 
     def test_hf_owns_the_pinned_proton_and_formula_tokenizer_mode(self) -> None:
         self.assertEqual(

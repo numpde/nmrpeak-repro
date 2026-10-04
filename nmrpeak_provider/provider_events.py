@@ -13,3 +13,7 @@ class InterpreterEndpointFailed:
     failure_kind: str
     failure_reason: str
     failure_state: str | None = None
+    http_status: int | None = None
+    error_type: str | None = None
+    error_code: str | None = None
+    request_id: str | None = None

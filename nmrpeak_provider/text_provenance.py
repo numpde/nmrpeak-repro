@@ -17,6 +17,10 @@ UserProvidedText = NewType("UserProvidedText", str)
 # model protocol response therefore remains distinct from reviewed product copy.
 ModelGeneratedText = NewType("ModelGeneratedText", str)
 
+# Provider-owned, source-free facts may reach a caller only through a reviewed
+# failure-publication rule. This marker does not validate or sanitize text.
+ProviderDiagnosticText = NewType("ProviderDiagnosticText", str)
+
 # Server A authors problem details for its authenticated caller. They may quote
 # request facts and are suitable for bounded operator diagnostics, not for
 # automatic publication to another audience.

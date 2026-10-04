@@ -1,12 +1,20 @@
-The preceding tool invocation did not match the required tool or JSON shape.
+The application rejected your previous function call.
 
-Use the preceding tool result, the selected capability instructions, and the
-source to call exactly one supplied function with complete arguments. Correct a
-tool, JSON-shape, or transcription mistake if one exists.
-Never change a supplied value to make it acceptable or scientifically plausible.
-Use `report_input_problem` only for a missing or conflicting required source
-field that can be named from the source itself. Never use it to describe this
-repair guidance or an application, provider, runner, capability, validation,
-JSON, schema, or tool-call problem.
+The rejection is not evidence that the source description is incomplete or
+wrong. Re-read the selected HF or CHF instructions and the exact source, then
+choose the function again from its description. Call `report_input_problem`
+only when the source itself shows a missing or conflicting required fact, or
+explicitly reports a value the product cannot represent. Do not use it to
+report or ask about the application's rejection.
 
-Do not emit an ordinary assistant answer.
+If the source still supports a complete request, call `submit_interpretation`
+again using only source-supported values and its parameter schema exactly.
+Check every argument's JSON type as well as its value: formula, shift,
+integral, multiplicity, coupling, and carbon shift values are copied as
+strings; couplings are a list. Correct transcription or shape mistakes.
+If the previous candidate already follows those rules, submit it unchanged.
+Never omit a reported peak, substitute a supported multiplicity, round a
+measurement, or alter the formula merely to make a candidate pass validation.
+Do not replace missing information with guesses.
+
+Call exactly one supplied function. Do not emit an ordinary assistant answer.

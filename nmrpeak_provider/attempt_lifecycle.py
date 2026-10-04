@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime, UTC
 from hashlib import sha256
 import math
 import logging
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING
 from .attempt_identity import derive_provider_attempt_key
 from .attempt_journal import (
     ActiveAttempt,
+    LatestDiagnostic,
     LocalExecutionPhase,
     ObserveUntilExpiry,
     PublishInterruptedFailure,
@@ -34,9 +36,17 @@ from .attempt_journal import (
 )
 from .attempt_journal_store import AttemptJournalStore
 from .generation_runtime import GenerationRuntime, GenerationRuntimeRejected
+from .failure_contract import (
+    ClassifiedPreparationFailure,
+    FailureContractError,
+    PreparationFailurePolicy,
+)
 from ._nmr_api_failures import terminal_report_condition
+from .input_issue_message import render_candidate_failure, render_source_issue
+from .preparation_failure_policy import FailureKind
 from .lifecycle_lane import LifecycleLane
 from .interpreter import (
+    CandidateConstructionExhausted,
     InterpretationRejected,
     InterpreterUnavailable,
     ReportedInputProblem,
@@ -48,6 +58,7 @@ from .runner_session import (
     GeneratedRunnerCandidates,
     ValidatedRunnerRequest,
 )
+from .runner_protocol import RunnerRejectionReason, RUNNER_REJECTION_DIAGNOSTICS
 from .provider_api import ProviderApiClient
 from .provider_https import (
     ProviderHttpResponse,
@@ -80,7 +91,12 @@ from .provider_requests import (
     prepare_job_input_read,
     prepare_jobs_list,
 )
-from .product_input import InputRejected, parse_job_input
+from .product_input import (
+    InputIssue,
+    InputRejected,
+    InputRejectionReason,
+    parse_job_input,
+)
 from .product_result import (
     RESULT_SCHEMA_ID,
     RunnerResultRejected,
@@ -105,6 +121,7 @@ from .run_generation import (
     parse_canonical_utc_timestamp,
     run_generation_fingerprint,
 )
+from .text_provenance import ProviderDiagnosticText
 
 if TYPE_CHECKING:
     from .input_interpreter import InputInterpreter
@@ -195,7 +212,7 @@ class PreparedForExecution:
 
 @dataclass(frozen=True, slots=True)
 class InputFailurePending:
-    """The fixed input rejection is durable and awaits API delivery."""
+    """A fixed pre-execution failure is durable and awaits API delivery."""
 
     record: TerminalPending
 
@@ -470,9 +487,9 @@ def admit_next_job(
     )
     journal.admit(record)
     _LOG.info(
-        "Job admitted to journal; job=%s attempt_key=%s analysis=%s input=%r",
-        record.job_ref, record.provider_attempt_key, lane.offering.analysis_kind_ref,
-        job_input.canonical_input.decode("utf-8"),
+        "Job admitted to journal; job=%s attempt_key=%s analysis=%s input_fingerprint=%s",
+        record.job_ref, record.provider_attempt_key,
+        lane.offering.analysis_kind_ref, record.input_fingerprint,
     )
     return JobAdmitted(record=record, canonical_input=job_input.canonical_input)
 
@@ -676,10 +693,18 @@ def prepare_execution(
     if "sha256:" + sha256(canonical_input).hexdigest() != record.input_fingerprint:
         raise ValueError("NMRPeak preparation input does not match the Attempt journal")
 
+    direct_rejection: InputRejected | None = None
     try:
-        model_input = parse_job_input(canonical_input, lane.offering)
-    except InputRejected:
-        model_input = None
+        structured = _is_structured_source(canonical_input)
+    except InputRejected as rejection:
+        structured = True
+        direct_rejection = rejection
+    model_input = None
+    if structured and direct_rejection is None:
+        try:
+            model_input = parse_job_input(canonical_input, lane.offering)
+        except InputRejected as rejection:
+            direct_rejection = rejection
 
     _LOG.info(
         'Reporting preparing phase; job=%s attempt=%s',
@@ -701,16 +726,42 @@ def prepare_execution(
     _LOG.info(
         "Preparing input; job=%s attempt=%s source=%s",
         record.job_ref, record.execution_attempt_ref,
-        "structured input" if model_input is not None else "freeform interpretation",
+        "structured input" if structured else "freeform interpretation",
     )
-    if model_input is not None:
+    if direct_rejection is not None:
+        return _retain_preparation_failure(
+            journal,
+            record,
+            lane.failure_policy,
+            ClassifiedPreparationFailure(
+                FailureKind.DIRECT_SOURCE_ISSUE.value,
+                ProviderDiagnosticText(
+                    render_source_issue(direct_rejection.issue, structured=structured)
+                ),
+            ),
+            direct_rejection.reason.value,
+            direct_rejection.issue.pointer,
+        )
+    if structured:
+        assert model_input is not None
         validated = session.validate(
             execution_attempt_ref=record.execution_attempt_ref,
             provider_attempt_key=record.provider_attempt_key,
             model_input=lane.bind_runner_input(model_input),
         )
         if type(validated) is RunnerInputRejected:
-            return _retain_input_rejection(journal, record, validated.message)
+            if validated.reason is not RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED:
+                raise FailureContractError("runner_rejection_reason_not_input_constraint")
+            return _retain_preparation_failure(
+                journal, record, lane.failure_policy,
+                ClassifiedPreparationFailure(
+                    FailureKind.DIRECT_RUNNER_REJECTED.value,
+                    ProviderDiagnosticText(
+                        RUNNER_REJECTION_DIAGNOSTICS[validated.reason]
+                    ),
+                ),
+                validated.reason.value,
+            )
     else:
         try:
             validated = interpreter.validate_freeform_input(
@@ -727,18 +778,59 @@ def prepare_execution(
                 'inspect input admission and interpretation',
                 record.job_ref, record.execution_attempt_ref, rejection.reason.value,
             )
-            return _retain_input_rejection(
-                journal, record,
-                "The provider could not prepare valid input for structure generation. "
-                "Structure generation did not start, and your submitted Job input was not changed. "
-                "Structure generation will not start automatically for this Attempt. "
-                "Ask the provider operator to investigate using this Attempt's reference.",
+            return _retain_preparation_failure(
+                journal,
+                record,
+                lane.failure_policy,
+                ClassifiedPreparationFailure(
+                    FailureKind.DIRECT_SOURCE_ISSUE.value,
+                    ProviderDiagnosticText(
+                        render_source_issue(rejection.issue, structured=False)
+                    ),
+                ),
+                rejection.reason.value,
+                rejection.issue.pointer,
             )
         except ReportedInputProblem as problem:
-            return _retain_input_rejection(journal, record, problem.message)
+            return _retain_preparation_failure(
+                journal, record, lane.failure_policy,
+                ClassifiedPreparationFailure(FailureKind.MODEL_REPORTED_PROBLEM.value),
+                "model_report",
+                route=problem.attempted_configuration_ids,
+            )
+        except CandidateConstructionExhausted as exhausted:
+            if type(exhausted.issue) is not InputIssue:
+                raise TypeError("candidate exhaustion requires a product input issue")
+            return _retain_preparation_failure(
+                journal, record, lane.failure_policy,
+                ClassifiedPreparationFailure(
+                    FailureKind.CANDIDATE_ISSUE.value,
+                    ProviderDiagnosticText(render_candidate_failure(exhausted.issue)),
+                ),
+                exhausted.issue.reason.value,
+                exhausted.issue.pointer,
+                exhausted.attempted_configuration_ids,
+            )
         except InterpretationRejected as rejection:
-            return _retain_input_rejection(journal, record, rejection.message)
+            return _retain_preparation_failure(
+                journal, record, lane.failure_policy,
+                ClassifiedPreparationFailure(FailureKind.CANDIDATE_RUNNER_REJECTED.value),
+                "runner_candidate_rejected",
+                route=rejection.attempted_configuration_ids,
+            )
         except InterpreterUnavailable as unavailable:
+            held = replace(
+                record,
+                latest_diagnostic=LatestDiagnostic(
+                    stage="preparation",
+                    kind="interpreter_unavailable",
+                    producer="interpreter",
+                    reason=unavailable.reason.value,
+                    observed_at=datetime.now(UTC).isoformat(),
+                    endpoint_route=unavailable.attempted_configuration_ids,
+                ),
+            )
+            journal.replace(record, held)
             return InputInterpretationUnavailable(unavailable)
     _LOG.info(
         'Runner input validated; job=%s attempt=%s',
@@ -746,6 +838,23 @@ def prepare_execution(
         record.execution_attempt_ref,
     )
     return PreparedForExecution(record, validated)
+
+
+def _is_structured_source(raw: bytes) -> bool:
+    """Route exact Job bytes once; a failed structured parse never becomes prose."""
+
+    prefix = raw.lstrip(b" \t\r\n")
+    if prefix.startswith(b"\xef\xbb\xbf"):
+        raise InputRejected(InputIssue(
+            InputRejectionReason.INVALID_STRUCTURE,
+            expected="UTF-8 text without a byte-order mark",
+        ))
+    if prefix and prefix[0] < 0x20:
+        raise InputRejected(InputIssue(
+            InputRejectionReason.INVALID_STRUCTURE,
+            expected="printable UTF-8 text after JSON whitespace",
+        ))
+    return prefix.startswith((b"{", b"["))
 
 
 def observe_attempt(
@@ -922,8 +1031,9 @@ def select_completion(
     terminal = retain_terminal_command(record, prepared)
     journal.replace(record, terminal)
     _LOG.info(
-        "Completion retained for API delivery; job=%s attempt=%s result=%r",
-        record.job_ref, record.execution_attempt_ref, result.decode("utf-8"),
+        "Completion retained for API delivery; job=%s attempt=%s result_sha256=%s result_bytes=%d",
+        record.job_ref, record.execution_attempt_ref,
+        sha256(result).hexdigest(), len(result),
     )
     return CompletionPending(terminal)
 
@@ -1249,23 +1359,53 @@ def _read_failure(
     raise TypeError("NMRPeak provider read returned unsupported transport evidence")
 
 
-def _retain_input_rejection(
+def _retain_preparation_failure(
     journal: AttemptJournalStore,
     record: ActiveAttempt,
-    message: str,
+    policy: PreparationFailurePolicy,
+    failure: ClassifiedPreparationFailure,
+    reason: str,
+    path: str = "",
+    route: tuple[str, ...] = (),
 ) -> InputFailurePending:
+    publication = policy.resolve(failure)
+    if publication is None:
+        raise FailureContractError("terminal_preparation_failure_has_local_policy")
     prepared = prepare_execution_attempt_fail(
         execution_attempt_ref=record.execution_attempt_ref,
-        failure_code="input_rejected",
-        failure_message=message,
+        failure_code=publication.failure_code,
+        failure_message=publication.failure_message,
     )
-    terminal = retain_terminal_command(record, prepared)
+    producer = {
+        FailureKind.DIRECT_SOURCE_ISSUE.value: "provider",
+        FailureKind.DIRECT_RUNNER_REJECTED.value: "runner",
+        FailureKind.MODEL_REPORTED_PROBLEM.value: "interpreter",
+        FailureKind.CANDIDATE_ISSUE.value: "interpreter_candidate",
+        FailureKind.CANDIDATE_RUNNER_REJECTED.value: "runner",
+    }[failure.kind]
+    diagnosed = replace(
+        record,
+        latest_diagnostic=LatestDiagnostic(
+            stage="preparation",
+            kind=failure.kind,
+            producer=producer,
+            reason=reason,
+            observed_at=datetime.now(UTC).isoformat(),
+            path=path or None,
+            endpoint_route=route,
+        ),
+    )
+    terminal = retain_terminal_command(diagnosed, prepared)
     journal.replace(record, terminal)
     _LOG.info(
-        'Input rejected; failure retained for API delivery; job=%s attempt=%s message=%r',
+        'Preparation failure retained for API delivery; job=%s attempt=%s kind=%s code=%s reason=%s path=%s route=%s',
         record.job_ref,
         record.execution_attempt_ref,
-        message,
+        failure.kind,
+        publication.failure_code,
+        reason,
+        path or "root",
+        ",".join(route) or "none",
     )
     return InputFailurePending(terminal)
 

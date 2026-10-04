@@ -4,11 +4,34 @@ from hashlib import sha256
 import json
 import unittest
 from unittest.mock import patch
-from nmrpeak_provider.attempt_journal import journal_record_name
+from nmrpeak_provider.attempt_journal import LatestDiagnostic, journal_record_name
 from nmrpeak_provider.attempt_journal_store import AttemptJournalStore
 from tests.unit.test_attempt_lifecycle import (journal_directory, terminal_pending, TerminalOperation, persist_terminal, generation_runtime, CapturingApi, success_response, attempt_snapshot)
 
 class ArchiveTests(unittest.TestCase):
+    def test_v2_held_archive_preserves_exact_original_and_diagnostic(self):
+        diagnostic = LatestDiagnostic(
+            stage="preparation", kind="candidate_issue", producer="interpreter_candidate",
+            reason="unsupported_multiplicity", observed_at="2026-10-04T12:00:00+00:00",
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=2) as store:
+                record = replace(
+                    terminal_pending(TerminalOperation.FAIL),
+                    terminal_hold_action="do_not_resend", terminal_hold_description="Do not resend.",
+                    terminal_observed_state="expired", latest_diagnostic=diagnostic,
+                )
+                persist_terminal(store, record)
+                raw = store.record_bytes(record)
+                digest = "sha256:" + sha256(raw).hexdigest()
+                result = self.call(store, record, digest)
+                artifact = json.loads(__import__('pathlib').Path(result['archive_path']).read_bytes())
+                self.assertEqual(b64decode(artifact['original_record_base64']), raw)
+                self.assertEqual(artifact['record_digest'], digest)
+            with AttemptJournalStore(root, maximum_records=2) as reopened:
+                archived, = reopened.archived_records()
+                self.assertEqual(archived.latest_diagnostic, diagnostic)
+
     def seed(self, store):
         record = replace(terminal_pending(TerminalOperation.FAIL), terminal_hold_action='do_not_resend', terminal_hold_description='Do not resend.', terminal_observed_state='expired')
         persist_terminal(store, record)

@@ -21,9 +21,9 @@ class ProviderProblemTests(unittest.TestCase):
         self.assertEqual(actual.reason, expected.reason)
         self.assertFalse(actual.diagnostic.verified)
 
-    def test_current_authorization_refusal_reaches_operator_explanation(self) -> None:
-        # Current provider API, revision 1708afc2: authorization Problems disclose
-        # code/detail; those fields are evidence, not a malformed-response cause.
+    def test_current_authorization_refusal_logs_safe_identity_without_detail(self) -> None:
+        # The validated Problem retains detail in private evidence, while the
+        # routine retry log carries status, code, and correlated request IDs.
         from nmrpeak_provider.provider_process import _remote_evidence_message
 
         detail = (
@@ -42,11 +42,12 @@ class ProviderProblemTests(unittest.TestCase):
         )
         self.assertIs(type(outcome), ProviderProblem)
         message = _remote_evidence_message(outcome)
-        self.assertIn(detail, message)
+        self.assertNotIn(detail, message)
+        self.assertEqual(outcome.detail, detail)
         self.assertIn("authorization_denied", message)
         self.assertIn("body-request", message)
 
-    def test_current_refusal_with_bad_correlation_keeps_unverified_explanation(self) -> None:
+    def test_current_refusal_with_bad_correlation_does_not_log_unverified_detail(self) -> None:
         from nmrpeak_provider.provider_process import _remote_evidence_message
 
         for header, instance in (
@@ -65,8 +66,8 @@ class ProviderProblemTests(unittest.TestCase):
                 self.assertIs(type(outcome), ProviderProblemRejected)
                 message = _remote_evidence_message(outcome)
                 self.assertIn("unverified", message)
-                self.assertIn("Check account permissions.", message)
-                self.assertIn("body-request", message)
+                self.assertNotIn("Check account permissions.", message)
+                self.assertNotIn("body-request", message)
 
     def test_noncanonical_problem_json_preserves_correlated_request_ids(self) -> None:
         response = _problem_response(

@@ -1,0 +1,3 @@
+Molecular formula: C2H6O.
+Unassigned 1H peak: 1.25 ppm, multiplicity t, integral 3 H, J 7.1 Hz.
+Unassigned 13C peak: 58.1 ppm.

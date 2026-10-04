@@ -17,4 +17,4 @@ where = ["."]
 include = ["nmrpeak_provider"]
 
 [tool.setuptools.package-data]
-nmrpeak_provider = ["prompts/*.md"]
+nmrpeak_provider = ["prompts/*.md", "policies/*.toml"]

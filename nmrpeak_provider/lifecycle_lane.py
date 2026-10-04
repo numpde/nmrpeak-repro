@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from .chf_binding import ChfRunnerInput, bind_chf_runner_input
+from .failure_contract import PreparationFailurePolicy
 from .hf_binding import HfRunnerInput, bind_hf_runner_input
+from .preparation_failure_policy import load_preparation_failure_policy
 from .product import AnalysisOffering, CHF_OFFERING, HF_OFFERING
 from .product_input import ChfModelInput, HfModelInput
 from .runner_protocol import RunnerModelInput
@@ -23,13 +25,16 @@ class LifecycleLane(Generic[ParsedInput, BoundInput]):
 
     offering: AnalysisOffering
     bind_runner_input: Callable[[ParsedInput], BoundInput]
+    failure_policy: PreparationFailurePolicy
 
 
 HF_LIFECYCLE_LANE = LifecycleLane[HfModelInput, HfRunnerInput](
     offering=HF_OFFERING,
     bind_runner_input=bind_hf_runner_input,
+    failure_policy=load_preparation_failure_policy("hf"),
 )
 CHF_LIFECYCLE_LANE = LifecycleLane[ChfModelInput, ChfRunnerInput](
     offering=CHF_OFFERING,
     bind_runner_input=bind_chf_runner_input,
+    failure_policy=load_preparation_failure_policy("chf"),
 )

@@ -6,10 +6,12 @@ from decimal import Decimal
 import json
 import unittest
 
+from nmrpeak_provider.input_issue_message import render_source_issue
 from nmrpeak_provider.product import AnalysisOffering, NMRPEAK_PRODUCT
 from nmrpeak_provider.product_input import (
     CarbonPeak,
     HfModelInput,
+    InputIssue,
     InputRejected,
     InputRejectionReason,
     ProtonPeak,
@@ -50,6 +52,27 @@ def encoded(value: object) -> bytes:
 
 
 class ProductInputTests(unittest.TestCase):
+    def test_issue_expected_text_is_product_owned_before_public_rendering(self) -> None:
+        with self.assertRaisesRegex(ValueError, "product-owned"):
+            InputIssue(
+                InputRejectionReason.INVALID_STRUCTURE,
+                ("model_input", "formula"),
+                expected="private source scalar",
+            )
+        with self.assertRaisesRegex(ValueError, "product-owned"):
+            InputIssue(
+                InputRejectionReason.INVALID_STRUCTURE,
+                ("model_input",),
+                expected="required fields private_source_scalar",
+            )
+        self.assertEqual(
+            InputIssue(
+                InputRejectionReason.INVALID_STRUCTURE,
+                ("model_input",),
+                expected="required fields formula; allowed fields formula, spectra",
+            ).pointer,
+            "/model_input",
+        )
     def assert_rejected(
         self,
         raw: bytes,
@@ -126,7 +149,7 @@ class ProductInputTests(unittest.TestCase):
 
     def test_document_syntax_and_shape_are_closed(self) -> None:
         malformed_cases = (
-            (b"\xff", InputRejectionReason.INVALID_JSON),
+            (b"\xff", InputRejectionReason.INVALID_UTF8),
             (b'{"schema_id":NaN}', InputRejectionReason.INVALID_JSON),
             (b'{"schema_id":1.2}', InputRejectionReason.INVALID_JSON),
             (b'{"a":1,"a":2}', InputRejectionReason.DUPLICATE_FIELD),
@@ -144,12 +167,53 @@ class ProductInputTests(unittest.TestCase):
         raw = ("[" * 10_000 + "]" * 10_000).encode("ascii")
         self.assert_rejected(raw, InputRejectionReason.INVALID_JSON)
 
-    def test_invalid_json_retains_the_decoder_failure(self) -> None:
+    def test_invalid_utf8_retains_the_decoder_failure(self) -> None:
         with self.assertRaises(InputRejected) as raised:
             parse_job_input(b"\xff", HF)
 
-        self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_JSON)
+        self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_UTF8)
         self.assertIsInstance(raised.exception.__cause__, UnicodeDecodeError)
+
+    def test_syntax_issue_has_location_without_source_text(self) -> None:
+        with self.assertRaises(InputRejected) as raised:
+            parse_job_input(b'{"schema_id": }', HF)
+
+        issue = raised.exception.issue
+        self.assertIs(issue.reason, InputRejectionReason.INVALID_JSON)
+        self.assertEqual((issue.line, issue.column), (1, 15))
+        self.assertEqual(issue.pointer, "")
+        self.assertNotIn("schema_id", repr(issue))
+
+    def test_unsupported_label_points_to_original_peak_without_value(self) -> None:
+        peaks = [
+            {
+                "shift_lo": "1.20", "shift_hi": "1.30", "integral": "3",
+                "multiplicity": "secret-looking-token", "j_hz": [],
+            },
+            {
+                "shift_lo": "4.91", "shift_hi": "4.99", "integral": "2",
+                "multiplicity": "m", "j_hz": [],
+            },
+        ]
+        with self.assertRaises(InputRejected) as raised:
+            parse_job_input(encoded(document(proton_peaks=peaks)), HF)
+
+        issue = raised.exception.issue
+        self.assertIs(issue.reason, InputRejectionReason.UNSUPPORTED_MULTIPLICITY)
+        self.assertEqual(
+            issue.pointer,
+            "/model_input/spectra/1H/peaks/0/multiplicity",
+        )
+        self.assertNotIn("secret-looking-token", repr(issue))
+
+    def test_unknown_field_never_becomes_issue_path_or_repr(self) -> None:
+        value = document()
+        value["secret-looking-field"] = "secret-looking-value"
+        with self.assertRaises(InputRejected) as raised:
+            parse_job_input(encoded(value), HF)
+        self.assertEqual(raised.exception.issue.pointer, "")
+        self.assertNotIn("secret-looking-field", repr(raised.exception.issue))
+        self.assertNotIn("secret-looking-value", repr(raised.exception.issue))
 
     def test_only_the_product_owned_offering_objects_select_a_lane(self) -> None:
         forged_hf = AnalysisOffering("hf", "mol_from_1h_peaks")
@@ -166,6 +230,10 @@ class ProductInputTests(unittest.TestCase):
             InputRejectionReason.WRONG_SPECTRA,
             offering=CHF,
         )
+        with self.assertRaises(InputRejected) as raised:
+            parse_job_input(encoded(document()), CHF)
+        message = render_source_issue(raised.exception.issue, structured=True)
+        self.assertIn("exactly a 1H spectrum and a 13C spectrum", message)
 
     def test_formula_text_is_preserved_for_runner_tokenization(self) -> None:
         for formula in (

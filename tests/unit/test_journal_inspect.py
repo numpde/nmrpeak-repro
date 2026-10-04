@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from nmrpeak_provider.attempt_journal import journal_record_bytes, journal_record_name
+from nmrpeak_provider.attempt_journal import LatestDiagnostic, journal_record_bytes, journal_record_name
 from nmrpeak_provider.journal_inspect import inspect_journal
 from tests.unit.test_attempt_lifecycle import journal_directory, terminal_pending, TerminalOperation
 from tests.unit.test_attempt_journal import start_pending, active_attempt
@@ -36,7 +36,7 @@ class JournalInspectionTests(unittest.TestCase):
                 with patch("nmrpeak_provider.provider_api.ProviderApiClient.send", side_effect=AssertionError("Inspection cannot send")):
                     raw = inspect_journal(root)
                 doc = json.loads(raw)
-                self.assertEqual(doc["schema_id"], "nmrpeak.journal_inspection.v1")
+                self.assertEqual(doc["schema_id"], "nmrpeak.journal_inspection.v2")
                 self.assertEqual(doc["current_automation"], "stopped")
                 self.assertEqual(doc["stage_counts"], {phase: 1})
                 item, = doc["records"]
@@ -52,9 +52,47 @@ class JournalInspectionTests(unittest.TestCase):
                     self.assertEqual(item["command_byte_count"], len(record.terminal_request_body))
                     self.assertEqual(item["delivery"], "unconfirmed")
                     self.assertNotIn("terminal_request_body", raw.decode())
-                    self.assertNotIn("failure_message", raw.decode())
+                    self.assertEqual(item["latest_diagnostic"], None)
+                    self.assertEqual(
+                        item["retained_failure"]["failure_message"],
+                        json.loads(record.terminal_request_body)["failure_message"],
+                    )
                     if record.terminal_hold_action:
                         self.assertEqual(item["recovery"]["observed_state"], record.terminal_observed_state)
+
+    def test_v2_inspection_shows_bounded_diagnostic_without_source_document(self):
+        diagnostic = LatestDiagnostic(
+            stage="preparation", kind="direct_source_issue", producer="provider",
+            reason="unsupported_multiplicity", path="/model_input/spectra/1H/peaks/0/multiplicity",
+            endpoint_route=(), observed_at="2026-10-04T12:00:00+00:00",
+        )
+        with journal_directory() as root:
+            self._write(root, replace(active_attempt(), latest_diagnostic=diagnostic))
+            rendered = inspect_journal(root)
+        record, = json.loads(rendered)["records"]
+        self.assertEqual(record["latest_diagnostic"]["reason"], "unsupported_multiplicity")
+        self.assertEqual(record["latest_diagnostic"]["path"], diagnostic.path)
+        self.assertNotIn("observed_scalar", rendered.decode())
+
+    def test_v1_inspection_document_remains_accepted_by_new_reader(self):
+        from nmrpeak_provider.inspection_document import validate_inspection_document
+        with journal_directory() as root:
+            self._write(root, terminal_pending(TerminalOperation.FAIL))
+            document = json.loads(inspect_journal(root))
+        document["schema_id"] = "nmrpeak.journal_inspection.v1"
+        record, = document["records"]
+        del record["latest_diagnostic"]
+        del record["retained_failure"]
+        validate_inspection_document(document)
+
+    def test_v2_complete_inspection_omits_failure_text(self):
+        with journal_directory() as root:
+            self._write(root, terminal_pending(TerminalOperation.COMPLETE))
+            rendered = inspect_journal(root)
+        record, = json.loads(rendered)["records"]
+        self.assertEqual(record["operation"], "complete")
+        self.assertNotIn("retained_failure", record)
+        self.assertNotIn("canonical_result_base64", rendered.decode())
 
     def test_missing_and_malformed_journals_are_rejected_without_creation(self):
         with journal_directory() as root:
@@ -102,7 +140,9 @@ class InspectionDocumentTests(unittest.TestCase):
             bad[key] = value
             cases.append(bad)
         for key, value in (("body_base64", "private"), ("command_byte_count", True),
-                           ("phase", "unknown"), ("next_action", "x" * 8193)):
+                           ("phase", "unknown"), ("next_action", "x" * 8193),
+                           ("latest_diagnostic", {"source": "secret"}),
+                           ("retained_failure", {"failure_code": "bad", "failure_message": "secret", "raw_input": "secret"})):
             bad = copy.deepcopy(valid)
             bad["records"][0][key] = value
             cases.append(bad)

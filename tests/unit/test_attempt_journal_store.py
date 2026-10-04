@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,6 +15,7 @@ from unittest.mock import patch
 from nmrpeak_provider.attempt_journal import (
     MAX_JOURNAL_RECORD_BYTES,
     ActiveAttempt,
+    LatestDiagnostic,
     LocalExecutionPhase,
     StartPending,
     journal_record_bytes,
@@ -34,6 +36,29 @@ ATTEMPT_REF = "execution_attempt:sha256:" + "a" * 64
 
 
 class AttemptJournalStoreTests(unittest.TestCase):
+    def test_v1_active_promotes_atomically_to_v2_without_changing_attempt_identity(self) -> None:
+        start = start_pending("1")
+        active = active_attempt(start)
+        diagnostic = LatestDiagnostic(
+            stage="preparation", kind="direct_source_issue", producer="provider",
+            reason="unsupported_multiplicity", observed_at="2026-10-04T12:00:00+00:00",
+        )
+        updated = replace(active, latest_diagnostic=diagnostic)
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as store:
+                store.admit(start)
+                store.replace(start, active)
+                old_bytes = store.record_bytes(active)
+                self.assertIn(b"attempt_journal_record.v1", old_bytes)
+                store.replace(active, updated)
+                self.assertIn(b"attempt_journal_record.v2", store.record_bytes(updated))
+                with self.assertRaises(AttemptJournalConflict):
+                    store.retire(active)
+            with AttemptJournalStore(root, maximum_records=1) as reopened:
+                self.assertEqual(reopened.records(), (updated,))
+                reopened.retire(updated)
+                self.assertEqual(reopened.records(), ())
+
     def test_admit_replace_reopen_and_retire_one_exact_record(self) -> None:
         with journal_directory() as root:
             start = start_pending("1")

@@ -17,6 +17,8 @@ from nmrpeak_provider.runner_protocol import (
     RetireFrame,
     RunnerFrameCodec,
     RunnerModelInput,
+    RunnerRejectionReason,
+    RUNNER_REJECTION_DIAGNOSTICS,
     ValidateFrame,
     ValidatedFrame,
 )
@@ -43,6 +45,7 @@ class FakeRunnerChannel:
         *,
         candidates: object = ("CCO", "OCC"),
         rejected_validations: int = 0,
+        rejected_reason: RunnerRejectionReason = RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
         fault: FakeRunnerFault | None = None,
     ) -> None:
         self.received_frames: list[RunnerFrame] = []
@@ -51,6 +54,7 @@ class FakeRunnerChannel:
         self._codec = codec
         self._candidates = list(candidates) if type(candidates) is tuple else candidates
         self._rejected_validations = rejected_validations
+        self._rejected_reason = rejected_reason
         self._fault = fault
         self._pending: AttemptCorrelation | None = None
         self._buffer = bytearray(codec.encode(ready))
@@ -111,7 +115,8 @@ class FakeRunnerChannel:
         if self._rejected_validations:
             self._rejected_validations -= 1
             self._queue(
-                RejectedFrame(frame.correlation, "The fake runner rejected this input.")
+                RejectedFrame(frame.correlation, self._rejected_reason,
+                              RUNNER_REJECTION_DIAGNOSTICS[self._rejected_reason])
             )
             return
         self._pending = frame.correlation
@@ -140,7 +145,8 @@ class FakeRunnerChannel:
         self._pending = None
         if self._fault is FakeRunnerFault.REJECT_GENERATION:
             self._queue(
-                RejectedFrame(frame.correlation, "The fake runner rejected this input.")
+                RejectedFrame(frame.correlation, self._rejected_reason,
+                              RUNNER_REJECTION_DIAGNOSTICS[self._rejected_reason])
             )
             return
         correlation = (

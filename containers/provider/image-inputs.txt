@@ -12,6 +12,7 @@ nmrpeak_provider/attempt_lifecycle.py
 nmrpeak_provider/canonical_json.py
 nmrpeak_provider/chf_binding.py
 nmrpeak_provider/chf_runner_protocol.py
+nmrpeak_provider/failure_contract.py
 nmrpeak_provider/failure_message.py
 nmrpeak_provider/frozen_generation.py
 nmrpeak_provider/generation_runtime.py
@@ -20,6 +21,7 @@ nmrpeak_provider/hf_runner_protocol.py
 nmrpeak_provider/http_response.py
 nmrpeak_provider/identity_lock_hold.py
 nmrpeak_provider/input_interpreter.py
+nmrpeak_provider/input_issue_message.py
 nmrpeak_provider/inspection_document.py
 nmrpeak_provider/interpreter.py
 nmrpeak_provider/interpreter_policy.py
@@ -28,10 +30,14 @@ nmrpeak_provider/journal_inspect.py
 nmrpeak_provider/journal_inventory.py
 nmrpeak_provider/lifecycle_lane.py
 nmrpeak_provider/local_input.py
+nmrpeak_provider/network_failure.py
 nmrpeak_provider/nmrpeak_binding.py
 nmrpeak_provider/openai_chat_interpreter.py
 nmrpeak_provider/owner_session_endpoint.py
 nmrpeak_provider/owner_session_supervisor.py
+nmrpeak_provider/policies/chf_preparation_failures.toml
+nmrpeak_provider/policies/hf_preparation_failures.toml
+nmrpeak_provider/preparation_failure_policy.py
 nmrpeak_provider/process_logging.py
 nmrpeak_provider/product.py
 nmrpeak_provider/product_decode.py

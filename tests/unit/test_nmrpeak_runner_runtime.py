@@ -17,6 +17,10 @@ from families.nmrpeak.runner_runtime import (
     load_nmrpeak_runtime,
 )
 from nmrpeak_provider.product_decode import HF_DECODE_POLICY
+from nmrpeak_provider.runner_protocol import (
+    RUNNER_REJECTION_DIAGNOSTICS,
+    RunnerRejectionReason,
+)
 
 
 class NmrpeakRunnerRuntimeTests(unittest.TestCase):
@@ -46,8 +50,10 @@ class NmrpeakRunnerRuntimeTests(unittest.TestCase):
             )
         self.assertEqual(
             str(raised.exception),
-            "The loaded model dictionary does not contain every token produced for "
-            "this input.",
+            RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.DICTIONARY_TOKEN_MISSING],
+        )
+        self.assertIs(
+            raised.exception.reason, RunnerRejectionReason.DICTIONARY_TOKEN_MISSING
         )
         self.assertFalse(hasattr(dictionary, "tokens"))
         self.assertEqual(model.generate_calls, [])

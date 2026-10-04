@@ -1,0 +1,24 @@
+[failures.direct_source_issue]
+submit_failure_to_api = true
+failure_code = "input_rejected"
+forward_failure_message = true
+
+[failures.direct_runner_rejected]
+submit_failure_to_api = true
+failure_code = "input_rejected"
+forward_failure_message = true
+
+[failures.model_reported_problem]
+submit_failure_to_api = true
+failure_code = "interpretation_failed"
+failure_message = "The interpreter route reported a problem with the submitted description, but the exact cause has not been independently verified. Generation did not start. Review the description before submitting a new Job."
+
+[failures.candidate_issue]
+submit_failure_to_api = true
+failure_code = "interpretation_failed"
+forward_failure_message = true
+
+[failures.candidate_runner_rejected]
+submit_failure_to_api = true
+failure_code = "interpretation_failed"
+failure_message = "The interpreter could not produce input accepted by this model's runner after all correction routes. Generation did not start. This does not prove a defect in the submitted description."

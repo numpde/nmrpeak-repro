@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from hashlib import sha256
 import unittest
 
 from nmrpeak_provider.attempt_journal import (
     ActiveAttempt,
+    LatestDiagnostic,
     LocalExecutionPhase,
     ObserveUntilExpiry,
     PublishInterruptedFailure,
@@ -47,6 +49,63 @@ OTHER_ATTEMPT_REF = "execution_attempt:sha256:" + "b" * 64
 
 
 class AttemptJournalRecordTests(unittest.TestCase):
+    def test_legacy_v1_record_bytes_and_digest_are_unchanged(self) -> None:
+        active = active_attempt()
+        raw = journal_record_bytes(active)
+        self.assertEqual(
+            sha256(raw).hexdigest(),
+            "75cbff263ac543f6cc82331bef71c6b4dfa32c595ab5dcab87b899734a30ba89",
+        )
+        self.assertEqual(parse_journal_record(raw), active)
+        self.assertEqual(journal_record_bytes(parse_journal_record(raw)), raw)
+
+    def test_v2_diagnostic_survives_execution_and_exact_terminal_replay(self) -> None:
+        diagnostic = LatestDiagnostic(
+            stage="preparation", kind="candidate_issue", producer="interpreter_candidate",
+            reason="unsupported_multiplicity", path="/model_input/spectra/1H/peaks/2/multiplicity",
+            endpoint_route=("primary", "fallback"), observed_at="2026-10-04T12:00:00+00:00",
+        )
+        active = replace(active_attempt(), latest_diagnostic=diagnostic)
+        self.assertEqual(json.loads(journal_record_bytes(active))["schema_id"], "nmrpeak.attempt_journal_record.v2")
+        self.assertEqual(parse_journal_record(journal_record_bytes(active)), active)
+        entered = mark_execution_entered(active)
+        command = prepare_execution_attempt_fail(
+            execution_attempt_ref=ATTEMPT_REF, failure_code="interpretation_failed",
+            failure_message="The interpreted candidate was rejected.",
+        )
+        terminal = retain_terminal_command(entered, command)
+        self.assertEqual(terminal.latest_diagnostic, diagnostic)
+        self.assertEqual(terminal.terminal_request_body, command.body)
+        self.assertEqual(prepared_terminal_replay(terminal).body, command.body)
+        for record in (terminal, replace(terminal, terminal_hold_action="do_not_resend",
+                              terminal_hold_description="Investigate before resending.")):
+            self.assertEqual(parse_journal_record(journal_record_bytes(record)), record)
+            self.assertEqual(record.terminal_request_body, command.body)
+
+    def test_v2_diagnostic_shape_is_closed_and_never_contains_source_text(self) -> None:
+        diagnostic = LatestDiagnostic(
+            stage="preparation", kind="direct_source_issue", producer="provider",
+            reason="unsupported_multiplicity", path="/model_input/spectra/1H/peaks/0/multiplicity",
+            observed_at="2026-10-04T12:00:00+00:00",
+        )
+        document = json.loads(journal_record_bytes(replace(active_attempt(), latest_diagnostic=diagnostic)))
+        for change in (
+            {"latest_diagnostic": None},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"source": "secret"}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"path": "/secret"}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"stage": "private_secret"}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"kind": "private_secret"}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"producer": "private_secret"}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"reason": "secret\nvalue"}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"reason": "private_secret"}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"endpoint_route": ["bad endpoint"]}},
+            {"latest_diagnostic": document["latest_diagnostic"] | {"observed_at": "2026-10-04T12:00:00"}},
+        ):
+            with self.subTest(change=change), self.assertRaises((TypeError, ValueError)):
+                parse_journal_record(canonical_json_bytes(document | change))
+        with self.assertRaises(ValueError):
+            parse_journal_record(canonical_json_bytes(document | {"schema_id": "nmrpeak.attempt_journal_record.v1"}))
+
     def test_every_record_variant_has_one_canonical_round_trip(self) -> None:
         start = start_pending()
         active = active_attempt()

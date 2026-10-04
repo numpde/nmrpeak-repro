@@ -299,7 +299,7 @@ class ProviderProcessTests(unittest.TestCase):
         generation = SimpleNamespace(lane=SimpleNamespace(offering=SimpleNamespace(implementation_ref="hf")), generation=None)
         session = SimpleNamespace(retired=False, retire=lambda: None)
         with (
-            patch("nmrpeak_provider.provider_process.admit_next_job", side_effect=AttemptJournalAdmissionRejected("journal full")),
+            patch("nmrpeak_provider.provider_process.admit_next_job", side_effect=AttemptJournalAdmissionRejected("Attempt journal record slots are exhausted")),
             self.assertLogs("nmrpeak_provider.provider_process", level="WARNING") as logs,
         ):
             _run_lane(
@@ -310,7 +310,7 @@ class ProviderProcessTests(unittest.TestCase):
             )
         self.assertEqual(waits, [process_policy().feed_interval_seconds * 2 ** i for i in range(3)])
         self.assertEqual(len(logs.records), 3)
-        self.assertIn("journal full", logs.output[-1])
+        self.assertIn("journal record slots are exhausted", logs.output[-1])
 
     def test_admission_rejection_does_not_retry_a_retired_runner(self) -> None:
         from nmrpeak_provider.provider_process import _LaneOwner, _run_lane
@@ -384,7 +384,7 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertIn("Hello accepted", logs.output[-2])
         self.assertIn("Hello recovered", logs.output[-1])
 
-    def test_hello_retry_reports_api_problem_detail_and_request_identities(self) -> None:
+    def test_hello_retry_reports_api_problem_identity_without_detail(self) -> None:
         from nmrpeak_provider.provider_process import _await_initial_hello
 
         detail = "The description exceeds the provider limit."
@@ -410,8 +410,11 @@ class ProviderProcessTests(unittest.TestCase):
             )
         self.assertEqual(len(logs.records), 1)
         message = logs.records[0].getMessage()
-        for evidence in (detail, "transport-request", "body-request", "provider_request_invalid"):
-            self.assertIn(evidence, message)
+        self.assertIn("unverified", message)
+        self.assertIn("invalid_instance", message)
+        for unverified in ("transport-request", "body-request", "provider_request_invalid"):
+            self.assertNotIn(unverified, message)
+        self.assertNotIn(detail, message)
 
     def test_mutation_retry_message_preserves_commit_uncertainty(self) -> None:
         from nmrpeak_provider.provider_process import _remote_failure_evidence, _remote_evidence_message
@@ -422,6 +425,18 @@ class ProviderProcessTests(unittest.TestCase):
         rejected = AttemptMutationNotCommitted(ProviderRequestUnavailable(RequestDelivery.NOT_SENT))
         self.assertIn("unconfirmed", _remote_evidence_message(_remote_failure_evidence(possible)))
         self.assertIn("did not commit", _remote_evidence_message(_remote_failure_evidence(rejected)))
+
+    def test_transport_retry_message_omits_exception_owned_request_text(self) -> None:
+        from nmrpeak_provider.provider_process import _remote_evidence_message
+
+        evidence = ProviderRequestUnavailable(
+            RequestDelivery.POSSIBLE,
+            cause=ConnectionResetError("private URL and credential"),
+        )
+        message = _remote_evidence_message(evidence)
+        self.assertIn("connection was reset", message)
+        self.assertIn("possible", message)
+        self.assertNotIn("private", message)
 
     _unused_interpreter = object()
 

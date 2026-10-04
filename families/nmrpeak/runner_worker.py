@@ -74,13 +74,15 @@ def serve_loaded_nmrpeak_runtime(
                 runtime.validate(command.model_input)
             except NmrpeakRuntimeInputRejected as rejection:
                 _LOG.info(
-                    'Input rejected; attempt=%s reason=%r',
+                    'Runner validation rejected; attempt=%s reason=%s',
                     command.correlation.attempt_ref,
-                    str(rejection),
+                    rejection.reason.value,
                 )
                 connection.sendall(
                     codec.encode(
-                        RejectedFrame(command.correlation, str(rejection))
+                        RejectedFrame(
+                            command.correlation, rejection.reason, str(rejection)
+                        )
                     )
                 )
                 continue

@@ -7,6 +7,7 @@ from pathlib import Path
 import unittest
 
 from families.nmrpeak.runner_runtime import NmrpeakRuntimeInputRejected
+from nmrpeak_provider.runner_protocol import RunnerRejectionReason
 from nmrpeak_provider.chf_binding import (
     ChfRunnerCarbonPeak,
     ChfRunnerInput,
@@ -52,8 +53,13 @@ class ChfRuntimeTests(unittest.TestCase):
                 runtime = runtime_module.NmrpeakChfRuntime(
                     RecordingStack(tokens=("token",) * token_count)
                 )
-                with self.assertRaises(NmrpeakRuntimeInputRejected):
+                with self.assertRaises(NmrpeakRuntimeInputRejected) as raised:
                     runtime.validate(MODEL_INPUT)
+                self.assertIs(
+                    raised.exception.reason,
+                    RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT
+                    if token_count == 0 else RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
+                )
 
 
 class RecordingStack:

@@ -34,6 +34,7 @@ from .attempt_lifecycle import (
     run_recovery_record,
 )
 from .generation_runtime import GenerationLane, GenerationRuntime
+from .network_failure import network_failure_reason
 from .provider_api import ProviderApiClient
 from .provider_outcomes import (
     AttemptMutationCommitPossible,
@@ -705,25 +706,15 @@ def _remote_evidence_message(evidence: object) -> str:
         return "this API send did not commit its mutation; " + _remote_evidence_message(evidence.evidence)
     if type(evidence) is ProviderProblem:
         code = f", code {evidence.code}" if evidence.code is not None else ""
-        detail = f"; {evidence.detail}" if evidence.detail is not None else ""
         return (
             f"the API returned HTTP {evidence.status} ({evidence.title}{code}; "
             f"transport request {evidence.transport_request_id}; "
-            f"body request {evidence.body_request_id}{detail})"
+            f"body request {evidence.body_request_id})"
         )
     if type(evidence) is ProviderProblemRejected:
         if evidence.diagnostic is not None:
             diagnostic = evidence.diagnostic
-            details = [f"the HTTP {evidence.status} response is unverified ({diagnostic.rejection})"]
-            for label, value in (
-                ("reported code", diagnostic.code),
-                ("reported explanation", diagnostic.detail),
-                ("transport request", diagnostic.header_request_id),
-                ("body request", diagnostic.body_request_id),
-            ):
-                if value is not None:
-                    details.append(f"{label}: {value}")
-            return "; ".join(details)
+            return f"the HTTP {evidence.status} response is unverified ({diagnostic.rejection})"
         return (
             f"the HTTP {evidence.status} problem response failed validation "
             f"({evidence.reason.value})"
@@ -741,12 +732,15 @@ def _remote_evidence_message(evidence: object) -> str:
         delivery = evidence.delivery.value.replace("_", " ")
         if evidence.cause is None:
             return f"request delivery was {delivery}"
-        return (
-            f"request delivery was {delivery}; "
-            f"{type(evidence.cause).__name__}: {evidence.cause}"
-        )
+        return f"request delivery was {delivery}; " + network_failure_reason(evidence.cause)
+    if type(evidence) is AttemptJournalAdmissionRejected:
+        if str(evidence) == "Attempt journal record slots are exhausted":
+            return "Attempt journal record slots are exhausted"
+        if str(evidence) == "Attempt journal recovery reserve cannot admit another record":
+            return "Attempt journal recovery reserve cannot admit another record"
+        return "Attempt journal admission was rejected without a reviewed cause"
     if isinstance(evidence, BaseException):
-        return f"{type(evidence).__name__}: {evidence}"
+        return f"{type(evidence).__name__}: no reviewed public diagnostic"
     raise AssertionError("Remote provider evidence has no operator description")
 
 

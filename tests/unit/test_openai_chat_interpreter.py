@@ -29,6 +29,14 @@ from nmrpeak_provider.openai_chat_interpreter import (
 from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
 
 
+_TEST_VALUE_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "integer"}},
+    "required": ["answer"],
+    "additionalProperties": False,
+}
+
+
 class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
     async def test_loads_resource_free_redacted_specs_in_filename_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -189,6 +197,10 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             ["submit_interpretation", "report_input_problem"],
         )
         self.assertEqual(
+            body["tools"][0]["function"]["parameters"]["properties"]["value"],
+            _TEST_VALUE_SCHEMA,
+        )
+        self.assertEqual(
             [message["role"] for message in body["messages"]],
             ["system", "user", "user"],
         )
@@ -196,6 +208,128 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.invocation.name, "submit_interpretation")
         self.assertEqual(turn.invocation.arguments, {"value": {"answer": 1}})
         self.assertNotIn("remote-secret", repr(endpoints))
+
+    async def test_tool_schema_is_snapshotted_before_endpoint_calls(self) -> None:
+        requests: list[dict[str, object]] = []
+
+        async def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json=_completion("submit_interpretation", {"value": {"answer": 1}}),
+            )
+
+        schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "integer"}},
+            "required": ["answer"],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_config(directory / "10-only.toml")
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handle)
+            ) as client:
+                specs = load_openai_chat_endpoint_specs(directory)
+                endpoints = bind_openai_chat_endpoints(
+                    specs,
+                    OpenAIChatCallPolicy(
+                        request_timeout_seconds=4,
+                        turn_timeout_seconds=10,
+                    ),
+                    http_client=client,
+                    submit_interpretation_description="Submit the fixture value.",
+                    submit_interpretation_value_schema=schema,
+                    report_input_problem_description="Report a fixture source problem.",
+                )
+                schema["properties"]["answer"]["type"] = "string"
+                await endpoints.endpoints[0].call([])
+        observed = requests[0]["tools"][0]["function"]["parameters"]["properties"]["value"]
+        self.assertEqual(observed["properties"]["answer"]["type"], "integer")
+
+    async def test_reasoning_survives_a_tool_result_request(self) -> None:
+        requests: list[dict[str, object]] = []
+        message = _completion_message(
+            "submit_interpretation", "not JSON", call_id="repair"
+        )
+        message["reasoning_content"] = "Fixture reasoning retained across repair."
+
+        async def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{"message": message}]})
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_config(directory / "10-only.toml")
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handle)
+            ) as client:
+                endpoint = _load_and_bind_endpoints(
+                    directory,
+                    http_client=client,
+                    request_timeout_seconds=4,
+                    turn_timeout_seconds=10,
+                ).endpoints[0]
+                first = await endpoint.call([{"role": "user", "content": "fixture"}])
+                self.assertIsNone(first.invocation)
+                await endpoint.call([
+                    first.assistant_message,
+                    {"role": "tool", "tool_call_id": "repair", "content": "Rejected"},
+                ])
+        self.assertEqual(first.assistant_message, message)
+        self.assertEqual(
+            requests[1]["messages"][0]["reasoning_content"],
+            message["reasoning_content"],
+        )
+
+    async def test_optional_reasoning_rejects_non_text_values(self) -> None:
+        for value in (False, 1, [], {}):
+            with self.subTest(value=value):
+                response = _completion(
+                    "submit_interpretation", {"value": {"answer": 1}}
+                )
+                response["choices"][0]["message"]["reasoning_content"] = value
+
+                async def handle(_request: httpx.Request) -> httpx.Response:
+                    return httpx.Response(200, json=response)
+
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    directory = Path(temporary_directory)
+                    _write_config(directory / "10-only.toml")
+                    async with httpx.AsyncClient(
+                        transport=httpx.MockTransport(handle)
+                    ) as client:
+                        endpoint = _load_and_bind_endpoints(
+                            directory,
+                            http_client=client,
+                            request_timeout_seconds=4,
+                            turn_timeout_seconds=10,
+                        ).endpoints[0]
+                        with self.assertRaises(InterpreterTransportError) as caught:
+                            await endpoint.call([])
+                self.assertEqual(caught.exception.reason, "invalid_response_envelope")
+
+    async def test_null_reasoning_does_not_change_the_message_contract(self) -> None:
+        response = _completion("submit_interpretation", {"value": {"answer": 1}})
+        response["choices"][0]["message"]["reasoning_content"] = None
+
+        async def handle(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=response)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            _write_config(directory / "10-only.toml")
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handle)
+            ) as client:
+                endpoint = _load_and_bind_endpoints(
+                    directory,
+                    http_client=client,
+                    request_timeout_seconds=4,
+                    turn_timeout_seconds=10,
+                ).endpoints[0]
+                turn = await endpoint.call([])
+        self.assertNotIn("reasoning_content", turn.assistant_message)
 
     async def test_invalid_arguments_keep_repairable_assistant_turn(self) -> None:
         message = _completion_message(
@@ -543,6 +677,56 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream.close_calls, 2)
         self.assertTrue(stream.released)
 
+    async def test_http_rejection_retains_only_reviewed_identifiers(self) -> None:
+        async def handle(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"error": {
+                    "type": "authentication_error",
+                    "code": "invalid_api_key",
+                    "message": "private source and endpoint prose",
+                    "param": "private parameter",
+                }},
+                headers={"x-request-id": "req_safe123"},
+            )
+
+        async with _loaded_endpoints(handle) as endpoint_owner:
+            with self.assertRaises(InterpreterTransportError) as raised:
+                await endpoint_owner.endpoints[0].call(
+                    [{"role": "user", "content": "private source"}]
+                )
+        error = raised.exception
+        self.assertEqual(error.reason, "http_400")
+        self.assertEqual(error.http_status, 400)
+        self.assertEqual(error.error_type, "authentication_error")
+        self.assertEqual(error.error_code, "invalid_api_key")
+        self.assertEqual(error.request_id, "req_safe123")
+        self.assertNotIn("private", str(error))
+
+    async def test_http_rejection_discards_unreviewed_remote_fields(self) -> None:
+        async def handle(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"error": {
+                    "type": "private_source_scalar",
+                    "code": "private_source_scalar",
+                    "message": "private source scalar",
+                }},
+                headers={"x-request-id": "private_source_scalar"},
+            )
+
+        async with _loaded_endpoints(handle) as endpoint_owner:
+            with self.assertRaises(InterpreterTransportError) as raised:
+                await endpoint_owner.endpoints[0].call(
+                    [{"role": "user", "content": "private source scalar"}]
+                )
+        error = raised.exception
+        self.assertEqual(error.http_status, 400)
+        self.assertIsNone(error.error_type)
+        self.assertIsNone(error.error_code)
+        self.assertIsNone(error.request_id)
+        self.assertNotIn("private", str(error))
+
     async def test_unexpected_stream_failure_is_not_endpoint_fallback(self) -> None:
         requests = 0
 
@@ -740,7 +924,14 @@ def _load_and_bind_endpoints(
         turn_timeout_seconds=turn_timeout_seconds,
     )
     specs = load_openai_chat_endpoint_specs(directory)
-    return bind_openai_chat_endpoints(specs, policy, http_client=http_client)
+    return bind_openai_chat_endpoints(
+        specs,
+        policy,
+        http_client=http_client,
+        submit_interpretation_description="Submit the fixture value.",
+        submit_interpretation_value_schema=_TEST_VALUE_SCHEMA,
+        report_input_problem_description="Report a fixture source problem.",
+    )
 
 
 @asynccontextmanager

@@ -5,6 +5,8 @@ import re
 
 from ._nmr_api_failure_contract import CONFLICT_RECOVERY, EVIDENCE
 from ._nmr_api_failures import _text as admitted_evidence_text
+from .attempt_journal import LatestDiagnostic
+from .failure_message import is_failure_message
 
 
 def _fields(value, expected):
@@ -25,7 +27,8 @@ def _identity(value, pattern):
 def validate_inspection_document(document):
     """Reject unknown fields, payloads, inconsistent identities and recovery claims."""
     _fields(document, "schema_id current_automation observed_at stage_counts records")
-    if document["schema_id"] != "nmrpeak.journal_inspection.v1" or document["current_automation"] != "stopped":
+    schema = document["schema_id"]
+    if type(schema) is not str or schema not in {"nmrpeak.journal_inspection.v1", "nmrpeak.journal_inspection.v2"} or document["current_automation"] != "stopped":
         raise ValueError("Invalid inspection envelope")
     _text(document["observed_at"], 64)
     observed = datetime.fromisoformat(document["observed_at"])
@@ -35,7 +38,7 @@ def validate_inspection_document(document):
     if type(records) is not list or len(records) > 10000:
         raise ValueError("Invalid inspection records")
     for record in records:
-        _validate_record(record)
+        _validate_record(record, version=1 if schema.endswith(".v1") else 2)
     counts = document["stage_counts"]
     if (type(counts) is not dict or any(type(count) is not int or count <= 0 for count in counts.values())
             or counts != dict(Counter(record["phase"] for record in records))):
@@ -45,7 +48,7 @@ def validate_inspection_document(document):
         raise ValueError("Duplicate inspection obligation")
 
 
-def _validate_record(record):
+def _validate_record(record, *, version):
     if type(record) is not dict:
         raise ValueError("Invalid inspection record")
     phase = record.get("phase")
@@ -59,7 +62,12 @@ def _validate_record(record):
     }
     if type(phase) is not str or phase not in extra:
         raise ValueError("Invalid inspection phase")
-    _fields(record, common + " " + extra[phase])
+    expected = common + " " + extra[phase]
+    if version == 2 and phase != "start_pending":
+        expected += " latest_diagnostic"
+        if phase != "active" and record.get("operation") == "fail":
+            expected += " retained_failure"
+    _fields(record, expected)
     _identity(record["record_digest"], r"sha256:[0-9a-f]{64}")
     _identity(record["job_ref"], r"job:[A-Za-z0-9_.-]{1,124}")
     _identity(record["provider_attempt_key"], r"nmrpeak-provider\.v1:[0-9a-f]{64}")
@@ -73,18 +81,43 @@ def _validate_record(record):
     if phase == "start_pending":
         return
     _identity(record["execution_attempt_ref"], r"execution_attempt:sha256:[0-9a-f]{64}")
+    if version == 2:
+        _validate_latest_diagnostic(record["latest_diagnostic"])
     if phase == "active":
         if record["local_phase"] not in ("pre_execution", "execution_entered"):
             raise ValueError("Invalid local execution phase")
         return
     if record["operation"] not in ("complete", "fail"):
         raise ValueError("Invalid terminal operation")
+    if version == 2 and record["operation"] == "fail":
+        failure = record["retained_failure"]
+        _fields(failure, "failure_code failure_message")
+        _identity(failure["failure_code"], r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
+        if len(failure["failure_code"]) > 128 or not is_failure_message(failure["failure_message"]):
+            raise ValueError("Invalid retained failure")
     _identity(record["command_fingerprint"], r"sha256:[0-9a-f]{64}")
     size = record["command_byte_count"]
     if type(size) is not int or not 0 < size <= 2900000:
         raise ValueError("Invalid retained command size")
     if phase != "terminal_pending":
         _validate_recovery(record)
+
+
+def _validate_latest_diagnostic(value):
+    if value is None:
+        return
+    _fields(value, "stage kind producer reason observed_at path endpoint_route")
+    route = value["endpoint_route"]
+    if type(route) is not list:
+        raise ValueError("Invalid latest diagnostic route")
+    try:
+        LatestDiagnostic(
+            stage=value["stage"], kind=value["kind"], producer=value["producer"],
+            reason=value["reason"], observed_at=value["observed_at"],
+            path=value["path"], endpoint_route=tuple(route),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid latest diagnostic") from error
 
 
 def _validate_recovery(record):

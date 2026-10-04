@@ -1,0 +1,740 @@
+NMRPeak transparent failure propagation refactor (2026-10-03)
+===========================================================
+
+Status: implementation candidate in this checkout; rollout qualification pending.
+Scope: nmrpeak-repro provider, interpreter, HF/CHF runner boundary, Attempt
+lifecycle, operator evidence, and end-to-end message verification.
+Related: notes/001_nmrpeak_multi_runner_deployment_20260824.txt,
+notes/003_preparation_failure_explanation.txt,
+notes/004_terminal_condition_delivery.txt.
+The decision below supersedes note 003's generic public explanation as the
+default for preparation errors. It deliberately changes note 001's routing
+rule for JSON-looking malformed input. Note 001's malformed-runner-output-as-
+provider-fault rule remains in force unless a later, separately proved
+protocol change explicitly supersedes it. Historical notes remain historical.
+
+Purpose
+-------
+
+A user should learn what actually prevented an analysis, which component made
+that determination, and whether retrying or correcting an input can help.
+An operator should be able to trace the same determination to a Job and Attempt
+through the API row after commitment, the exact journaled command while
+pending, and bounded operator events in the configured log sink, subject to
+that sink's retention, for provenance and route.
+A provider must never claim an
+input defect or a successful failure delivery when its evidence does not prove
+one. The exception to transparent detail is a concrete disclosure or
+uncertainty boundary, not a general preference for generic language.
+
+Incident that exposed the gap
+-----------------------------
+
+On 2026-10-03, Attempt
+execution_attempt:sha256:7b748e4c157d66525bb4457a72399a7f4302cd3c9ace871a38571c22bc929c2d
+for a demo Job failed before generation. The API retained input_rejected and a
+four-sentence generic message. Provider logs contained unsupported_multiplicity.
+The parser did not retain the offending peak index or label. The freeform
+interpreter's constructed value was rejected by the product parser; this is not
+proof that the submitted source text contained the same invalid label. No
+structure generation began. The current public message gave the user none of
+the actionable diagnostic or provenance.
+
+This is one case of a whole-path problem. Direct structured parsing, model
+reports, runner validation, execution, result validation, recovery, terminal
+delivery, and inspection must all follow the same evidence discipline.
+
+Current facts and failure inventory
+-----------------------------------
+
+1. Source routing: attempt_lifecycle.py catches every parse_job_input failure
+   and sends the same bytes to the freeform interpreter. There is no format
+   marker from the NMR API Job transport. Invalid intended JSON can therefore
+   be reinterpreted as prose, erasing the original parser reason.
+2. Product parsing: product_input.py raises InputRejected with a reason enum
+   only. It drops field path, peak index, bounded observed value, and source
+   provenance. The unsupported multiplicity from the incident cannot be
+   recovered after the fact.
+3. Model construction: input_interpreter.py calls parse_job_input for an
+   assistant tool value without converting InputRejected into an interpreter
+   correction diagnostic. It escapes the repair loop and reaches a generic
+   terminal failure.
+4. Candidate admission: nmrpeak_provider/interpreter.py ends an endpoint on
+   the first runner rejection. Magnet now feeds that diagnostic into bounded
+   correction and tries ordered fallback. NMRPeak retains only the last
+   rejection after all endpoints reject.
+5. Model report: report_input_problem is model-authored text, but the current
+   lifecycle immediately stores it as input_rejected with no provenance label.
+   The report can be useful; it is not independent proof of a caller mistake.
+6. Runner validation: runner_session.py carries a bounded REJECTED string to
+   the lifecycle for direct input, while interpreted candidate rejection
+   reaches the interpreter. The current frame has no structured reason or path.
+   Deterministic validation must stay separate from socket/protocol failure.
+7. Generation and result: after EXECUTION_ENTERED, generation exceptions and
+   RunnerResultRejected escape, and a later restart can report only generic
+   provider_execution_interrupted. A known, safely terminal cause should be
+   retained before shutdown; an uncertain cause must stay uncertain.
+8. Delivery and recovery: the exact terminal fail/complete command is already
+   journaled before send and replayed after ambiguity. Keep this authority.
+   A prepared failure is not evidence that Server A committed it. Ordinary
+   stopped-provider inspection exposes fingerprints but little about retained
+   fail content. The journal does not retain a per-send marker or a committed
+   receipt after retirement, so offline inspection cannot claim either fact.
+9. Logging: current code logs complete canonical Job input, interpreted
+   runner input, and canonical result at some success points, contradicting
+   note 001's data-handling claim. Other paths log API problem detail or
+   diagnostic text. Fix disclosure at each sink while preserving useful cause,
+   context, and correlation.
+10. Publication bounds: the current provider/API contract accepts a provider
+    failure code and up to 1,024 Unicode scalar characters of failure_message
+    and preserves the message for authorized project readers. More useful
+    messages fit this wire contract, but the API-owned failure_message schema
+    explicitly forbids raw inputs and results, not only full documents.
+    Bounded length alone does not authorize publishing a source scalar or
+    arbitrary model-authored report. New code values need consumer review,
+    not necessarily an API schema migration. Current progress has only a
+    condition code, not a full user-facing explanation channel.
+
+Required invariants
+-------------------
+
+* Carry cause, producer, stage, and certainty from the first rejection until
+  a reviewed publication choice. Do not turn a model or runner defect into a
+  proven user-input defect.
+* A determinate rejection states the rejected field or constraint. The
+  API-owned failure_message contract currently prohibits raw inputs/results,
+  so no source or model-produced literal value is public by default, even a
+  short scalar. Put a bounded, escaped literal in protected operator evidence
+  only when that access boundary permits it. If API and GUI contract owners
+  explicitly approve a safe scalar excerpt for authorized project readers,
+  update their schema/docs/tests first and then permit that precise category
+  through a reviewed renderer. A generic message is reserved for a real
+  disclosure, unrepresentable text, or absent evidence; it says what is
+  unknown.
+* Never silently coerce, drop, rewrite, or invent scientific source values to
+  satisfy the product schema. A model correction may submit a new candidate
+  only from source-supported facts.
+* Keep pre-execution unavailability retryable. Mixed admission and transport
+  failures do not become a confident input_rejected. Post-execution uncertainty
+  is not converted into a precise failure by reading a log.
+* Decide the public failure_code and failure_message before retaining an exact
+  terminal command. After journal retention, replay those bytes; never improve
+  or replace them based on a later log, restart, API conflict, or new code.
+* Make the operator event and authorized user message consistent without
+  making them identical. Log stable reason, path, phase, provenance, endpoint
+  route, Job/Attempt IDs and proven delivery state. Full raw Job text, model
+  response, result, credentials, endpoint URL and untrusted exception text are
+  not routine log material. Preserve protected fatal tracebacks and bounded
+  operational causes for diagnosis. Use escaped offending scalars only within
+  an approved protected sink. Logging does not itself promise durability.
+* Preserve Server A's current read/list contract and HTML/text escaping at
+  clients. A provider message may be untrusted text even when it is useful.
+
+Proposed flow and ownership
+---------------------------
+
+A. Choose source mode once, before interpretation. The current API supplies
+   only text, so this is an intentional behavior change from note 001's
+   "strict JSON when it parses, all other text to the interpreter" rule.
+   Route a leading object or array opener after permitted whitespace to
+   structured parsing, even if JSON parsing then fails. This is a routing
+   convention, not proof that the author intended JSON; explain the rule
+   and how to submit brace-led prose in the rejection message. Reject a UTF-8
+   BOM or disallowed leading control with a specific encoding/admission issue
+   before selecting mode; never quietly interpret it. Treat comment-led text
+   as prose under this convention; JSON-with-comments has no structured
+   parsing guarantee. A complete array is an invalid top-level structured value;
+   an incomplete one gets its JSON
+   syntax issue. Document how to prefix brace/bracket-led prose with ordinary
+   words (for example, "Spectrum: [..]"). Never silently try both routes.
+   Preserve mode and parser issue in the operation. Test compatibility with
+   existing open Jobs and pre-execution Attempts under their frozen run generations before
+   rollout; choose a reviewed migration or defer the routing change if those
+   Jobs would be reinterpreted. An explicit upstream mode field is a later
+   API/GUI contract option, not a hidden fallback.
+
+B. Replace reason-only InputRejected with a small typed issue owned by
+   product_input.py: stable reason, JSON pointer or peak index, expected shape
+   or closed vocabulary, an optional allowlisted bounded observed scalar,
+   and no whole-document repr. Keep the direct source bytes and interpreter
+   tool value distinct through a provenance marker. Create the issue at the
+   failing field, not later from prose. Follow NMR API's recent catalog
+   validation pattern: syntax errors give line/column without source text;
+   wrong containers name expected and received JSON types; missing fields
+   list reviewed required names; unknown fields identify the containing
+   object and allowed names without echoing an attacker-controlled key.
+   Build paths only from provider-owned field names and numeric indices.
+   Duplicate/unknown keys never become pointer segments or log keys.
+   Distinguish invalid UTF-8 and source admission from JSON syntax; current
+   freeform admission incorrectly labels invalid UTF-8 INVALID_JSON.
+   Examples: /model_input/spectra/1H/peaks/2/multiplicity has an unsupported
+   label; /model_input/formula has invalid syntax. Runner token count/limit
+   belong to a separate runner diagnostic. Render the public sentence once at
+   the publication boundary, without a source literal under today's API
+   contract. An untrusted scalar may itself be a secret-like string. Routine
+   logs and journal summaries contain path/reason and, if useful, a length
+   or digest; literal capture requires a closed reviewed allowlist and an
+   approved protected destination. Make truncation explicit.
+
+C. Bring NMRPeak's existing fork of Magnet's interpreter up to the current
+   repair/fallback behavior. In the capability constructor, translate a
+   model-produced parser issue to a dedicated InterpreterProtocolError
+   subtype carrying a typed constructor issue and a source-free correction.
+   Generic tool-shape/canonicalization faults stay separate. Keep stable
+   reason/path for routine events separate from private correction feedback:
+   the current endpoint logger prints failure_reason verbatim. Never put an
+   offending literal in exception str(), event fields, or tool correction
+   text; the model already has its rejected value in the assistant turn.
+   In runner admission, turn a deterministic REJECTED frame
+   into InterpretationCandidateRejected with its bounded diagnostic. Return
+   that feedback to the same assistant tool conversation for the bounded
+   correction turns, then try the next configured endpoint under one aggregate
+   deadline. Keep route and diagnostic evidence for every endpoint. Port
+   Magnet's capability-specific submit_interpretation value schema and tool
+   descriptions into NMRPeak's static value:{} adapter, using reviewed HF/CHF
+   schema facts; the typed product parser remains final admission authority.
+   Port optional reasoning_content replay into the private assistant tool
+   conversation for reasoning endpoints. Fallback starts a fresh prompt and
+   never carries one endpoint's reasoning to another. Never publish, journal,
+   or routinely log it.
+   Preserve NMRPeak's exception-string boundary: ReportedInputProblem keeps
+   the model-authored message in a field, not in str(exception). A model
+   report_input_problem remains distinct. Change it from a first-endpoint
+   short circuit to an endpoint outcome. Try later configured endpoints; an
+   admitted candidate may win. Only an all-report route can select a
+   model-report terminal outcome. A report mixed with transport, protocol,
+   timeout, constructor, or runner-admission rejection remains interpreter
+   unavailability, retaining per-endpoint classifications. Arbitrary report prose cannot
+   safely yield a specific missing-field claim. Until a closed report
+   category/path tool schema or deterministic reviewed extractor exists,
+   use a fixed source-free public statement attributed to the interpreter
+   with exact cause unverified. Keep raw model report text transient in the
+   interpreter operation; persist only bounded safe category/route/digest
+   evidence. A separate approved protected store with named access and
+   lifetime would be needed to retain raw reports. This improves upon
+   Magnet's early report short circuit; its note 028 observed conservative
+   model reports on otherwise valid submissions. "Model assessment" is
+   internal provenance; the API currently transports only code and message.
+   Update the correction prompt to say a rejected tool value is not evidence
+   the source is wrong. A model problem report must cite source evidence and
+   may identify a source-supported unsupported value; it must not cite the
+   application's rejection alone. Do not substitute a supported multiplicity
+   or omit a measured peak simply to pass validation.
+
+D. Classify pre-execution outcomes before publication: direct structured
+   parser issue; freeform source admission issue; model-reported assessment;
+   direct runner validation rejection; and exhausted deterministic interpreted
+   runner admission. Constructor/parser or tool-candidate protocol errors from
+   a model remain repairable InterpreterProtocolError; they never become
+   input_rejected. Introduce a distinct CandidateConstructionExhausted
+   outcome only when every endpoint completed its route with a valid assistant
+   submit_interpretation tool invocation and deterministic capability
+   constructor rejection, with intact correction context. A dedicated typed
+   constructor-rejection subtype and per-endpoint terminal record carry that
+   proof; generic InterpreterProtocolError also covers malformed invocation
+   and canonicalization faults. Preserve each endpoint's bounded reason and
+   route. Do not infer this type from generic
+   InterpreterUnavailable, an ExceptionGroup, or a last-error string; missing
+   tool carriers, adapter envelope/protocol faults, transport errors and
+   timeouts do not qualify. One complete all-endpoint repair/fallback cycle
+   proves only that this bounded invocation under its selected configuration
+   produced no admitted candidate. A deliberate one-cycle budget may end
+   this Attempt with interpretation_failed and name its latest model-output
+   issue without alleging a source defect or permanent impossibility.
+   Qualify this budget against repeated HF/CHF model-behavior cases before
+   rollout. Add another cycle only if evidence justifies its persisted counter
+   and configuration fingerprint. An all-report route also selects
+   interpretation_failed with fixed attribution-aware wording, not
+   input_rejected; a mixed report/fault/admission route stays unavailable.
+   Exhausted deterministic runner admission after repair also selects
+   interpretation_failed with a runner-constraint explanation; it does not
+   prove the submitted source itself violated the constraint. Transport,
+   endpoint envelope, prompt, timeout, and runner exchange faults are operational
+   unavailability/fatal evidence under current retry behavior and may end
+   at Attempt expiry or operator stop. Mixed protocol/transport and admission
+   failures do not establish an input defect. Keep bounded endpoint route and
+   last-issue evidence in operator events subject to log retention.
+   Add a small bounded latest-diagnostic summary to the private active Attempt
+   journal for stopped-provider inspection: stage, kind, producer, stable
+   reason code, provider-owned path, safe derived count/limit if present,
+   endpoint route, timestamp, and retry count. Use a bounded digest/length
+   instead of an arbitrary literal; a closed allowlist and protected storage
+   review are required for any literal exception.
+   If the actual cause is absent, mark that explicitly; do not invent a value.
+   Never store raw source or a whole model response in this summary. Version
+   and atomically replace this metadata under the existing journal writer;
+   it is not part of the exact terminal command. Carry it through a
+   TerminalPending transition without changing command bytes, then retire it
+   with the Attempt. The current strict v1 journal and archive readers need
+   an explicit v1/v2 migration reader; verify archived_original, restart,
+   and stopped-provider inspection for both versions. The current reader
+   validates that reserialization equals the exact input bytes; a v2 reader
+   must preserve v1 bytes/digest until the normal atomic replacement and
+   never reserialize a v1 record merely by reading it. A v1-only provider
+   binary cannot be rolled back while v2 records remain. Logs carry the
+   bounded event sequence while retained.
+   A fuller user-facing transient reason during an ordinary outage would
+   require an API/GUI progress contract beyond today's
+   condition_code.
+
+E. Adapt Magnet's ClassifiedAnalysisFailure plus exhaustive model-local
+   failure policy before NMRPeak's existing prepare_execution_attempt_fail
+   seam. A classified failure carries its exact internal kind and diagnostic
+   producer. Magnet's policy supports fixed text or direct forwarding, but
+   not a parameterized safe rendering of path, peak index, or token counts.
+   Copy its closed-rule and provenance structure, then add a small NMRPeak-owned
+   renderer for each typed producer: it accepts only provider-owned path
+   segments, reviewed reason codes, and safe derived counts/limits, and
+   returns bounded source-free ProviderDiagnosticText. The policy may forward
+   that trusted result. Model-authored text instead receives fixed
+   attribution-aware wording unless a separately reviewed projection proves
+   it contains no raw input. HF and CHF may share a reviewed policy only where
+   their actual semantics match. The default should be precise approved
+   diagnostics, not Magnet E02's own generic provider_input_rejected sentence.
+   Preserve established API codes for their established meanings. Review the new
+   interpretation_failed code with API/GUI and clients before publication;
+   never disguise model-candidate exhaustion as caller input_rejected merely
+   to avoid that review. A policy mismatch is a
+   provider fault with an operator event, not a fallback input_rejected.
+
+F. Improve the runner boundary without copying Magnet's model protocol.
+   Runner VALIDATE should return a specific bounded diagnostic with a stable
+   reason and useful values such as token count/limit. If the current string
+   cannot carry the necessary facts safely, add a versioned reason field to
+   the correlated REJECTED frame and validate it on both sides. Review each
+   runner reason independently: a token limit is an input/model constraint;
+   empty tokenizer output or a missing dictionary token may indicate
+   tokenizer/checkpoint drift. A direct input may publish a determinate
+   rejection only with the right attribution; an interpreted value feeds
+   correction only when correction can address the actual constraint.
+   Runner transport, wrong correlation, malformed frame, or changed admission
+   is operational drift, never a scientific-input explanation.
+
+G. Treat execution and results by proof. The current runner has RESULT but no
+   correlated FAILED frame. After EXECUTION_ENTERED, a stopped worker and a
+   local RunnerResultRejected prove a malformed/hostile output, not an expected
+   scientific failure and not that model execution never occurred. Note 001
+   makes malformed runner output provider-fatal; preserve that rule initially,
+   with protected cause and traceback. Separately review a taxonomy for an
+   expected model no-result versus malformed result and a versioned correlated
+   FAILED frame before authorizing any new terminal runner_execution_failed.
+   A crash, timeout, non-stopping worker, lost protocol state, or ambiguous
+   side effect keeps present fatal/retained uncertainty. A recovered Attempt
+   may explain a known interruption cause when durable evidence proves it,
+   while still saying its result is unknown. Do not blindly port Magnet's
+   GenerationExecutionFailed branch: NMRPeak lacks equivalent proof.
+
+H. Keep exact terminal-command journaling, API receipt binding, 409 conflict
+   handling, and replay. Improve controlled stopped-provider inspection so
+   an operator can see the validated public failure code/message for a retained
+   FAIL, plus digest/length for COMPLETE, without reading arbitrary journal
+   bytes. Show the journal's latest diagnostic summary on active and pending
+   records; never infer a missing earlier event from that summary. The offline
+   terminal state is "retained, delivery unconfirmed (may have been
+   sent)" or held/conflicting. It cannot distinguish never-sent from
+   sent-uncertain, and confirmed commands are retired. Use a bound receipt or
+   authenticated API observation for confirmed commitment; add a separate
+   durable audit record only if post-retirement operator history beyond the
+   API's public terminal message is required.
+   Existing terminal commands and historical API rows are immutable.
+   Preserve note 004's disposable native condition observation after an
+   unconfirmed terminal send: it is neither a full message channel nor a
+   second durable command, and total API isolation cannot expose local facts
+   to users.
+
+I. Trace other operational errors without turning them into user-input claims.
+   Preserve specific bounded evidence for Hello/startup inventory, feed and
+   input reads, Attempt start, preparing/running progress writes, live
+   observation loss, failure/completion send, API Problem and TLS/transport
+   errors. The existing provider_outcomes commit-possible distinction applies
+   to every Attempt mutation; a failed preparing-progress send must not enter
+   runner work. For non-200 interpreter responses, retain HTTP status and
+   validated closed error type/code/request ID for routine operator evidence;
+   arbitrary external message/param may echo partial source or secrets and
+   cannot be made safe by generic string redaction. Keep any raw envelope
+   transient unless an explicitly approved protected sink owns its access
+   and lifetime. Never forward endpoint bodies or API Problem detail to a
+   different audience. Keep protected traceback for unexpected faults.
+
+Publication and examples
+------------------------
+
+The public sentence should identify stage, concrete obstacle, and next useful
+action, while stating uncertainty where it matters. It should not repeat
+generic process narration or direct every user to an operator.
+
+* Proven direct source value: "Input rejected: proton peak 3 reports
+  a multiplicity this model does not support. Generation did not start.
+  If that label was a transcription error, submit a corrected Job; otherwise
+  this NMRPeak offering cannot process it."
+* All-endpoint model report: "The interpreter route reported a problem
+  with the submitted description, but the exact cause has not been verified.
+  Generation did not start. Review the description before submitting a new
+  Job." This names the evidence without asserting a missing integral or
+  echoing model prose; persist safe report classification and route, not the
+  raw report.
+* Exhausted deterministic interpreted runner admission: "The interpreter
+  could not produce input within this model's 511-token limit after its
+  correction routes were tried. Generation did not start." This does not
+  claim that the submitted source violated the limit.
+* Exhausted model candidate construction: "The interpreter's candidate for
+  proton peak 3 had a multiplicity this model does not support after all
+  correction routes were tried. Generation did not start. This diagnosis
+  concerns the interpreted candidate; review the source label before
+  resubmitting or contact the provider with this Attempt reference."
+* Determinate runner validation: "The model requires at most 511 input
+  tokens; this request produced 534. Generation did not start."
+* Uncertain execution: "The runner connection ended during execution. Its
+  result could not be established, and this Attempt will not resume
+  automatically." Use this cause only if durable evidence proves it; do not
+  add a guessed parser or model diagnosis.
+
+These are format examples, not claims about the 2026-10-03 input: the exact
+rejected multiplicity was not retained. That incident's parser/tool error
+should enter correction and fallback. A complete candidate-only exhaustion
+can produce a specific interpretation_failed under a qualified one-cycle
+budget; it does not prove a future retry could never succeed. All-report
+routes can use the same code with attribution-aware wording. Mixed
+report/transport/envelope failures remain operational unavailability.
+The one-cycle budget and any proposed repeated-cycle alternative need live
+HF/CHF qualification before adoption. The current API progress
+channel cannot show a full transient explanation; that needs an explicit
+API/GUI contract change.
+Where the application can prove a clearer terminal message, do not replace it
+with generic provider prose. Magnet E02's forward_failure_message=true policy
+cannot be copied under NMR API's present
+raw-input prohibition: model output can echo submitted input. Use bounded
+model-authored text only through an explicit API-approved trust/publication
+rule. Do not forward endpoint secrets, raw HTTP bodies, stack traces, or API
+Problem detail to a different audience; give operator context and correlation
+instead.
+
+Producer-to-consumer decision matrix
+------------------------------------
+
+Each row is a required end-to-end test path, not a new error framework.
+Public text here is a shape; exact copy belongs in the reviewed HF/CHF policy.
+
+* Direct structured parser -> typed source issue -> input_rejected: name
+  provider-owned path, expected shape/constraint and corrective action; no
+  raw source literal. Operator evidence adds protected cause and source route.
+* Freeform tool value rejected by product constructor -> correction turn,
+  endpoint fallback, then interpretation_failed only after complete
+  candidate-only exhaustion: name the interpreted candidate's field and
+  constraint, never claim the caller supplied the rejected value. Operator
+  evidence records endpoint routes and bounded typed issues.
+* Model report_input_problem -> endpoint observation, then fallback. An
+  admitted interpretation wins. All-report routes use a fixed source-free
+  attributed interpretation_failed, saying the exact cause is unverified;
+  mixed report/fault/admission routes remain unavailable. Persist safe
+  per-endpoint classification, route, and digest/length, not arbitrary prose.
+* Direct runner VALIDATE REJECTED -> input_rejected only for a reviewed
+  deterministic input/model constraint; publish the reason and safe measured
+  count/limit. Drift or protocol faults remain operational. Interpreted
+  candidate REJECTED -> correction/fallback, then interpretation_failed
+  after all-endpoint deterministic admission exhaustion; never attribute the
+  candidate constraint to the source without separate proof.
+* Generation/result fault -> protected exact cause; public execution failure
+  only after a versioned correlated terminal proof exists. Otherwise preserve
+  provider-fatal or indeterminate current behavior, with no invented input
+  explanation.
+* API start/progress/terminal mutation -> existing typed Problem projection
+  and provider_outcomes.py certainty; public terminal command is exact and
+  replayable. Logs/inspection say retained, confirmed, or unresolved only
+  when supported by receipt, API observation, or journal state.
+
+Copy-and-adapt sources and authority (reviewed 2026-10-03)
+----------------------------------------------------------
+
+Start with a focused diff of these exact sources and their tests. Port
+reviewed hunks into NMRPeak's existing forks; preserve product contracts
+where the repositories differ. Pin revisions when implementing so later
+upstream changes do not silently alter the comparison.
+
+* magnet-deploy@2c66a18 magnet_provider/interpreter.py ->
+  nmrpeak_provider/interpreter.py: copy the candidate-rejection repair
+  branch, ordered endpoint fallback, one deadline, endpoint/report provenance,
+  and typed exhaustion/timeout validation. NMRPeak must still return its
+  session-owned InterpretationAdmission and ValidatedRunnerRequest; a wholesale
+  interpreter copy would lose generation authorization. Add the NMRPeak-only
+  CandidateConstructionExhausted type from explicit per-endpoint evidence,
+  not an ExceptionGroup string. Change Magnet's first-report short circuit
+  into report-as-endpoint-evidence and test later-endpoint admission. Preserve
+  NMRPeak's neutral exception string for ReportedInputProblem; Magnet puts
+  model text in str(exception).
+* magnet-deploy@90754cd magnet_provider/openai_chat_interpreter.py ->
+  nmrpeak_provider/openai_chat_interpreter.py: copy the small optional
+  reasoning_content replay branch into the private assistant repair turn.
+  Diff the current Magnet adapter's capability-specific tool descriptions
+  and submit_interpretation_value_schema against NMRPeak's static value:{};
+  port reviewed HF/CHF schema descriptions, with product_input.py still final
+  authority. Preserve NMRPeak deadline, response cleanup, and retry policy.
+* magnet-deploy@2c66a18 magnet_provider/prompts/protocol_correction.md ->
+  NMRPeak's same file: copy source-vs-rejected-candidate guidance and adapt
+  schema names. Diff interpreter.md but preserve NMRPeak's scientific
+  anti-inference rules for valence, DBE, multiplicity, and measured peaks.
+* magnet-deploy@2c66a18 magnet_provider/text_provenance.py and
+  failure_message.py -> NMRPeak's existing modules: copy ProviderDiagnosticText
+  and explicit 1,024-character truncation helper with their tests. Neither
+  type nor truncation alone grants public disclosure of raw input.
+* magnet-deploy@2c66a18 magnet_provider/analysis_contract.py ->
+  a small NMRPeak failure contract: copy ClassifiedAnalysisFailure,
+  AnalysisFailed, ReportedFailurePublication, and closed policy resolution.
+  Do not import Magnet RunAuthority, controller, progress, or success
+  protocols. Wire to NMRPeak's prepare_execution_attempt_fail seam.
+* magnet-deploy@2c66a18
+  models/e_02_ch_nmrexp/provider/.../analysis_failure_policy.py and .toml ->
+  HF/CHF-owned policy files: copy exhaustive-table parsing, unknown-field
+  rejection, and binding tests; rewrite rules and public text from HF/CHF
+  evidence. Add NMRPeak's narrow typed-fact renderer outside that copied
+  parser because Magnet has no parameterized renderer. E02's
+  forward_failure_message=true is not safe for model text under the current
+  NMR API failure_message schema because it may contain raw input.
+* magnet-deploy@2c66a18 magnet_provider/provider_events.py and
+  provider_event_logging.py -> NMRPeak's small provider_events.py and sink:
+  copy selected typed route, cause, policy-drift, retained/confirmed event
+  patterns, not Magnet's full event catalogue. The configured sink determines
+  retention. Keep NMRPeak's existing remote-evidence wording.
+* magnet-deploy@2c66a18 tests/unit/test_interpreter.py,
+  tests/unit/test_e02_analysis_binding.py,
+  tests/integration/test_interpreter_endpoint_fallback.py, and
+  tests/unit/test_provider_event_logging.py -> corresponding NMRPeak lanes:
+  copy focused assertions for repair, policy drift, response cleanup,
+  reasoning replay, route certainty, and log disclosure. The HTTP
+  MockTransport integration test exercises this without live credentials.
+* magnet-deploy@2c66a18 tests/model_behavior/run_interpreter.py and
+  manifest/fixture scaffolding -> HF/CHF model-behavior lane: use production
+  constructors and typed-field equality for source fidelity, a forced repair
+  case to separate native rejection from injected correction, and bounded
+  diagnostic output for human review. The shared typed-field/forced-repair
+  harness came in 8652f6d, default displayed diagnostics in 14be0f3, and
+  configurable bounded timeouts in 90754cd. Keep raw turns ephemeral in
+  protected qualification work, outside routine provider logs. Magnet notes
+  027 and 028 show why one live repetition is an observation, not a
+  reliability threshold.
+
+Keep NMRPeak's own provider_outcomes.py, provider_problems.py,
+_nmr_api_failure_contract.py, attempt_journal.py, attempt_lifecycle.py,
+runner protocol, pinned tokenizer, and source provenance as authorities.
+NMRPeak already imported API-owned Problem and commit-certainty behavior in
+6e9ba9b and f8055ab. Do not create a second generic API Problem classifier;
+Magnet's recent de9667a removed redundant authority layers. Copying Magnet's
+controller, delivery, E01/E02 scientific schemas, or runner execution outcome
+would replace established NMRPeak proofs with different assumptions.
+
+Use two other local comparators selectively. nmr-api-v1@da93d284
+notes/140_error_output_coverage_census_20260912.txt and
+notes/143_admin_entitlement_time_error_facts_20260913.txt provide the recent
+producer-to-consumer census, exact-fact-at-authorized-boundary, and
+fresh-reader message review method; adopt that method, not a cross-stack
+framework. Copy/adapt only the small safe diagnostic methods in
+nmr_api/canonical_json.py (line/column plus known delimiter cause) and
+nmr_api/provider/managed_providers.py (received JSON type and required/
+allowed fields without echoing unknown names). Do not copy
+nmr_api/request_json.py's unexpected-key preview, which has a different
+disclosure policy. secs-repro@c0c8ef8
+src/secs_inference/provider/network_errors.py and diagnostics.py have
+structured TLS/network causes and bounded exception structure; copy/adapt
+only what helps protected operator diagnostics in NMRPeak provider_https.py.
+Its provider/chat.py bounded non-200 error-envelope projection is a pattern
+for NMRPeak's httpx OpenAI adapter: preserve status, reviewed error
+type/code and validated request ID; keep unreadable body secondary.
+Do not copy arbitrary external message/param into routine events: partial
+source/secret echoes can survive generic redaction. A protected transient
+diagnostic sink would need explicit access/lifetime review before retaining
+the raw envelope. Copy the projection principles, not SECS's http.client
+transport.
+Keep NMRPeak provider_outcomes.py as the sole send-certainty owner. API-owned
+nmr_api/wire/schemas/nmr/execution_attempt/failure_message/v1.json and
+nmr_api/operations/execution_attempt_failures.py, plus GUI
+execution-attempts-panel-model.ts and ExecutionAttemptsPanel.tsx, are
+contract/display review gates, not code-copy sources.
+
+Implementation slices and review gates
+--------------------------------------
+
+1. Inventory every current producer-to-sink path and record a baseline of
+   public code/message, operator event, retry/terminal/fatal decision, and
+   API delivery evidence. Include the incident above, direct structured
+   errors, model reports, runner validate failures, generation, result
+   rejection, restart, API outage and conflict. Include Hello/startup, feed,
+   input read, start, progress, observation and terminal send paths. Verify
+   the API and GUI show stored text verbatim with safe display escaping.
+   Preserve the baseline
+   as tests without treating bad generic wording as a permanent requirement.
+2. Add typed product issues and explicit structured/freeform routing. Prove
+   provider-owned path, peak index, safe type/constraint rendering, malformed
+   JSON location without source excerpt, duplicate/unknown fields without
+   untrusted pointer segments, invalid UTF-8 versus JSON syntax, BOM/control
+   rejection, comment-led text convention, bracket-led prose explanation,
+   and no silent prose fallback. Include a previously open bracket-led Job
+   in the migration/recovery corpus.
+   Check that original source and model output receive different provenance.
+   Census existing open Jobs and pre-execution Attempts before enabling the
+   changed route.
+3. Port focused Magnet interpreter deltas and correction prompts. Prove
+   constructor repair, runner-admission repair, ordered fallback, mixed
+   endpoint failures, exhausted deterministic rejection, timeout, honest
+   model problem report, source fidelity, no invented measurements, private
+   reasoning replay, and HF/CHF tool schemas. Test a valid submit tool call
+   with a rejected product value separately from invalid tool name/arguments,
+   malformed envelope, missing continuation context, and mixed transport.
+   Test endpoint 1's false missing-integral report followed by endpoint 2's
+   admitted typed value; conflicting/all-report, mixed report/fault, and
+   report-plus-runner-rejection routes need their own cases. Fallback must
+   not replay endpoint 1's reasoning into endpoint 2. Adapt candidate-only
+   exhaustion to a distinct typed
+   outcome and reviewed interpretation_failed code. Prove mixed
+   infrastructure failures do not become that code. Compare one-cycle and
+   repeated-cycle HF/CHF model behavior before approving the terminal budget
+   or any persisted counter.
+4. Add classified failures and exhaustive HF/CHF publication policies at the
+   pre-journal seam. For every selected terminal failure, test exact public code
+   and message, operator reason, 1,024-character bound/truncation, and
+   adversarial controls/newlines and authorized project-reader disclosure.
+   Test the narrow typed-fact renderer separately for safe provider-owned
+   path/count facts and its actual consumer for the API-stored sentence.
+   Test that source scalars, model echoes, results, and Problem detail are not
+   published under the current API contract; any scalar exception requires
+   schema/docs/tests and consumer approval first. Inject a secret-looking
+   multiplicity, control/newline, long Unicode value, and model report that
+   copies source/credentials. Assert none reaches exception str(), routine
+   events, journal summary, terminal bytes, or API/GUI display; tool repair
+   receives only path/constraint feedback.
+   Prove retained fail bytes match the API receipt and restart replay. Keep old
+   retained commands unchanged. Version
+   the private latest-diagnostic journal summary and prove atomic replacement,
+   strict v1/v2 reads, archive archived_original, bounded size, restart
+   inspection, retirement, unchanged v1 bytes/digest on read and archive
+   until replacement, and the no-rollback-with-v2-records rule.
+5. Improve runner validation details; separately review a versioned
+   execution-failure frame and any change to malformed-result handling. Keep
+   current provider-fatal handling until a distinct expected model failure
+   and stopped-worker/correlated-outcome gates are proven. Fault-inject crash,
+   timeout, protocol drift, cancel, expiry, and shutdown failure to prove
+   uncertainty remains honest.
+6. Improve controlled inspection and logging. Remove incidental complete
+   input/result dumps and model-authored failure text dumps. Make cause and
+   provenance visible, label retained commands as delivery-unconfirmed, and
+   test that secret/raw text does not leak to routine logs. Audit API Problem,
+   endpoint diagnostics, exception strings, and log retention. Reuse the
+   existing API-owned typed Problem projection for Server A; optional detail
+   never authorizes a lifecycle decision. Verify inspection after journal
+   retirement makes no stale committed claim.
+7. Adapt Magnet's model-behavior harness with NMRPeak-specific reviewed
+   freeform HF/CHF cases: supported and unsupported multiplicities, missing
+   fields, malformed but repairable tool output, model-reported problem,
+   prompt injection, fallback, and exact peak/formula preservation. Review
+   actual explanations, not only pass/fail action. Compare production
+   constructor results field by field to distinguish copied unsupported
+   labels from invented ones. Run offline unit and
+   container integration lanes first; live network/model tests are an
+   explicit qualification step, not a substitute for deterministic tests.
+8. Roll out without mutating historical Attempts: confirm API/GUI display
+   behavior; deploy provider/runner changes under reviewed generation identity;
+   rebuild provider and both runner images together when a REJECTED frame
+   version changes, using repository_checks/nmrpeak_image_inputs.py and the
+   frozen deployment manifest checks. Exercise the new route with synthetic
+   Jobs; verify API-stored failure
+   code/message, operator log, inspection, and replay after a controlled
+   delivery outage. Crash once between terminal retention and send and once
+   after send before retirement; prove exact replay/receipt behavior. Test
+   failed preparing-progress send (no runner work), direct/interpreted runner
+   protocol errors (no input_rejected), API already-resolved state, 409 hold,
+   and observation loss. Compare public and operator evidence for each case.
+   Preserve upstream scientific source closure and result provenance unless
+   upstream scientific code actually changes.
+
+Acceptance criteria
+-------------------
+
+The 2026-10-03 class of failure no longer ends in the generic four-sentence
+message on the first invalid model tool value. It is corrected, falls back,
+or receives a specific interpretation_failed after a complete candidate-only
+repair/fallback cycle under the qualified terminal budget. An early model
+report does not suppress later configured endpoints; all-report routes use
+attributed fixed wording. Mixed infrastructure failures stay truthful
+unavailability.
+Every deterministic failure selected for terminal publication has a clear
+public diagnostic; eventual uncertain failures say what cannot be established.
+No runtime path silently changes source values or rewrites a retained
+terminal command. Operators can identify a typed retained rejection cause,
+or see explicitly that a model report's underlying claim is unverified,
+along with the delivery certainty the available evidence actually proves.
+No secret or full untrusted scientific document appears in routine logs.
+No raw source scalar or model echo appears in the API failure_message under
+its current contract.
+The complete route is proven by API read/list and GUI display checks, not only
+provider unit tests.
+
+Likely regrets and boundary decisions
+-------------------------------------
+
+A new universal error framework would obscure rather than clarify the few
+actual NMRPeak boundaries. Copy Magnet's small contracts and behavior where
+they have a direct caller. Copying its entire controller would replace
+NMRPeak's established exact-command and uncertainty machinery. A single
+freeform public message for all input_rejected cases would keep the present
+opacity. Per-case arbitrary raw model/endpoint output would give apparent
+detail while leaking source text or falsely attributing a model mistake.
+Use exact, bounded, provenance-labelled facts and explicit publication
+decisions instead.
+
+Open decisions requiring evidence during implementation: whether the
+structured/freeform discriminator needs an upstream explicit mode in a later
+API revision; whether HF/CHF require separate failure policy files; whether
+any finer failure_code is consumed specially by GUI or clients; and whether
+NMRPeak runner protocol can prove a determinate execution failure after
+generation began. None blocks the pre-execution transparency work.
+
+Implementation and rollout record (2026-10-04)
+-----------------------------------------------
+
+The provider implementation copies and adapts focused Magnet repair,
+reasoning-replay, tool-schema, and exhaustive failure-policy mechanics. It
+keeps NMRPeak's session-owned validated request, API Problem/commit-certainty
+projection, and exact terminal-command journal. Product-owned typed issues,
+source-mode routing, report-as-endpoint evidence, classified pre-execution
+publication, and closed operator summaries are now wired. The OpenAI adapter
+retains HTTP status and only reviewed error type/code/request IDs; routine
+retry logs omit arbitrary endpoint prose, API Problem detail, and exception
+strings. The correlated runner wire is v2: only token-limit REJECTED is an
+input/model constraint eligible for repair or direct publication; empty
+tokenizer output and missing dictionary tokens are operational drift. The
+provider, HF runner, and CHF runner must be rebuilt from the same revision.
+The pinned checkpoint release contract IDs stay unchanged because their
+scientific checkpoint contract did not change; wire v2 rejects an old peer.
+
+Journal v2 stores the latest locally observed source-free diagnostic on active
+and pending terminal records. It does not prove that Server A committed a
+terminal command. Reading an untouched v1 record preserves its exact bytes
+and digest; terminal command bytes remain immutable. Inspection v2 can show
+the exact retained FAIL code/message to a controlled operator reader. A
+legacy v1 FAIL may contain older model-authored or source text: inspection
+does not sanitize that historical exact command. Keep inspection private.
+Ship v1/v2 journal and inspection readers in provider and host tooling before
+enabling a v2 writer. A v1-only provider cannot roll back while any v2
+record remains. Do not auto-downgrade an active or pending obligation.
+
+Offline verification so far includes the full provider unit lane, API
+contract lane, and a copied/adapted HTTP MockTransport integration lane for
+both HF and CHF. Repository source-closure tests pass with local pinned
+submodule clones. The committed-image-input test must run after this change
+is committed because it deliberately compares the working declaration with
+HEAD's committed image context. These results are implementation evidence,
+not live rollout qualification.
+
+Before production enablement, perform a read-only census of eligible open
+Jobs and retained PRE_EXECUTION Attempts for bracket-led prose, using refs,
+fingerprints, and prefix category only in the report. Verify the selected
+generation window does not reinterpret an old obligation. Run the adapted
+HF/CHF live model-behavior cases, including forced repair and repeated
+observations of candidate-only exhaustion, before approving the one-cycle
+terminal budget. Repeated observations measure the present one-cycle policy;
+they are not a comparison with a hypothetical two-cycle policy. If that
+comparison is needed, first specify and implement its persisted counter and
+configuration fingerprint as a separate experiment.
+Then verify one signed FAIL through Server A's authorized public Attempt list
+and both GUI presentations, including markup-like text rendered as text.
+Exercise exact journal replay across the retention/send ambiguity, 409 hold,
+and v2 archive/inspection with the rebuilt provider and both runner images.

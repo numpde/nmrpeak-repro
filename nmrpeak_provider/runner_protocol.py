@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import re
 from struct import pack, unpack
 from typing import Callable, Generic, Protocol, TypeAlias, TypeVar, cast
@@ -16,7 +17,8 @@ from .canonical_json import (
 from .failure_message import is_failure_message
 
 
-RUNNER_PROTOCOL_VERSION = 1
+RUNNER_PROTOCOL_VERSION = 2
+MAXIMUM_TOKENIZED_INPUT_LENGTH = 511
 RUNNER_SOCKET_PATH = "/run/nmrpeak/session.sock"
 MAX_RUNNER_FRAME_PAYLOAD_BYTES = 131_072
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
@@ -28,6 +30,24 @@ _PROVIDER_ATTEMPT_KEY = re.compile(r"nmrpeak-provider\.v1:[0-9a-f]{64}")
 
 class RunnerProtocolError(ValueError):
     """A private frame cannot participate in the current runner boot."""
+
+
+class RunnerRejectionReason(StrEnum):
+    """Closed, source-free causes admitted from runner VALIDATE."""
+
+    TOKEN_LIMIT_EXCEEDED = "token_limit_exceeded"
+    TOKENIZER_EMPTY_OUTPUT = "tokenizer_empty_output"
+    DICTIONARY_TOKEN_MISSING = "dictionary_token_missing"
+
+
+RUNNER_REJECTION_DIAGNOSTICS = {
+    RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED:
+        f"The model accepts at most {MAXIMUM_TOKENIZED_INPUT_LENGTH} input tokens; this input exceeds that limit.",
+    RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT:
+        "The loaded tokenizer produced no model input tokens.",
+    RunnerRejectionReason.DICTIONARY_TOKEN_MISSING:
+        "The loaded model dictionary does not contain every token produced for this input.",
+}
 
 
 class FrameReceiver(Protocol):
@@ -157,16 +177,19 @@ class GenerateFrame:
 
 @dataclass(frozen=True, slots=True)
 class RejectedFrame:
-    """A deterministic, reusable rejection of a fully parsed model input."""
+    """A typed VALIDATE result; only token limit proves an input constraint."""
 
     correlation: AttemptCorrelation
+    reason: RunnerRejectionReason
     diagnostic: str
 
     def __post_init__(self) -> None:
         _require_correlation(self.correlation)
-        if not is_failure_message(self.diagnostic):
+        if (type(self.reason) is not RunnerRejectionReason
+                or not is_failure_message(self.diagnostic)
+                or self.diagnostic != RUNNER_REJECTION_DIAGNOSTICS[self.reason]):
             raise RunnerProtocolError(
-                "Cannot bind NMRPeak runner REJECTED frame: diagnostic is invalid"
+                "Cannot bind NMRPeak runner REJECTED frame: reason or diagnostic is invalid"
             )
 
 
@@ -338,7 +361,7 @@ def _frame_document(
     if type(frame) is RejectedFrame:
         return {
             **_correlated_document("REJECTED", frame.correlation),
-            "reason": "input_rejected",
+            "reason": frame.reason.value,
             "diagnostic": frame.diagnostic,
         }
     if type(frame) is ResultFrame:
@@ -395,11 +418,13 @@ def _parse_rejected(document: dict[str, JsonValue]) -> RejectedFrame:
         document,
         {"v", "type", "reason", "diagnostic"},
     )
-    if document["reason"] != "input_rejected":
+    try:
+        reason = RunnerRejectionReason(document["reason"])
+    except (TypeError, ValueError):
         raise RunnerProtocolError(
             "Cannot receive NMRPeak runner REJECTED frame: reason is not supported"
-        )
-    return RejectedFrame(correlation, document["diagnostic"])
+        ) from None
+    return RejectedFrame(correlation, reason, document["diagnostic"])
 
 
 def _parse_result(document: dict[str, JsonValue]) -> ResultFrame:

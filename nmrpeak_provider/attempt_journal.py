@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
+from binascii import Error as BinasciiError
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from enum import Enum
 from hashlib import sha256
 import re
@@ -30,12 +32,38 @@ from .provider_success import (
 )
 
 
-_SCHEMA_ID = "nmrpeak.attempt_journal_record.v1"
+_SCHEMA_ID_V1 = "nmrpeak.attempt_journal_record.v1"
+_SCHEMA_ID_V2 = "nmrpeak.attempt_journal_record.v2"
 _JOB_REF = re.compile(r"job:[A-Za-z0-9_.-]{1,124}")
 _ATTEMPT_KEY = re.compile(r"nmrpeak-provider\.v1:[0-9a-f]{64}")
 _ATTEMPT_REF = re.compile(r"execution_attempt:sha256:[0-9a-f]{64}")
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 MAX_JOURNAL_RECORD_BYTES = 2_900_000
+_DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}", re.ASCII)
+_ENDPOINT_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}", re.ASCII)
+_DIAGNOSTIC_STAGES = frozenset({"preparation"})
+_DIAGNOSTIC_KINDS = frozenset({
+    "direct_source_issue", "direct_runner_rejected", "model_reported_problem",
+    "candidate_issue", "candidate_runner_rejected", "interpreter_unavailable",
+})
+_DIAGNOSTIC_PRODUCERS = frozenset({
+    "provider", "runner", "interpreter", "interpreter_candidate",
+})
+# Reviewed, source-free reasons from InputRejectionReason,
+# RunnerRejectionReason, InterpreterUnavailableReason, and the two fixed
+# preparation outcomes. Keep this list explicit at the persistence boundary.
+_DIAGNOSTIC_REASONS = frozenset({
+    "document_too_large", "empty_input", "disallowed_control", "invalid_utf8",
+    "invalid_json", "duplicate_field", "invalid_structure", "wrong_spectra",
+    "invalid_formula", "unsupported_multiplicity", "coupling_must_be_nonnegative",
+    "token_limit_exceeded", "tokenizer_empty_output", "dictionary_token_missing",
+    "prompt_unavailable", "deadline_exceeded", "endpoints_exhausted",
+    "model_report", "runner_candidate_rejected",
+})
+_DIAGNOSTIC_PATH_PARTS = frozenset({
+    "schema_id", "model_input", "formula", "spectra", "1H", "13C", "peaks",
+    "shift_lo", "shift_hi", "integral", "multiplicity", "j_hz", "shift",
+})
 
 
 class LocalExecutionPhase(Enum):
@@ -50,6 +78,51 @@ class TerminalOperation(Enum):
 
     COMPLETE = "complete"
     FAIL = "fail"
+
+
+@dataclass(frozen=True, slots=True)
+class LatestDiagnostic:
+    """Bounded, source-free local evidence; never an API delivery receipt."""
+
+    stage: str
+    kind: str
+    producer: str
+    reason: str
+    observed_at: str
+    path: str | None = None
+    endpoint_route: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for value in (self.stage, self.kind, self.producer, self.reason):
+            if type(value) is not str or _DIAGNOSTIC_CODE.fullmatch(value) is None:
+                raise ValueError("Attempt diagnostic code is invalid")
+        if (self.stage not in _DIAGNOSTIC_STAGES or self.kind not in _DIAGNOSTIC_KINDS
+                or self.producer not in _DIAGNOSTIC_PRODUCERS):
+            raise ValueError("Attempt diagnostic classification is not reviewed")
+        if self.reason not in _DIAGNOSTIC_REASONS:
+            raise ValueError("Attempt diagnostic reason is not reviewed")
+        if self.path is not None:
+            if type(self.path) is not str or not self.path.startswith("/") or len(self.path) > 256:
+                raise ValueError("Attempt diagnostic path is invalid")
+            if any(
+                part not in _DIAGNOSTIC_PATH_PARTS and
+                (not part.isascii() or not part.isdecimal() or len(part) > 6)
+                for part in self.path.split("/")[1:]
+            ):
+                raise ValueError("Attempt diagnostic path contains an unowned segment")
+        if type(self.endpoint_route) is not tuple or len(self.endpoint_route) > 4 or any(
+            type(value) is not str or _ENDPOINT_ID.fullmatch(value) is None
+            for value in self.endpoint_route
+        ) or len(set(self.endpoint_route)) != len(self.endpoint_route):
+            raise ValueError("Attempt diagnostic endpoint route is invalid")
+        if type(self.observed_at) is not str or len(self.observed_at) > 40:
+            raise ValueError("Attempt diagnostic timestamp is invalid")
+        try:
+            observed = datetime.fromisoformat(self.observed_at)
+        except ValueError:
+            raise ValueError("Attempt diagnostic timestamp is invalid") from None
+        if observed.tzinfo is None or observed.utcoffset() != timezone.utc.utcoffset(observed):
+            raise ValueError("Attempt diagnostic timestamp must be UTC")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -85,6 +158,7 @@ class ActiveAttempt(_AttemptRecord):
 
     execution_attempt_ref: str
     local_phase: LocalExecutionPhase
+    latest_diagnostic: LatestDiagnostic | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _AttemptRecord.__post_init__(self)
@@ -95,6 +169,8 @@ class ActiveAttempt(_AttemptRecord):
         )
         if type(self.local_phase) is not LocalExecutionPhase:
             raise TypeError("Attempt journal local phase is invalid")
+        if self.latest_diagnostic is not None and type(self.latest_diagnostic) is not LatestDiagnostic:
+            raise TypeError("Attempt journal latest diagnostic is invalid")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -112,6 +188,7 @@ class TerminalPending(_AttemptRecord):
     terminal_hold_detail: str | None = field(default=None, repr=False)
     terminal_hold_request_id: str | None = None
     terminal_observed_state: str | None = None
+    latest_diagnostic: LatestDiagnostic | None = field(default=None, repr=False)
 
     @property
     def terminal_reconciling(self) -> bool:
@@ -160,6 +237,8 @@ class TerminalPending(_AttemptRecord):
                     raise ValueError("Attempt journal API hold evidence is invalid")
         if self.terminal_observed_state not in {None, "in_progress", "succeeded", "failed", "expired", "not_visible"}:
             raise ValueError("Attempt journal observed state is invalid")
+        if self.latest_diagnostic is not None and type(self.latest_diagnostic) is not LatestDiagnostic:
+            raise TypeError("Attempt journal latest diagnostic is invalid")
 
 
 AttemptJournalRecord = StartPending | ActiveAttempt | TerminalPending
@@ -183,8 +262,11 @@ def journal_record_bytes(record: AttemptJournalRecord) -> bytes:
     """Render one closed canonical durable record without ambient facts."""
 
     _require_record(record)
+    diagnostic = getattr(record, "latest_diagnostic", None)
+    # Untouched legacy obligations keep their exact v1 bytes and digest. Only a
+    # deliberately retained diagnostic promotes an active/terminal record to v2.
     document: dict[str, JsonValue] = {
-        "schema_id": _SCHEMA_ID,
+        "schema_id": _SCHEMA_ID_V2 if diagnostic is not None else _SCHEMA_ID_V1,
         "record_kind": _record_kind(record),
         "job_ref": record.job_ref,
         "provider_attempt_key": record.provider_attempt_key,
@@ -213,6 +295,8 @@ def journal_record_bytes(record: AttemptJournalRecord) -> bytes:
             document["terminal_hold_description"] = record.terminal_hold_description
             for name in ("terminal_hold_code", "terminal_hold_detail", "terminal_hold_request_id", "terminal_observed_state"):
                 document[name] = getattr(record, name)
+    if diagnostic is not None:
+        document["latest_diagnostic"] = _diagnostic_document(diagnostic)
     encoded = canonical_json_bytes(document)
     if len(encoded) > MAX_JOURNAL_RECORD_BYTES:
         raise ValueError("Attempt journal record exceeds its durable size limit")
@@ -230,23 +314,28 @@ def parse_journal_record(raw: bytes) -> AttemptJournalRecord:
         document = parse_canonical_json_bytes(raw)
     except CanonicalJsonError as error:
         raise ValueError("Attempt journal record is not canonical JSON") from error
-    if type(document) is not dict or document.get("schema_id") != _SCHEMA_ID:
+    if type(document) is not dict or type(document.get("schema_id")) is not str or document["schema_id"] not in {_SCHEMA_ID_V1, _SCHEMA_ID_V2}:
         raise ValueError("Attempt journal record schema is unsupported")
+    has_diagnostic = document["schema_id"] == _SCHEMA_ID_V2
     kind = document.get("record_kind")
     try:
         if kind == "start_pending":
+            if has_diagnostic:
+                raise ValueError("Pending start cannot carry a latest diagnostic")
             _require_fields(document, _COMMON_FIELDS | {"record_kind"})
             record: AttemptJournalRecord = StartPending(**_common_values(document))
         elif kind == "active":
             _require_fields(
                 document,
                 _COMMON_FIELDS
-                | {"record_kind", "execution_attempt_ref", "local_phase"},
+                | {"record_kind", "execution_attempt_ref", "local_phase"}
+                | ({"latest_diagnostic"} if has_diagnostic else set()),
             )
             record = ActiveAttempt(
                 **_common_values(document),
                 execution_attempt_ref=document["execution_attempt_ref"],
                 local_phase=LocalExecutionPhase(document["local_phase"]),
+                latest_diagnostic=_parse_diagnostic(document["latest_diagnostic"]) if has_diagnostic else None,
             )
         elif kind in {"terminal_pending", "terminal_hold", "terminal_reconciling"}:
             fields = _COMMON_FIELDS | {"record_kind", "execution_attempt_ref", "terminal_operation", "terminal_request_base64", "terminal_request_fingerprint"}
@@ -254,6 +343,8 @@ def parse_journal_record(raw: bytes) -> AttemptJournalRecord:
                 fields |= {"terminal_hold_action", "terminal_hold_description", "terminal_hold_code", "terminal_hold_detail", "terminal_hold_request_id", "terminal_observed_state"}
             if "local_phase" in document:
                 fields.add("local_phase")
+            if has_diagnostic:
+                fields.add("latest_diagnostic")
             _require_fields(document, fields)
             body_base64 = document["terminal_request_base64"]
             if type(body_base64) is not str:
@@ -276,14 +367,42 @@ def parse_journal_record(raw: bytes) -> AttemptJournalRecord:
                 terminal_hold_detail=document.get("terminal_hold_detail"),
                 terminal_hold_request_id=document.get("terminal_hold_request_id"),
                 terminal_observed_state=document.get("terminal_observed_state"),
+                latest_diagnostic=_parse_diagnostic(document["latest_diagnostic"]) if has_diagnostic else None,
             )
         else:
             raise ValueError("Attempt journal record kind is unsupported")
-    except (KeyError, TypeError) as error:
+    except (BinasciiError, KeyError, TypeError) as error:
         raise ValueError("Attempt journal record fields are invalid") from error
     if journal_record_bytes(record) != raw:
         raise ValueError("Attempt journal record canonical rendering has drifted")
     return record
+
+
+def _diagnostic_document(value: LatestDiagnostic) -> dict[str, JsonValue]:
+    return {
+        "stage": value.stage,
+        "kind": value.kind,
+        "producer": value.producer,
+        "reason": value.reason,
+        "observed_at": value.observed_at,
+        "path": value.path,
+        "endpoint_route": list(value.endpoint_route),
+    }
+
+
+def _parse_diagnostic(value: object) -> LatestDiagnostic:
+    if type(value) is not dict or set(value) != {
+        "stage", "kind", "producer", "reason", "observed_at", "path", "endpoint_route"
+    }:
+        raise ValueError("Attempt journal latest diagnostic fields are invalid")
+    route = value["endpoint_route"]
+    if type(route) is not list:
+        raise ValueError("Attempt journal latest diagnostic route is invalid")
+    return LatestDiagnostic(
+        stage=value["stage"], kind=value["kind"], producer=value["producer"],
+        reason=value["reason"], observed_at=value["observed_at"],
+        path=value["path"], endpoint_route=tuple(route),
+    )
 
 
 def bind_started_attempt(
@@ -336,6 +455,7 @@ def retain_terminal_command(
         local_phase=record.local_phase,
         terminal_request_body=prepared.body,
         terminal_request_fingerprint=_fingerprint(prepared.body),
+        latest_diagnostic=record.latest_diagnostic,
     )
 
 

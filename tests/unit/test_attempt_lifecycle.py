@@ -69,6 +69,11 @@ from nmrpeak_provider.interpreter import (
     InterpreterUnavailableReason,
     ReportedInputProblem,
 )
+from nmrpeak_provider.input_interpreter import InputInterpreter
+from nmrpeak_provider.interpreter_policy import (
+    InterpreterPolicy,
+    OpenAIChatCallPolicy,
+)
 from nmrpeak_provider.text_provenance import ModelGeneratedText
 from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
@@ -172,6 +177,11 @@ class RejectingInterpreter:
 REJECTING_INTERPRETER = RejectingInterpreter()
 
 
+class UnusedInterpreter:
+    def validate_freeform_input(self, **_values: object) -> object:
+        raise AssertionError("Structured input must not enter interpretation")
+
+
 class UnavailableInterpreter:
     def validate_freeform_input(self, **_values: object) -> object:
         raise InterpreterUnavailable(
@@ -212,7 +222,7 @@ class NonStoppingSession:
 
 
 class AttemptLifecycleTests(unittest.TestCase):
-    def test_admission_logs_input_without_forging_separate_events(self) -> None:
+    def test_admission_logs_fingerprint_without_raw_input(self) -> None:
         source = b"C2H6O\nINFO forged event\t1H peaks"
         generation = chf_generation()
         api = CapturingApi(
@@ -229,10 +239,11 @@ class AttemptLifecycleTests(unittest.TestCase):
                     generation=generation, frozen_generation_id=FROZEN_GENERATION_ID,
                 )
         message = logs.records[-1].getMessage()
-        self.assertIn("C2H6O", message)
-        self.assertIn("\\nINFO forged event\\t", message)
+        self.assertNotIn("C2H6O", message)
+        self.assertNotIn("forged event", message)
         self.assertNotIn("\n", message)
         self.assertIn(outcome.record.provider_attempt_key, message)
+        self.assertIn(outcome.record.input_fingerprint, message)
 
     def test_first_in_window_job_is_durably_admitted_without_starting(self) -> None:
         generation = chf_generation()
@@ -608,7 +619,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(len(channel.received_frames), 1)
         self.assertIs(type(channel.received_frames[0]), ValidateFrame)
 
-    def test_preparation_rejection_retains_human_failure_and_exact_diagnostic(self) -> None:
+    def test_structured_rejection_retains_source_issue_without_interpreter(self) -> None:
         canonical_input = b"{}"
         active = active_attempt(canonical_input)
         api = CapturingApi(success_response(progress_receipt()))
@@ -624,7 +635,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                     api=api,
                     journal=journal,
                     session=UnusedSession(),
-                    interpreter=REJECTING_INTERPRETER,
+                    interpreter=UnusedInterpreter(),
                     record=active,
                     canonical_input=canonical_input,
                 )
@@ -633,18 +644,53 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertEqual(reopened.records(), (outcome.record,))
         terminal_body = json.loads(outcome.record.terminal_request_body)
         self.assertEqual(terminal_body["failure_code"], "input_rejected")
+        self.assertEqual(outcome.record.latest_diagnostic.kind, "direct_source_issue")
+        self.assertEqual(outcome.record.latest_diagnostic.reason, "invalid_structure")
+        self.assertIsNone(outcome.record.latest_diagnostic.path)
         self.assertEqual(
             terminal_body["failure_message"],
-            "The provider could not prepare valid input for structure generation. "
-            "Structure generation did not start, and your submitted Job input was not changed. "
-            "Structure generation will not start automatically for this Attempt. "
-            "Ask the provider operator to investigate using this Attempt's reference.",
+            "Input rejected: expected required fields model_input, schema_id. "
+            "Generation did not start. Correct the submitted Job and try again. "
+            "If you meant prose beginning with '{' or '[', prefix it with ordinary words.",
         )
         diagnostic = "\n".join(logs.output)
         self.assertIn("reason=invalid_structure", diagnostic)
         self.assertIn(f"job={active.job_ref}", diagnostic)
         self.assertIn(f"attempt={active.execution_attempt_ref}", diagnostic)
-        self.assertIn("inspect input admission and interpretation", diagnostic)
+        self.assertNotIn("forged event", diagnostic)
+
+    def test_freeform_control_rejection_names_the_source_admission_cause(self) -> None:
+        canonical_input = b"Formula C2H6O with a hidden\x00control"
+        active = active_attempt(canonical_input)
+        api = CapturingApi(success_response(progress_receipt()))
+        interpreter = InputInterpreter(
+            (),
+            InterpreterPolicy(
+                call_policy=OpenAIChatCallPolicy(
+                    request_timeout_seconds=1,
+                    turn_timeout_seconds=3,
+                ),
+                interpretation_timeout_seconds=1,
+            ),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
+                    api=api,
+                    journal=journal,
+                    session=UnusedSession(),
+                    interpreter=interpreter,
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+        self.assertIs(type(outcome), InputFailurePending)
+        body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(body["failure_code"], "input_rejected")
+        self.assertIn("prohibited control character", body["failure_message"])
+        self.assertNotIn("\x00", body["failure_message"])
         self.assertEqual(
             [request.operation for request in api.requests],
             [ProviderOperation.EXECUTION_ATTEMPT_PROGRESS],
@@ -667,7 +713,18 @@ class AttemptLifecycleTests(unittest.TestCase):
                     record=active,
                     canonical_input=canonical_input,
                 )
-                self.assertEqual(journal.records(), (active,))
+                retained = journal.records()
+                self.assertEqual(len(retained), 1)
+                self.assertIs(type(retained[0]), ActiveAttempt)
+                self.assertEqual(retained[0].local_phase, LocalExecutionPhase.PRE_EXECUTION)
+                self.assertEqual(
+                    retained[0].latest_diagnostic.kind,
+                    "interpreter_unavailable",
+                )
+                self.assertEqual(
+                    retained[0].latest_diagnostic.reason,
+                    "endpoints_exhausted",
+                )
         self.assertIs(type(outcome), InputInterpretationUnavailable)
         self.assertIs(
             outcome.evidence.reason,
@@ -695,11 +752,17 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertEqual(journal.records(), (outcome.record,))
         self.assertIs(type(outcome), InputFailurePending)
         terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(terminal_body["failure_code"], "interpretation_failed")
         self.assertEqual(
             terminal_body["failure_message"],
-            "The molecular formula is missing. Submit a new Job with the complete "
-            "molecular formula.",
+            "The interpreter route reported a problem with the submitted description, "
+            "but the exact cause has not been independently verified. Generation did "
+            "not start. Review the description before submitting a new Job.",
         )
+        self.assertNotIn("The molecular formula is missing", str(terminal_body))
+        self.assertEqual(outcome.record.latest_diagnostic.kind, "model_reported_problem")
+        self.assertEqual(outcome.record.latest_diagnostic.producer, "interpreter")
+        self.assertEqual(outcome.record.latest_diagnostic.endpoint_route, ())
 
     def test_interpreter_rejection_does_not_publish_model_instructions(
         self,
@@ -722,9 +785,12 @@ class AttemptLifecycleTests(unittest.TestCase):
                 )
         self.assertIs(type(outcome), InputFailurePending)
         terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(terminal_body["failure_code"], "interpretation_failed")
         self.assertEqual(
             terminal_body["failure_message"],
-            "The interpreter candidate was rejected.",
+            "The interpreter could not produce input accepted by this model's runner "
+            "after all correction routes. Generation did not start. This does not "
+            "prove a defect in the submitted description.",
         )
         self.assertNotIn("submit_interpretation", terminal_body["failure_message"])
 
@@ -756,10 +822,13 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertIs(type(outcome), InputFailurePending)
         self.assertEqual(len(channel.received_frames), 1)
         terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(terminal_body["failure_code"], "input_rejected")
         self.assertEqual(
             terminal_body["failure_message"],
-            "The fake runner rejected this input.",
+            "The model accepts at most 511 input tokens; this input exceeds that limit.",
         )
+        self.assertEqual(outcome.record.latest_diagnostic.kind, "direct_runner_rejected")
+        self.assertEqual(outcome.record.latest_diagnostic.reason, "token_limit_exceeded")
 
     def test_uncertain_preparing_progress_does_not_reach_the_runner(self) -> None:
         canonical_input = valid_chf_input()
@@ -1394,10 +1463,9 @@ class AttemptLifecycleTests(unittest.TestCase):
                     "execution_attempt_ref": active.execution_attempt_ref,
                     "failure_code": "input_rejected",
                     "failure_message": (
-                        "The provider could not prepare valid input for structure generation. "
-                        "Structure generation did not start, and your submitted Job input was not changed. "
-                        "Structure generation will not start automatically for this Attempt. "
-                        "Ask the provider operator to investigate using this Attempt's reference."
+                        "Input rejected: expected required fields model_input, schema_id. "
+                        "Generation did not start. Correct the submitted Job and try again. "
+                        "If you meant prose beginning with '{' or '[', prefix it with ordinary words."
                     ),
                     "committed_at": "2026-08-24T12:02:00Z",
                     "replayed": False,

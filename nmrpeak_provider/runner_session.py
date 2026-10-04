@@ -24,6 +24,7 @@ from .runner_protocol import (
     RetireFrame,
     RunnerFrameCodec,
     RunnerModelInput,
+    RunnerRejectionReason,
     ValidateFrame,
     ValidatedFrame,
 )
@@ -50,6 +51,14 @@ class RunnerSessionRetired(RuntimeError):
     """The runner boot is unusable and its channel has been closed."""
 
 
+class RunnerValidationDrift(RuntimeError):
+    """Runner VALIDATE exposed tokenizer/checkpoint behavior requiring operator review."""
+
+    def __init__(self, reason: RunnerRejectionReason) -> None:
+        self.reason = reason
+        super().__init__(f"NMRPeak runner validation drift: {reason.value}")
+
+
 @dataclass(frozen=True, slots=True)
 class RunnerDeadlines:
     """Bounded waits for each private runner exchange phase."""
@@ -74,9 +83,10 @@ class RunnerDeadlines:
 
 @dataclass(frozen=True, slots=True)
 class RunnerInputRejected:
-    """The runner deterministically rejected a fully parsed model input."""
+    """The runner proved that a complete input exceeds its token limit."""
 
     message: str
+    reason: RunnerRejectionReason = RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,8 +295,19 @@ class RunnerSession(Generic[ModelInput]):
                     raise RunnerSessionRetired(
                         f"Cannot accept {self._codec.lane_name} rejection: the session was retired"
                     )
-                self._state = _SessionState.IDLE
-            return RunnerInputRejected(response.diagnostic)
+                self._state = (
+                    _SessionState.IDLE
+                    if response.reason is RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
+                    else _SessionState.RETIRED
+                )
+                self._pending = None
+            if response.reason is not RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED:
+                error = RunnerValidationDrift(response.reason)
+                close_error = _close_channel(self._channel)
+                if close_error is not None:
+                    error.add_note("The rejected runner channel also failed to close.")
+                raise error
+            return RunnerInputRejected(response.diagnostic, response.reason)
         self._retire_with_error(
             f"Cannot validate {self._codec.lane_name} runner input: "
             "response type or correlation is wrong"

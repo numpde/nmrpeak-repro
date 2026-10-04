@@ -12,6 +12,7 @@ import asyncio
 from dataclasses import InitVar, dataclass, field
 import json
 from pathlib import Path
+import re
 import tomllib
 from typing import Never, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -26,6 +27,8 @@ from nmrpeak_provider.interpreter import (
     InterpreterToolInvocation,
     InterpreterTransportError,
     InterpreterTurn,
+    REVIEWED_ENDPOINT_ERROR_CODES,
+    REVIEWED_ENDPOINT_ERROR_TYPES,
     require_interpreter_configuration_id,
 )
 from nmrpeak_provider.interpreter_policy import (
@@ -43,6 +46,7 @@ from nmrpeak_provider.local_input import (
 _MAX_CONFIG_DIRECTORY_ENTRIES = 32
 _MAX_MODEL_BYTES = 256
 _MAX_RESPONSE_BYTES = 256 * 1024
+_MAX_ERROR_RESPONSE_BYTES = 16 * 1024
 # OpenAI documents 401 as permanent. This deployment has also observed it
 # intermittently among successful calls, so one retry is cheaper and more
 # robust than depending on undocumented error-body distinctions.
@@ -58,39 +62,6 @@ _REASONING_EFFORTS = {
     "xhigh",
     "max",
 }
-_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": InterpreterTool.SUBMIT_INTERPRETATION,
-            "description": "Submit the complete interpreted value.",
-            "parameters": {
-                "type": "object",
-                "properties": {"value": {}},
-                "required": ["value"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": InterpreterTool.REPORT_INPUT_PROBLEM,
-            "description": (
-                "Name required source data that is missing or conflicting and state "
-                "what must be provided or clarified in a new Job."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"message": {"type": "string"}},
-                "required": ["message"],
-                "additionalProperties": False,
-            },
-        },
-    },
-]
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenAIChatEndpointSpec:
     configuration_id: str
@@ -135,6 +106,7 @@ class _OpenAIChatCall:
         "_pending_response_releases",
         "_policy",
         "_spec",
+        "_tools",
     )
 
     def __init__(
@@ -144,11 +116,13 @@ class _OpenAIChatCall:
         *,
         http_client: httpx.AsyncClient,
         pending_response_releases: set[asyncio.Task[None]],
+        tools: tuple[dict[str, object], dict[str, object]],
     ) -> None:
         self._http_client = http_client
         self._pending_response_releases = pending_response_releases
         self._policy = policy
         self._spec = spec
+        self._tools = tools
 
     async def __call__(self, prompt: InterpreterPrompt) -> InterpreterTurn:
         """Return a normalized turn; classify expected failures without content.
@@ -161,7 +135,7 @@ class _OpenAIChatCall:
         request_body: dict[str, object] = {
             "model": self._spec.model,
             "messages": prompt,
-            "tools": _TOOLS,
+            "tools": self._tools,
             "tool_choice": "required",
             "stream": False,
         }
@@ -181,7 +155,7 @@ class _OpenAIChatCall:
                         async with asyncio.timeout(
                             self._policy.request_timeout_seconds
                         ):
-                            status, response_body = await self._post_once(
+                            status, response_body, request_id = await self._post_once(
                                 request_body,
                                 deadline=deadline,
                             )
@@ -196,7 +170,11 @@ class _OpenAIChatCall:
                                 )
                             break
                         if final_attempt or status not in _RETRYABLE_HTTP_STATUSES:
-                            raise InterpreterTransportError(f"http_{status}")
+                            raise InterpreterTransportError(
+                                f"http_{status}",
+                                http_status=status,
+                                **_reviewed_error_facts(response_body, request_id),
+                            )
 
                     # Retrying here, rather than in generic interpretation,
                     # keeps endpoint fallback and protocol repair independent
@@ -216,7 +194,7 @@ class _OpenAIChatCall:
         body: dict[str, object],
         *,
         deadline: float,
-    ) -> tuple[int, bytes | None]:
+    ) -> tuple[int, bytes | None, str | None]:
         request = self._http_client.build_request(
             "POST",
             self._spec.url,
@@ -230,8 +208,19 @@ class _OpenAIChatCall:
         try:
             response = await self._http_client.send(request, stream=True)
             status = response.status_code
+            request_id = response.headers.get("x-request-id")
             if status != 200:
-                response_body: bytes | None = b""
+                try:
+                    # Optional error detail never outranks the received status.
+                    response_body = await _read_bounded_response(
+                        response, limit=_MAX_ERROR_RESPONSE_BYTES
+                    )
+                except Exception:
+                    response_body = None
+                    # Iteration can mark the response closed before its stream
+                    # close succeeds. Retry the stream directly under the
+                    # existing turn deadline.
+                    self._schedule_response_release(response, deadline=deadline)
             else:
                 response_body = await _read_bounded_response(response)
         except asyncio.CancelledError:
@@ -284,7 +273,7 @@ class _OpenAIChatCall:
             # ignore. Preserve that authoritative status while retrying the
             # raw stream release in the background.
             self._schedule_response_release(response, deadline=deadline)
-        return status, response_body
+        return status, response_body, request_id
 
     def _schedule_response_release(
         self,
@@ -303,9 +292,11 @@ class _OpenAIChatCall:
         return release
 
 
-async def _read_bounded_response(response: httpx.Response) -> bytes | None:
+async def _read_bounded_response(
+    response: httpx.Response, *, limit: int = _MAX_RESPONSE_BYTES
+) -> bytes | None:
     body = bytearray()
-    remaining = _MAX_RESPONSE_BYTES + 1
+    remaining = limit + 1
     async for chunk in response.aiter_bytes():
         if not chunk:
             continue
@@ -341,12 +332,20 @@ def bind_openai_chat_endpoints(
     /,
     *,
     http_client: httpx.AsyncClient,
+    submit_interpretation_description: str,
+    submit_interpretation_value_schema: dict[str, object],
+    report_input_problem_description: str,
 ) -> OpenAIChatEndpoints:
-    """Bind prepared endpoint facts to one live HTTP and release owner."""
+    """Snapshot one capability tool contract and bind it to every endpoint."""
 
+    tools = _interpreter_tools(
+        submit_interpretation_description=submit_interpretation_description,
+        submit_interpretation_value_schema=submit_interpretation_value_schema,
+        report_input_problem_description=report_input_problem_description,
+    )
     pending_response_releases: set[asyncio.Task[None]] = set()
     endpoints = tuple(
-        _bind_endpoint(spec, policy, http_client, pending_response_releases)
+        _bind_endpoint(spec, policy, http_client, pending_response_releases, tools)
         for spec in specs
     )
     return OpenAIChatEndpoints(endpoints, pending_response_releases)
@@ -370,14 +369,71 @@ def _bind_endpoint(
     policy: OpenAIChatCallPolicy,
     http_client: httpx.AsyncClient,
     pending_response_releases: set[asyncio.Task[None]],
+    tools: tuple[dict[str, object], dict[str, object]],
 ) -> InterpreterEndpoint:
     call = _OpenAIChatCall(
         spec,
         policy,
         http_client=http_client,
         pending_response_releases=pending_response_releases,
+        tools=tools,
     )
     return InterpreterEndpoint(spec.configuration_id, call)
+
+
+def _interpreter_tools(
+    *,
+    submit_interpretation_description: str,
+    submit_interpretation_value_schema: dict[str, object],
+    report_input_problem_description: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    for name, description in (
+        ("submit_interpretation_description", submit_interpretation_description),
+        ("report_input_problem_description", report_input_problem_description),
+    ):
+        if type(description) is not str or not description.strip():
+            raise ValueError(f"{name} must be non-empty text")
+    if type(submit_interpretation_value_schema) is not dict:
+        raise TypeError("submit_interpretation_value_schema must be an object")
+    try:
+        encoded_schema = json.dumps(
+            submit_interpretation_value_schema,
+            allow_nan=False,
+            ensure_ascii=False,
+        ).encode("utf-8")
+        value_schema = json.loads(encoded_schema)
+    except (RecursionError, TypeError, UnicodeError, ValueError):
+        raise ValueError(
+            "submit_interpretation_value_schema must contain valid JSON"
+        ) from None
+    return (
+        {
+            "type": "function",
+            "function": {
+                "name": InterpreterTool.SUBMIT_INTERPRETATION,
+                "description": submit_interpretation_description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": value_schema},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": InterpreterTool.REPORT_INPUT_PROBLEM,
+                "description": report_input_problem_description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    )
 
 
 def _raise_config_snapshot_error(error: LocalInputSnapshotError) -> Never:
@@ -484,6 +540,33 @@ def _chat_completions_url(value: object) -> str:
         raise ValueError("invalid interpreter base URL") from error
 
 
+def _reviewed_error_facts(body: bytes | None, request_id: str | None) -> dict[str, str]:
+    """Project only closed error identifiers; remote prose stays transient."""
+
+    facts: dict[str, str] = {}
+    if request_id is not None and re.fullmatch(
+        r"req_[A-Za-z0-9_-]{1,120}", request_id, re.ASCII
+    ) is not None:
+        facts["request_id"] = request_id
+    if body is None:
+        return facts
+    try:
+        document = json.loads(
+            body.decode("utf-8", errors="strict"),
+            object_pairs_hook=_object_without_duplicates,
+        )
+    except (UnicodeError, ValueError, RecursionError):
+        return facts
+    if type(document) is not dict or type(document.get("error")) is not dict:
+        return facts
+    error = document["error"]
+    if type(error.get("type")) is str and error["type"] in REVIEWED_ENDPOINT_ERROR_TYPES:
+        facts["error_type"] = error["type"]
+    if type(error.get("code")) is str and error["code"] in REVIEWED_ENDPOINT_ERROR_CODES:
+        facts["error_code"] = error["code"]
+    return facts
+
+
 def _parse_completion(body: bytes) -> InterpreterTurn:
     document = json.loads(
         body.decode("utf-8", errors="strict"),
@@ -505,6 +588,15 @@ def _parse_completion(body: bytes) -> InterpreterTurn:
         "role": "assistant",
         "content": content,
     }
+    # Some reasoning-capable providers require prior thinking on tool-result
+    # turns. The generic repair loop replays this message, so keep the optional
+    # provider field rather than silently discarding it. The response-size cap
+    # already bounds it; do not reinterpret it as ordinary assistant content.
+    reasoning = raw_message.get("reasoning_content")
+    if reasoning is not None:
+        if type(reasoning) is not str:
+            raise ValueError("reasoning_content must be text or null")
+        assistant_message["reasoning_content"] = reasoning
     raw_tool_calls = raw_message.get("tool_calls")
     if raw_tool_calls is None:
         return InterpreterTurn(assistant_message, None, ())

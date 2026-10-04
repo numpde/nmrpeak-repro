@@ -22,6 +22,8 @@ from nmrpeak_provider.runner_protocol import (
     GenerateFrame,
     ReadyFrame,
     RejectedFrame,
+    RunnerRejectionReason,
+    RUNNER_REJECTION_DIAGNOSTICS,
     ResultFrame,
     RetireFrame,
     ValidateFrame,
@@ -78,7 +80,11 @@ class RunnerProtocolTests(unittest.TestCase):
             ValidateFrame(CORRELATION, MODEL_INPUT),
             ValidatedFrame(CORRELATION),
             GenerateFrame(CORRELATION),
-            RejectedFrame(CORRELATION, "The loaded runner rejected this input."),
+            RejectedFrame(
+                CORRELATION,
+                RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
+                RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED],
+            ),
             ResultFrame(CORRELATION, ["CCO", "OCC"]),
             RetireFrame(BOOT),
         )
@@ -123,13 +129,13 @@ class RunnerProtocolTests(unittest.TestCase):
 
     def test_canonical_json_exact_fields_and_correlation_are_mandatory(self) -> None:
         noncanonical = (
-            b'{"v":1, "type":"RETIRE","boot_generation":"' 
+            b'{"v":2, "type":"RETIRE","boot_generation":"'
             + BOOT.encode("ascii")
             + b'"}'
         )
         unknown_field = canonical_json_bytes(
             {
-                "v": 1,
+                "v": 2,
                 "type": "RETIRE",
                 "boot_generation": BOOT,
                 "extra": None,
@@ -137,7 +143,7 @@ class RunnerProtocolTests(unittest.TestCase):
         )
         wrong_correlation = canonical_json_bytes(
             {
-                "v": 1,
+                "v": 2,
                 "type": "VALIDATED",
                 "boot_generation": BOOT,
                 "correlation_id": "request:not-hex",
@@ -155,7 +161,35 @@ class RunnerProtocolTests(unittest.TestCase):
             with self.subTest(diagnostic=diagnostic[:20]), self.assertRaises(
                 RunnerProtocolError
             ):
-                RejectedFrame(CORRELATION, diagnostic)
+                RejectedFrame(
+                    CORRELATION,
+                    RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
+                    diagnostic,
+                )
+
+    def test_rejection_reason_and_protocol_version_are_closed(self) -> None:
+        frame = RejectedFrame(
+            CORRELATION,
+            RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
+            RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED],
+        )
+        document = {
+            "v": 2,
+            "type": "REJECTED",
+            "boot_generation": CORRELATION.boot_generation,
+            "correlation_id": CORRELATION.correlation_id,
+            "attempt_ref": CORRELATION.attempt_ref,
+            "provider_attempt_key": CORRELATION.provider_attempt_key,
+            "reason": frame.reason.value,
+            "diagnostic": frame.diagnostic,
+        }
+        for change in (
+            {"v": 1},
+            {"reason": "input_rejected"},
+            {"diagnostic": "The runner says the source is wrong."},
+        ):
+            with self.subTest(change=change), self.assertRaises(RunnerProtocolError):
+                CHF_RUNNER_CODEC.decode_payload(canonical_json_bytes(document | change))
 
     def test_result_candidates_remain_untrusted_for_the_product_validator(self) -> None:
         frame = ResultFrame(CORRELATION, {"not": "a candidate array"})

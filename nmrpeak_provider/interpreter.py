@@ -38,6 +38,14 @@ _CONFIGURATION_ID = re.compile(
 _PROMPT_DIRECTORY = Path(__file__).with_name("prompts")
 _SYSTEM_PROMPT_PATH = _PROMPT_DIRECTORY / "interpreter.md"
 _CORRECTION_PROMPT_PATH = _PROMPT_DIRECTORY / "protocol_correction.md"
+REVIEWED_ENDPOINT_ERROR_TYPES = frozenset({
+    "invalid_request_error", "authentication_error", "permission_error",
+    "rate_limit_error", "server_error", "api_error",
+})
+REVIEWED_ENDPOINT_ERROR_CODES = frozenset({
+    "invalid_api_key", "insufficient_quota", "model_not_found",
+    "context_length_exceeded", "rate_limit_exceeded",
+})
 
 PromptMessage = dict[str, object]
 InterpreterPrompt = list[PromptMessage]
@@ -51,11 +59,51 @@ class InterpreterProtocolError(ValueError):
         super().__init__(self.reason)
 
 
+class InterpreterCandidateConstructionRejected(InterpreterProtocolError):
+    """A valid submit tool value failed its product-owned constructor."""
+
+    def __init__(self, reason: str, issue: object) -> None:
+        super().__init__(reason)
+        self.issue = issue
+
+
+class CandidateConstructionExhausted(RuntimeError):
+    """Every endpoint exhausted repair on a deterministic constructor issue."""
+
+    def __init__(self, issue: object, attempted_configuration_ids: tuple[str, ...]) -> None:
+        self.issue = issue
+        self.attempted_configuration_ids = _require_route(attempted_configuration_ids)
+        super().__init__("candidate_construction_exhausted")
+
+
 class InterpreterTransportError(RuntimeError):
     """One endpoint failed with a content-free operational classification."""
 
-    def __init__(self, reason: str = "unclassified") -> None:
+    def __init__(
+        self,
+        reason: str = "unclassified",
+        *,
+        http_status: int | None = None,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
         self.reason = _require_failure_reason(reason)
+        if http_status is not None and (type(http_status) is not int or not 100 <= http_status <= 599):
+            raise TypeError("http_status must be an HTTP status")
+        if error_type is not None and error_type not in REVIEWED_ENDPOINT_ERROR_TYPES:
+            raise TypeError("error_type must be a reviewed endpoint category")
+        if error_code is not None and error_code not in REVIEWED_ENDPOINT_ERROR_CODES:
+            raise TypeError("error_code must be a reviewed endpoint code")
+        if request_id is not None and (
+            type(request_id) is not str
+            or re.fullmatch(r"req_[A-Za-z0-9_-]{1,120}", request_id, re.ASCII) is None
+        ):
+            raise TypeError("request_id must be a bounded endpoint request ID")
+        self.http_status = http_status
+        self.error_type = error_type
+        self.error_code = error_code
+        self.request_id = request_id
         super().__init__(self.reason)
 
 
@@ -85,15 +133,16 @@ class InterpreterUnavailable(RuntimeError):
 
 
 class ReportedInputProblem(ValueError):
-    """The assistant completed interpretation by explaining a caller problem."""
+    """Every endpoint reported a model-authored assessment of the source."""
 
     def __init__(
         self,
         message: ModelGeneratedText,
+        attempted_configuration_ids: tuple[str, ...] = (),
     ) -> None:
         self.message = message
-        # The public message may quote caller input. Keep it available only for
-        # deliberate projection, never in the incidental exception string.
+        self.attempted_configuration_ids = _require_route(attempted_configuration_ids)
+        # Model text may quote caller input. Keep it out of exception strings.
         super().__init__("reported_input_problem")
 
 
@@ -108,8 +157,11 @@ class InterpretationCandidateRejected(ValueError):
 class InterpretationRejected(ValueError):
     """Every configured endpoint produced a runner-rejected candidate."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self, message: str, attempted_configuration_ids: tuple[str, ...] = ()
+    ) -> None:
         self.message = message
+        self.attempted_configuration_ids = _require_route(attempted_configuration_ids)
         super().__init__(message)
 
 
@@ -184,6 +236,16 @@ def require_interpreter_configuration_id(value: object, /) -> None:
         raise TypeError("configuration_id must be a bounded safe identifier")
 
 
+def _require_route(value: object) -> tuple[str, ...]:
+    if type(value) is not tuple or len(value) > MAX_INTERPRETER_ENDPOINTS:
+        raise TypeError("interpreter route must be a bounded tuple")
+    for configuration_id in value:
+        require_interpreter_configuration_id(configuration_id)
+    if len(set(value)) != len(value):
+        raise ValueError("interpreter route IDs must be unique")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class InterpretationResult(Generic[Admitted]):
     """An admitted interpretation plus safe endpoint-selection provenance."""
@@ -245,8 +307,10 @@ async def interpret(
 
     attempted: list[str] = []
     endpoint_failures: list[BaseException] = []
-    all_endpoints_rejected_candidate = True
+    endpoint_kinds: list[str] = []
     last_rejection: str | None = None
+    last_constructor_issue: object | None = None
+    last_report: ModelGeneratedText | None = None
     deadline = asyncio.timeout(interpretation_timeout_seconds)
     try:
         # This is the caller-visible operation bound. Endpoint adapters retain
@@ -264,17 +328,21 @@ async def interpret(
                         # adapter cannot contaminate repair or fallback.
                         assistant = await endpoint.call(deepcopy(prompt))
                     except InterpreterTransportError as error:
-                        all_endpoints_rejected_candidate = False
+                        endpoint_kinds.append("operational")
                         endpoint_failures.append(error)
                         _report_endpoint_failure(
                             report_endpoint_failure,
                             endpoint.configuration_id,
                             failure_kind="transport",
                             failure_reason=error.reason,
+                            http_status=error.http_status,
+                            error_type=error.error_type,
+                            error_code=error.error_code,
+                            request_id=error.request_id,
                         )
                         break
                     if type(assistant) is not InterpreterTurn:
-                        all_endpoints_rejected_candidate = False
+                        endpoint_kinds.append("operational")
                         error = InterpreterProtocolError("invalid_turn_type")
                         endpoint_failures.append(error)
                         _report_endpoint_failure(
@@ -292,24 +360,65 @@ async def interpret(
                     try:
                         candidate = _dispatch_turn(assistant, capability=capability)
                         admitted = await admit_interpretation(candidate)
-                    except InterpretationCandidateRejected as rejection:
-                        last_rejection = rejection.message
+                    except ReportedInputProblem as report:
+                        last_report = report.message
+                        endpoint_kinds.append("report")
                         _report_endpoint_failure(
                             report_endpoint_failure,
                             endpoint.configuration_id,
-                            failure_kind="admission",
-                            failure_reason=rejection.message,
+                            failure_kind="report",
+                            failure_reason="reported_input_problem",
                         )
                         break
+                    except InterpretationCandidateRejected as rejection:
+                        last_rejection = rejection.message
+                        if repair_exhausted or not has_repair_context:
+                            endpoint_failures.append(rejection)
+                            endpoint_kinds.append(
+                                "admission" if repair_exhausted else "operational"
+                            )
+                            _report_endpoint_failure(
+                                report_endpoint_failure,
+                                endpoint.configuration_id,
+                                failure_kind="admission",
+                                failure_reason="runner_input_rejected",
+                                failure_state=(
+                                    "repair_exhausted"
+                                    if repair_exhausted
+                                    else "repair_unavailable"
+                                ),
+                            )
+                            break
+                        _append_repair(
+                            prompt,
+                            assistant=assistant,
+                            tool_result=rejection.message,
+                            correction=correction,
+                        )
+                        continue
                     except InterpreterProtocolError as error:
                         if repair_exhausted or not has_repair_context:
-                            all_endpoints_rejected_candidate = False
+                            constructor_rejection = (
+                                repair_exhausted
+                                and type(error) is InterpreterCandidateConstructionRejected
+                            )
+                            endpoint_kinds.append(
+                                "constructor" if constructor_rejection else "operational"
+                            )
+                            if constructor_rejection:
+                                last_constructor_issue = error.issue
                             endpoint_failures.append(error)
                             _report_endpoint_failure(
                                 report_endpoint_failure,
                                 endpoint.configuration_id,
-                                failure_kind="protocol",
-                                failure_reason=error.reason,
+                                failure_kind=(
+                                    "construction" if constructor_rejection
+                                    else "protocol"
+                                ),
+                                failure_reason=(
+                                    "candidate_constructor_rejected"
+                                    if constructor_rejection else error.reason
+                                ),
                                 failure_state=(
                                     "repair_exhausted"
                                     if repair_exhausted
@@ -354,12 +463,23 @@ async def interpret(
             attempted_configuration_ids=tuple(attempted),
         ) from error
 
-    if all_endpoints_rejected_candidate:
+    if len(endpoint_kinds) != len(endpoints):
+        raise AssertionError("Interpreter route ended without an endpoint outcome")
+    if all(kind == "admission" for kind in endpoint_kinds):
         if last_rejection is None:
-            raise AssertionError(
-                "Interpreter rejection outcome has no runner diagnostic"
-            )
-        raise InterpretationRejected(last_rejection)
+            raise AssertionError("Admission exhaustion has no runner diagnostic")
+        raise InterpretationRejected(last_rejection, tuple(attempted))
+    if all(kind == "constructor" for kind in endpoint_kinds):
+        if last_constructor_issue is None:
+            raise AssertionError("Constructor exhaustion has no typed issue")
+        raise CandidateConstructionExhausted(
+            last_constructor_issue,
+            tuple(attempted),
+        )
+    if all(kind == "report" for kind in endpoint_kinds):
+        if last_report is None:
+            raise AssertionError("Report exhaustion has no model report")
+        raise ReportedInputProblem(last_report, tuple(attempted))
     unavailable = InterpreterUnavailable(
         InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
         attempted_configuration_ids=tuple(attempted),
@@ -379,6 +499,10 @@ def _report_endpoint_failure(
     failure_kind: str,
     failure_reason: str,
     failure_state: str | None = None,
+    http_status: int | None = None,
+    error_type: str | None = None,
+    error_code: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Project validated endpoint identity and closed facts for its destination."""
 
@@ -388,6 +512,10 @@ def _report_endpoint_failure(
             failure_kind=failure_kind,
             failure_reason=failure_reason,
             failure_state=failure_state,
+            http_status=http_status,
+            error_type=error_type,
+            error_code=error_code,
+            request_id=request_id,
         )
     )
 
@@ -401,6 +529,8 @@ def _append_repair(
 ) -> None:
     """Continue one repairable assistant turn in its original conversation."""
 
+    if assistant.tool_call_ids is None:
+        raise AssertionError("repair requires retained assistant context")
     prompt.append(assistant.assistant_message)
     prompt.extend(
         {
