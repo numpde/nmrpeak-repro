@@ -1,4 +1,8 @@
-"""Prove one complete NMRPeak lifecycle across the released signed TLS boundary."""
+"""Exercise NMRPeak lifecycle over TLS with a header-presence Server A fake.
+
+The fake does not verify signature cryptography; a real API acceptance test
+must prove authenticated request and body binding.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ from nmrpeak_provider.attempt_journal_store import AttemptJournalStore
 from nmrpeak_provider.attempt_lifecycle import (
     CandidatesGenerated,
     CompletionPending,
+    InputFailurePending,
     JobAdmitted,
     ObservationPolicy,
     PreparedForExecution,
@@ -81,7 +86,7 @@ _HF_RUNNER_FACTS = ProviderResultFacts(
 
 
 class AttemptLifecycleTlsTests(unittest.TestCase):
-    def test_each_lane_completes_through_signed_tls_and_exact_replay(self) -> None:
+    def test_each_lane_completes_through_tls_and_exact_replay(self) -> None:
         cases = (
             (
                 CHF_LIFECYCLE_LANE,
@@ -209,6 +214,102 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(terminal_requests), 2)
                 self.assertEqual(terminal_requests[0], terminal_requests[1])
+
+    def test_each_lane_retains_exact_source_failure_across_tls_replay(self) -> None:
+        cases = (
+            (CHF_LIFECYCLE_LANE, CHF_RUNNER_CODEC, _CHF_RUNNER_FACTS, _valid_chf_input()),
+            (HF_LIFECYCLE_LANE, HF_RUNNER_CODEC, _HF_RUNNER_FACTS, _valid_hf_input()),
+        )
+        expected_message = (
+            "Input rejected at /model_input/spectra/1H/peaks/0/multiplicity: "
+            "the proton multiplicity label is unsupported by this model. "
+            "Generation did not start. Correct the submitted Job and try again."
+        )
+        for lane, codec, facts, valid_input in cases:
+            with self.subTest(implementation=lane.offering.implementation_ref):
+                document = json.loads(valid_input)
+                document["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "xy"
+                canonical_input = json.dumps(document, separators=(",", ":")).encode("utf-8")
+                state = ServerA(
+                    analysis_kind_ref=lane.offering.analysis_kind_ref,
+                    canonical_input=canonical_input,
+                )
+                with TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_test_certificates(root)
+                    journal_root = root / "journal"
+                    journal_root.mkdir(mode=0o700)
+                    with serve_server_a(state=state, certificate_directory=root) as port:
+                        api = _api(port, root)
+                        generation = _generation(
+                            lane.offering.analysis_kind_ref,
+                            lane.offering.implementation_ref,
+                        )
+                        with AttemptJournalStore(journal_root, maximum_records=1) as journal:
+                            admitted = admit_next_job(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                            )
+                            self.assertIs(type(admitted), JobAdmitted, repr(admitted))
+                            started = start_attempt(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                                record=admitted.record,
+                            )
+                            self.assertIs(type(started), StartContinues, repr(started))
+                            prepared = prepare_execution(
+                                lane=lane, api=api, journal=journal,
+                                session=_runner_session(codec, facts),
+                                interpreter=_UNUSED_INTERPRETER,
+                                record=started.record,
+                                canonical_input=admitted.canonical_input,
+                            )
+                            self.assertIs(type(prepared), InputFailurePending, repr(prepared))
+                            retained = prepared.record
+                            command = json.loads(retained.terminal_request_body)
+                            self.assertEqual(command["failure_code"], "input_rejected")
+                            self.assertEqual(command["failure_message"], expected_message)
+                            self.assertEqual(retained.latest_diagnostic.reason, "unsupported_multiplicity")
+                            self.assertEqual(
+                                retained.latest_diagnostic.path,
+                                "/model_input/spectra/1H/peaks/0/multiplicity",
+                            )
+                            state.lose_next_failure_response()
+                            uncertain = deliver_terminal(
+                                api=api, journal=journal, record=retained,
+                            )
+                            self.assertIs(type(uncertain), AttemptMutationCommitPossible)
+                            self.assertEqual(journal.records(), (retained,))
+
+                        runtime = _generation_runtime(chf=_generation(
+                            CHF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                            CHF_LIFECYCLE_LANE.offering.implementation_ref,
+                        ))
+                        with AttemptJournalStore(journal_root, maximum_records=1) as reopened:
+                            retained_after_restart, = reopened.records()
+                            self.assertEqual(
+                                retained_after_restart.terminal_request_body,
+                                retained.terminal_request_body,
+                            )
+                            recovered = reconcile_record(
+                                runtime=runtime, api=api, journal=reopened,
+                                record=retained_after_restart,
+                            )
+                            self.assertIs(type(recovered), TerminalDelivered, repr(recovered))
+                            self.assertTrue(recovered.receipt.replayed)
+                            self.assertEqual(reopened.records(), ())
+                self.assertEqual(state.failures, [])
+                self.assertIsNotNone(state.attempt)
+                self.assertEqual(state.attempt.state, "failed")
+                self.assertEqual(state.attempt.terminal_receipt["failure_message"], expected_message)
+                fail_bodies = [
+                    body for method, target, body in state.requests
+                    if method == "POST" and target == "/provider/v1/execution-attempts/fail"
+                ]
+                self.assertEqual(len(fail_bodies), 2)
+                self.assertEqual(fail_bodies[0], fail_bodies[1])
 
     def test_lost_mutation_responses_reconcile_after_journal_reopen(self) -> None:
         canonical_input = _valid_chf_input()

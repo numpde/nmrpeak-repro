@@ -66,6 +66,7 @@ from nmrpeak_provider.attempt_lifecycle import (
     start_attempt,
 )
 from nmrpeak_provider.interpreter import (
+    CandidateConstructionExhausted,
     InterpretationRejected,
     InterpreterUnavailable,
     InterpreterUnavailableReason,
@@ -107,7 +108,7 @@ from nmrpeak_provider.lifecycle_lane import (
     HF_LIFECYCLE_LANE,
 )
 from nmrpeak_provider.nmrpeak_binding import RunnerProtonPeak
-from nmrpeak_provider.product_input import InputRejected, InputRejectionReason
+from nmrpeak_provider.product_input import InputIssue, InputRejected, InputRejectionReason
 from nmrpeak_provider.product_result import (
     CHF_RESULT_IDENTITY,
     HF_RESULT_IDENTITY,
@@ -200,6 +201,17 @@ class ReportingInterpreter:
                 "The molecular formula is missing. Submit a new Job with the complete "
                 "molecular formula."
             )
+        )
+
+
+class CandidateIssueInterpreter:
+    def validate_freeform_input(self, **_values: object) -> object:
+        raise CandidateConstructionExhausted(
+            InputIssue(
+                InputRejectionReason.UNSUPPORTED_MULTIPLICITY,
+                ("model_input", "spectra", "1H", "peaks", 0, "multiplicity"),
+            ),
+            ("primary", "fallback"),
         )
 
 
@@ -766,6 +778,45 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(outcome.record.latest_diagnostic.kind, "model_reported_problem")
         self.assertEqual(outcome.record.latest_diagnostic.producer, "interpreter")
         self.assertEqual(outcome.record.latest_diagnostic.endpoint_route, ())
+
+    def test_candidate_issue_is_not_attributed_to_the_source(self) -> None:
+        canonical_input = b"Formula C2H6O with a triplet at 1.2 ppm."
+        active = active_attempt(canonical_input)
+        api = CapturingApi(success_response(progress_receipt()))
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                journal.admit(pending_from_active(active))
+                journal.replace(pending_from_active(active), active)
+                outcome = prepare_execution(
+                    lane=CHF_LIFECYCLE_LANE,
+                    api=api,
+                    journal=journal,
+                    session=UnusedSession(),
+                    interpreter=CandidateIssueInterpreter(),
+                    record=active,
+                    canonical_input=canonical_input,
+                )
+                self.assertEqual(journal.records(), (outcome.record,))
+        self.assertIs(type(outcome), InputFailurePending)
+        terminal_body = json.loads(outcome.record.terminal_request_body)
+        self.assertEqual(terminal_body["failure_code"], "interpretation_failed")
+        self.assertEqual(
+            terminal_body["failure_message"],
+            "Interpretation failed: the interpreter's candidate at "
+            "/model_input/spectra/1H/peaks/0/multiplicity was rejected after all "
+            "correction routes: the proton multiplicity label is unsupported by "
+            "this model. Generation did not start. Review the submitted "
+            "description; the candidate's defect has not been proven to occur "
+            "in the source.",
+        )
+        diagnostic = outcome.record.latest_diagnostic
+        self.assertEqual(diagnostic.kind, "candidate_issue")
+        self.assertEqual(diagnostic.producer, "interpreter_candidate")
+        self.assertEqual(diagnostic.reason, "unsupported_multiplicity")
+        self.assertEqual(
+            diagnostic.path, "/model_input/spectra/1H/peaks/0/multiplicity"
+        )
+        self.assertEqual(diagnostic.endpoint_route, ("primary", "fallback"))
 
     def test_interpreter_rejection_does_not_publish_model_instructions(
         self,

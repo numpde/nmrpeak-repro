@@ -14,6 +14,7 @@ from threading import Lock, Thread
 
 from nmrpeak_provider.provider_requests import (
     prepare_execution_attempt_complete,
+    prepare_execution_attempt_fail,
     prepare_execution_attempt_progress,
     prepare_execution_attempt_start,
 )
@@ -50,6 +51,7 @@ class ServerA:
         self.attempt: _Attempt | None = None
         self._drop_start_response = False
         self._drop_completion_response = False
+        self._drop_failure_response = False
         self._lock = Lock()
 
     @property
@@ -66,12 +68,17 @@ class ServerA:
 
         self._drop_completion_response = True
 
+    def lose_next_failure_response(self) -> None:
+        """Commit the next failure but close before returning its receipt."""
+
+        self._drop_failure_response = True
+
     def serve(self, method: str, raw_target: str, headers, body: bytes):
-        """Verify one signed request before applying its Server A transition."""
+        """Check signed-header presence before applying a fake Server A transition."""
 
         try:
             with self._lock:
-                self._require_signed_request(headers, body)
+                self._require_signed_headers(headers, body)
                 self.requests.append((method, raw_target, body))
                 if (method == "PUT" and raw_target == f"/provider/v1/execution-attempts/{_ATTEMPT_REF}/progress"
                         and self.attempt is not None and self.attempt.state != "in_progress"):
@@ -114,11 +121,18 @@ class ServerA:
         ):
             self._drop_completion_response = False
             return True
+        if (
+            self._drop_failure_response
+            and method == "POST"
+            and raw_target == "/provider/v1/execution-attempts/fail"
+        ):
+            self._drop_failure_response = False
+            return True
         return False
 
-    def _require_signed_request(self, headers, body: bytes) -> None:
-        # Released signing vectors own RFC 9421 parity. This lifecycle lane only
-        # proves that production composition sends the signed request class.
+    def _require_signed_headers(self, headers, body: bytes) -> None:
+        # This fake checks header presence, not signature cryptography.
+        # The real API acceptance lane proves authenticated request binding.
         required = {"Host", "Signature", "Signature-Input"}
         if body:
             required |= {"Content-Digest", "Content-Type"}
@@ -148,6 +162,8 @@ class ServerA:
             return self._attempt_snapshot()
         if method == "POST" and raw_target == "/provider/v1/execution-attempts/complete":
             return self._complete(body)
+        if method == "POST" and raw_target == "/provider/v1/execution-attempts/fail":
+            return self._fail(body)
         raise AssertionError(f"unexpected provider request: {method} {raw_target}")
 
     def _jobs_page(self) -> dict[str, object]:
@@ -258,6 +274,33 @@ class ServerA:
             "result_schema_id": command["result_schema_id"],
             "result_fingerprint": "sha256:" + sha256(result).hexdigest(),
             "result_byte_length": len(result),
+            "committed_at": "2026-08-24T12:02:00Z",
+            "replayed": False,
+        }
+        return self.attempt.terminal_receipt
+
+    def _fail(self, body: bytes) -> dict[str, object]:
+        assert self.attempt is not None
+        if self.attempt.terminal_body is not None:
+            assert self.attempt.state == "failed"
+            assert body == self.attempt.terminal_body, "failure conflicted with retained bytes"
+            assert self.attempt.terminal_receipt is not None
+            return self.attempt.terminal_receipt | {"replayed": True}
+        command = _json_command(body)
+        expected = prepare_execution_attempt_fail(
+            execution_attempt_ref=command["execution_attempt_ref"],
+            failure_code=command["failure_code"],
+            failure_message=command["failure_message"],
+        )
+        assert expected.body == body and command["execution_attempt_ref"] == _ATTEMPT_REF
+        self.attempt.state = "failed"
+        self.attempt.job_state = "closed"
+        self.attempt.terminal_body = body
+        self.attempt.terminal_receipt = {
+            "schema_id": "nmr.provider.execution_attempt_fail_response.v1",
+            "execution_attempt_ref": _ATTEMPT_REF,
+            "failure_code": command["failure_code"],
+            "failure_message": command["failure_message"],
             "committed_at": "2026-08-24T12:02:00Z",
             "replayed": False,
         }
