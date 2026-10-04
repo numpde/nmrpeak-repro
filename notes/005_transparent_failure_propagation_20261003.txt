@@ -716,13 +716,12 @@ Ship v1/v2 journal and inspection readers in provider and host tooling before
 enabling a v2 writer. A v1-only provider cannot roll back while any v2
 record remains. Do not auto-downgrade an active or pending obligation.
 
-Offline verification so far includes the full provider unit lane, API
-contract lane, and a copied/adapted HTTP MockTransport integration lane for
-both HF and CHF. Repository source-closure tests pass with local pinned
-submodule clones. The committed-image-input test must run after this change
-is committed because it deliberately compares the working declaration with
-HEAD's committed image context. These results are implementation evidence,
-not live rollout qualification.
+Offline verification after commit in the target NMRPeak checkout: the full
+`make test` lane passed (491 unit, 9 API contract, 3 HTTP MockTransport
+integration, 6 model-behavior harness, and 17 repository tests). The repository
+checks include exact provider committed-image inputs and pinned runtime source
+closure. HF and CHF model-behavior corpus listings each contain four evaluations.
+These results are implementation evidence, not live rollout qualification.
 
 Before production enablement, perform a read-only census of eligible open
 Jobs and retained PRE_EXECUTION Attempts for bracket-led prose, using refs,
