@@ -11,8 +11,10 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import httpx
 
 from nmrpeak_provider.attempt_journal import prepared_terminal_replay
 from nmrpeak_provider.attempt_journal_store import AttemptJournalStore
@@ -42,7 +44,10 @@ from nmrpeak_provider.hf_runner_protocol import (
     HF_RUNNER_CONTRACT_ID,
 )
 from nmrpeak_provider.generation_runtime import GenerationLane, GenerationRuntime
+from nmrpeak_provider.input_interpreter import InputInterpreter
 from nmrpeak_provider.interpreter import CandidateConstructionExhausted
+from nmrpeak_provider.interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
+from nmrpeak_provider.journal_inspect import inspect_journal
 from nmrpeak_provider.lifecycle_lane import (
     CHF_LIFECYCLE_LANE,
     HF_LIFECYCLE_LANE,
@@ -56,6 +61,7 @@ from nmrpeak_provider.product_result import (
     NMRPEAK_SOURCE_CLOSURE_REF,
     ProviderResultFacts,
 )
+from nmrpeak_provider.openai_chat_interpreter import load_openai_chat_endpoint_specs
 from nmrpeak_provider.provider_api import ProviderApiClient
 from nmrpeak_provider.provider_https import ProviderHttpsEndpoint
 from nmrpeak_provider.provider_outcomes import (
@@ -67,6 +73,7 @@ from nmrpeak_provider.run_generation import CreatedAtWindow, RunGenerationIdenti
 from tests.fakes.runner import FakeRunnerChannel
 from tests.fakes.provider_server import ServerA, serve_server_a
 from tests.fakes.tls_certificates import write_test_certificates
+from tests.model_behavior.run_interpreter import _load_corpus, _select_evaluations
 
 
 _PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
@@ -96,6 +103,11 @@ class _CandidateIssueInterpreter:
             ),
             ("primary", "fallback"),
         )
+
+
+class _NoRunnerValidation:
+    def validate(self, **_values: object) -> object:
+        raise AssertionError("A rejected interpreter candidate must not reach the runner")
 
 
 class AttemptLifecycleTlsTests(unittest.TestCase):
@@ -353,6 +365,159 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 self.assertEqual(len(fail_bodies), 2)
                 self.assertEqual(fail_bodies[0], fail_bodies[1])
 
+    def test_real_interpreter_exhaustion_replays_candidate_failure(self) -> None:
+        corpus = _load_corpus()
+        expected_message = (
+            "Interpretation failed: the interpreter's candidate at "
+            "/model_input/spectra/1H/peaks/0/multiplicity was rejected after all "
+            "correction routes: the proton multiplicity label is unsupported by "
+            "this model. Generation did not start. Review the submitted "
+            "description; the candidate's defect has not been proven to occur "
+            "in the source."
+        )
+        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
+            lane_name = lane.offering.implementation_ref
+            with self.subTest(lane=lane_name):
+                variant = _select_evaluations(
+                    corpus, lane_name, case_id="unsupported_multiplicity", mode="normal"
+                )[0].variant
+                canonical_input = variant.source_text.encode("utf-8")
+                candidate = json.loads(variant.expected_candidate)
+                requests: list[dict[str, object]] = []
+                responses: list[httpx.Response] = []
+
+                def handle(request: httpx.Request) -> httpx.Response:
+                    requests.append(json.loads(request.content))
+                    response = httpx.Response(200, json=_candidate_completion(candidate))
+                    responses.append(response)
+                    return response
+
+                state = ServerA(
+                    analysis_kind_ref=lane.offering.analysis_kind_ref,
+                    canonical_input=canonical_input,
+                )
+                with TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_test_certificates(root)
+                    journal_root = root / "journal"
+                    journal_root.mkdir(mode=0o700)
+                    endpoint_root = root / "interpreter"
+                    endpoint_root.mkdir(mode=0o700)
+                    (endpoint_root / "05-primary.toml").write_text(
+                        'id = "primary"\nbase_url = "https://primary.example.test/v1"\n'
+                        'api_key = "fixture-only"\nmodel = "fixture-model"\n',
+                        encoding="utf-8",
+                    )
+                    interpreter = InputInterpreter(
+                        endpoint_specs=load_openai_chat_endpoint_specs(endpoint_root),
+                        policy=InterpreterPolicy(
+                            call_policy=OpenAIChatCallPolicy(
+                                request_timeout_seconds=1,
+                                turn_timeout_seconds=3,
+                            ),
+                            interpretation_timeout_seconds=10,
+                        ),
+                    )
+                    model_client = httpx.AsyncClient(
+                        transport=httpx.MockTransport(handle), trust_env=False,
+                    )
+                    with serve_server_a(state=state, certificate_directory=root) as port:
+                        api = _api(port, root)
+                        generation = _generation(
+                            lane.offering.analysis_kind_ref,
+                            lane.offering.implementation_ref,
+                        )
+                        with AttemptJournalStore(journal_root, maximum_records=1) as journal:
+                            admitted = admit_next_job(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                            )
+                            self.assertIs(type(admitted), JobAdmitted, repr(admitted))
+                            started = start_attempt(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                                record=admitted.record,
+                            )
+                            self.assertIs(type(started), StartContinues, repr(started))
+                            with patch(
+                                "nmrpeak_provider.input_interpreter.httpx.AsyncClient",
+                                return_value=model_client,
+                            ):
+                                prepared = prepare_execution(
+                                    lane=lane, api=api, journal=journal,
+                                    session=_NoRunnerValidation(),
+                                    interpreter=interpreter,
+                                    record=started.record,
+                                    canonical_input=admitted.canonical_input,
+                                )
+                            self.assertIs(type(prepared), InputFailurePending, repr(prepared))
+                            retained = prepared.record
+                            command = json.loads(retained.terminal_request_body)
+                            self.assertEqual(command["failure_code"], "interpretation_failed")
+                            self.assertEqual(command["failure_message"], expected_message)
+                            diagnostic = retained.latest_diagnostic
+                            self.assertEqual(diagnostic.kind, "candidate_issue")
+                            self.assertEqual(diagnostic.producer, "interpreter_candidate")
+                            self.assertEqual(diagnostic.reason, "unsupported_multiplicity")
+                            self.assertEqual(
+                                diagnostic.path,
+                                "/model_input/spectra/1H/peaks/0/multiplicity",
+                            )
+                            self.assertEqual(diagnostic.endpoint_route, ("primary",))
+                            self.assertEqual(len(requests), 3)
+                            for request in requests[1:]:
+                                repair = request["messages"][-2:]
+                                self.assertEqual([item["role"] for item in repair], ["tool", "user"])
+                                self.assertIn(diagnostic.path, repair[0]["content"])
+                                self.assertNotIn("xy", json.dumps(repair))
+                            state.lose_next_failure_response()
+                            uncertain = deliver_terminal(
+                                api=api, journal=journal, record=retained,
+                            )
+                            self.assertIs(type(uncertain), AttemptMutationCommitPossible)
+                            self.assertEqual(journal.records(), (retained,))
+
+                        inspection = json.loads(inspect_journal(journal_root))
+                        inspected, = inspection["records"]
+                        self.assertEqual(inspected["delivery"], "unconfirmed")
+                        self.assertEqual(inspected["retained_failure"], {
+                            "failure_code": "interpretation_failed",
+                            "failure_message": expected_message,
+                        })
+                        self.assertEqual(
+                            inspected["latest_diagnostic"]["producer"],
+                            "interpreter_candidate",
+                        )
+                        runtime = _generation_runtime(chf=_generation(
+                            CHF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                            CHF_LIFECYCLE_LANE.offering.implementation_ref,
+                        ))
+                        with AttemptJournalStore(journal_root, maximum_records=1) as reopened:
+                            retained_after_restart, = reopened.records()
+                            self.assertEqual(
+                                retained_after_restart.terminal_request_body,
+                                retained.terminal_request_body,
+                            )
+                            recovered = reconcile_record(
+                                runtime=runtime, api=api, journal=reopened,
+                                record=retained_after_restart,
+                            )
+                            self.assertIs(type(recovered), TerminalDelivered, repr(recovered))
+                            self.assertTrue(recovered.receipt.replayed)
+                            self.assertEqual(reopened.records(), ())
+                self.assertTrue(all(response.is_closed for response in responses))
+                self.assertEqual(state.failures, [])
+                self.assertIsNotNone(state.attempt)
+                self.assertEqual(state.attempt.state, "failed")
+                self.assertEqual(state.attempt.terminal_receipt["failure_message"], expected_message)
+                fail_bodies = [
+                    body for method, target, body in state.requests
+                    if method == "POST" and target == "/provider/v1/execution-attempts/fail"
+                ]
+                self.assertEqual(fail_bodies, [retained.terminal_request_body] * 2)
+
     def test_lost_mutation_responses_reconcile_after_journal_reopen(self) -> None:
         canonical_input = _valid_chf_input()
         state = ServerA(
@@ -537,6 +702,17 @@ def _runner_session(
         RunnerDeadlines(0.2, 0.2, 0.2, 0.2, 0.2),
         codec,
     )
+
+
+def _candidate_completion(value: object) -> dict[str, object]:
+    return {"choices": [{"message": {
+        "role": "assistant", "content": None,
+        "reasoning_content": "Private fixture reasoning.",
+        "tool_calls": [{"id": "fixture-call", "type": "function", "function": {
+            "name": "submit_interpretation",
+            "arguments": json.dumps({"value": value}),
+        }}],
+    }}]}
 
 
 def _valid_chf_input() -> bytes:
