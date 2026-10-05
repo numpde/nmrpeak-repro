@@ -8,6 +8,8 @@ readonly repo_root="$1"
 readonly wifi_interface="$2"
 [[ -d "/sys/class/net/$wifi_interface" ]] ||
     fail "selected Wi-Fi interface does not exist: $wifi_interface"
+[[ -d "/sys/class/net/$wifi_interface/wireless" ]] ||
+    fail "selected interface is not a kernel wireless interface: $wifi_interface"
 [[ "$(id -u)" -ne 0 && "$(id -g)" -ne 0 ]] ||
     fail "test image preparation requires a non-root user and primary group"
 

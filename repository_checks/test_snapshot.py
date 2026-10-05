@@ -45,8 +45,8 @@ def _listed_files(repository: Path) -> tuple[str, ...]:
     return paths
 
 
-def _submodules(repository: Path) -> tuple[str, ...]:
-    raw = _git(repository, "ls-tree", "-r", "-z", "HEAD")
+def _gitlinks(repository: Path, revision: str) -> tuple[str, ...]:
+    raw = _git(repository, "ls-tree", "-r", "-z", revision)
     paths = []
     for record in raw.split(b"\0"):
         if not record:
@@ -61,10 +61,16 @@ def _submodules(repository: Path) -> tuple[str, ...]:
             value = raw_path.decode("utf-8")
         except UnicodeDecodeError as error:
             raise SnapshotRejected("submodule path is not UTF-8") from error
-        if value not in ALLOWED_SUBMODULES:
-            raise SnapshotRejected(f"unreviewed submodule path: {value!r}")
         paths.append(value)
     return tuple(sorted(paths))
+
+
+def _submodules(repository: Path, revision: str) -> tuple[str, ...]:
+    paths = _gitlinks(repository, revision)
+    for value in paths:
+        if value not in ALLOWED_SUBMODULES:
+            raise SnapshotRejected(f"unreviewed submodule path: {value!r}")
+    return paths
 
 
 def _entry_bytes(root: Path, relative: str) -> tuple[str, int, bytes] | None:
@@ -101,6 +107,25 @@ def _inventory(repository: Path, *, excluded: frozenset[str] = frozenset()) -> t
     return tuple(entries)
 
 
+def _reject_tracked_sensitive_roots(repository: Path, label: str, revision: str) -> None:
+    raw = (
+        _git(repository, "ls-files", "-z", "--cached")
+        + _git(repository, "ls-tree", "-r", "-z", "--name-only", revision)
+    )
+    try:
+        tracked = {item.decode("utf-8") for item in raw.split(b"\0") if item}
+    except UnicodeDecodeError as error:
+        raise SnapshotRejected("test source contains a non-UTF-8 path") from error
+    exposed = sorted(
+        relative for relative in tracked
+        if any(relative == root or relative.startswith(root + "/") for root in SENSITIVE_ROOTS)
+    )
+    if exposed:
+        raise SnapshotRejected(
+            f"tracked sensitive path in {label}: {exposed[0]!r}"
+        )
+
+
 def _publish_inventory(source: Path, destination: Path, inventory: tuple[tuple[str, str, int, bytes], ...]) -> None:
     del source
     for relative, kind, mode, payload in inventory:
@@ -114,20 +139,26 @@ def _publish_inventory(source: Path, destination: Path, inventory: tuple[tuple[s
 
 
 def _clone_metadata(source: Path, destination: Path, revision: str | None = None) -> None:
+    if revision is None:
+        revision = _git(source, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
+    destination.mkdir(parents=True)
+    _git(destination, "init", "--quiet")
     result = subprocess.run(
-        ("git", "clone", "--quiet", "--no-hardlinks", "--no-checkout", "--", str(source), str(destination)),
+        (
+            "git", "-c", "protocol.file.allow=always", "-C", str(destination),
+            "fetch", "--quiet", "--depth=1", "--no-tags", "--no-write-fetch-head",
+            "--", source.as_uri(), revision,
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
     )
     if result.returncode:
         raise SnapshotRejected(
-            "local Git metadata clone failed: "
+            "minimal local Git metadata fetch failed: "
             + result.stderr.decode("utf-8", errors="replace").strip()
         )
-    _git(destination, "config", "--unset-all", "remote.origin.url")
-    if revision is not None:
-        _git(destination, "update-ref", "--no-deref", "HEAD", revision)
+    _git(destination, "update-ref", "--no-deref", "HEAD", revision)
     _git(destination, "read-tree", "HEAD")
 
 
@@ -135,8 +166,9 @@ def materialize(source: Path, destination: Path) -> str:
     source = source.resolve(strict=True)
     if destination.exists():
         raise SnapshotRejected(f"snapshot destination already exists: {destination}")
-    submodules = _submodules(source)
     super_revision = _git(source, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
+    submodules = _submodules(source, super_revision)
+    _reject_tracked_sensitive_roots(source, ".", super_revision)
     super_inventory = _inventory(source, excluded=frozenset(submodules) | SENSITIVE_ROOTS)
     _clone_metadata(source, destination, super_revision)
     _publish_inventory(source, destination, super_inventory)
@@ -145,7 +177,11 @@ def materialize(source: Path, destination: Path) -> str:
     for relative in submodules:
         module_source = source / relative
         revision = _git(module_source, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
-        module_inventory = _inventory(module_source)
+        nested = _gitlinks(module_source, revision)
+        if nested:
+            raise SnapshotRejected(f"nested submodule path: {relative}/{nested[0]}")
+        _reject_tracked_sensitive_roots(module_source, relative, revision)
+        module_inventory = _inventory(module_source, excluded=SENSITIVE_ROOTS)
         _clone_metadata(module_source, destination / relative, revision)
         _publish_inventory(module_source, destination / relative, module_inventory)
         inventories.append(
@@ -156,7 +192,7 @@ def materialize(source: Path, destination: Path) -> str:
     for prefix, repository, snapshot_repository, before, revision in inventories:
         after = _inventory(
             repository,
-            excluded=(frozenset(submodules) | SENSITIVE_ROOTS) if not prefix else frozenset(),
+            excluded=(frozenset(submodules) | SENSITIVE_ROOTS) if not prefix else SENSITIVE_ROOTS,
         )
         if before != after:
             raise SnapshotRejected(f"test source changed while snapshotting: {prefix or '.'}")

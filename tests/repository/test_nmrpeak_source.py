@@ -109,11 +109,11 @@ class NmrpeakSourceTests(unittest.TestCase):
             subprocess.run(
                 (
                     "git",
+                    "-c", "user.name=Source Test",
+                    "-c", "user.email=source@example.invalid",
                     "-C",
                     str(root / "nmrpeak-upstream"),
-                    "checkout",
-                    "--quiet",
-                    "HEAD^",
+                    "commit", "--quiet", "--allow-empty", "-m", "unreviewed revision",
                 ),
                 check=True,
             )

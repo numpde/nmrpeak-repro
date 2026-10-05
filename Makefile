@@ -151,6 +151,7 @@ test/live/failure-propagation test/live/failure-propagation/observe: private exp
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_STATE_INPUT := $(value LIVE_STATE)
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_CA_CERTIFICATE_INPUT := $(value LIVE_CA_CERTIFICATE)
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_SOURCE_REVISION_INPUT := $(value LIVE_SOURCE_REVISION)
+test/live/failure-propagation test/live/failure-propagation/observe: private export CONFIRM_PERSISTENT_JOBS_INPUT := $(value CONFIRM_PERSISTENT_JOBS)
 test/live/failure-propagation test/live/failure-propagation/observe: check/test-image
 test/live/failure-propagation test/live/failure-propagation/observe:
 	@test "$(origin LIVE_API_ORIGIN)" = command\ line || { echo 'LIVE_API_ORIGIN must be set on the make command line' >&2; exit 2; }
@@ -163,7 +164,7 @@ test/live/failure-propagation test/live/failure-propagation/observe:
 	@test "$(origin LIVE_SOURCE_REVISION)" = command\ line || { echo 'LIVE_SOURCE_REVISION must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_CA_CERTIFICATE)" = undefined -o "$(origin LIVE_CA_CERTIFICATE)" = command\ line || { echo 'LIVE_CA_CERTIFICATE must be set on the make command line' >&2; exit 2; }
 	@if test "$@" = test/live/failure-propagation; then \
-		test "$(origin CONFIRM_PERSISTENT_JOBS)" = command\ line -a "$(value CONFIRM_PERSISTENT_JOBS)" = 1 || { echo 'set CONFIRM_PERSISTENT_JOBS=1 to create persistent Jobs' >&2; exit 2; }; \
+		test "$(origin CONFIRM_PERSISTENT_JOBS)" = command\ line -a "$$CONFIRM_PERSISTENT_JOBS_INPUT" = 1 || { echo 'set CONFIRM_PERSISTENT_JOBS=1 to create persistent Jobs' >&2; exit 2; }; \
 	fi
 	@set -- "$$(test "$@" = test/live/failure-propagation && printf run || printf observe)" \
 		--api-origin "$$LIVE_API_ORIGIN_INPUT" --expected-topology "$$LIVE_API_TOPOLOGY_INPUT" \
@@ -191,6 +192,7 @@ test/live/success-propagation test/live/success-propagation/observe: private exp
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_HF_IMAGE_INPUT_ID_INPUT := $(value LIVE_EXPECTED_HF_IMAGE_INPUT_ID)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_CHF_IMAGE_INPUT_ID_INPUT := $(value LIVE_EXPECTED_CHF_IMAGE_INPUT_ID)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_SOURCE_REVISION_INPUT := $(value LIVE_SOURCE_REVISION)
+test/live/success-propagation test/live/success-propagation/observe: private export CONFIRM_PERSISTENT_JOBS_INPUT := $(value CONFIRM_PERSISTENT_JOBS)
 test/live/success-propagation test/live/success-propagation/observe: check/test-image
 test/live/success-propagation test/live/success-propagation/observe:
 	@test "$(origin LIVE_API_ORIGIN)" = command\ line || { echo 'LIVE_API_ORIGIN must be set on the make command line' >&2; exit 2; }
@@ -207,7 +209,7 @@ test/live/success-propagation test/live/success-propagation/observe:
 	@test "$(origin LIVE_EXPECTED_CHF_IMAGE_INPUT_ID)" = command\ line || { echo 'LIVE_EXPECTED_CHF_IMAGE_INPUT_ID must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_CA_CERTIFICATE)" = undefined -o "$(origin LIVE_CA_CERTIFICATE)" = command\ line || { echo 'LIVE_CA_CERTIFICATE must be set on the make command line' >&2; exit 2; }
 	@if test "$@" = test/live/success-propagation; then \
-		test "$(origin CONFIRM_PERSISTENT_JOBS)" = command\ line -a "$(value CONFIRM_PERSISTENT_JOBS)" = 1 || { echo 'set CONFIRM_PERSISTENT_JOBS=1 to create persistent Jobs' >&2; exit 2; }; \
+		test "$(origin CONFIRM_PERSISTENT_JOBS)" = command\ line -a "$$CONFIRM_PERSISTENT_JOBS_INPUT" = 1 || { echo 'set CONFIRM_PERSISTENT_JOBS=1 to create persistent Jobs' >&2; exit 2; }; \
 	fi
 	@set -- "$$(test "$@" = test/live/success-propagation && printf run || printf observe)" \
 		--api-origin "$$LIVE_API_ORIGIN_INPUT" --expected-topology "$$LIVE_API_TOPOLOGY_INPUT" \
