@@ -204,15 +204,16 @@ C. Bring NMRPeak's existing fork of Magnet's interpreter up to the current
    admitted candidate may win. Only an all-report route can select a
    model-report terminal outcome. A report mixed with transport, protocol,
    timeout, constructor, or runner-admission rejection remains interpreter
-   unavailability, retaining per-endpoint classifications. Arbitrary report prose cannot
-   safely yield a specific missing-field claim. Until a closed report
+   unavailability, retaining per-endpoint classifications. Arbitrary report
+   prose cannot safely yield a specific missing-field claim. Until a closed report
    category/path tool schema or deterministic reviewed extractor exists,
    use a fixed source-free public statement attributed to the interpreter
    with exact cause unverified. Keep raw model report text transient in the
-   interpreter operation; persist only bounded safe category/route/digest
-   evidence. A separate approved protected store with named access and
-   lifetime would be needed to retain raw reports. This improves upon
-   Magnet's early report short circuit; its note 028 observed conservative
+   interpreter operation; persist only the reviewed latest reason and route
+   in the private journal. Keep per-endpoint classifications in bounded
+   operator events subject to retention. A separate approved protected store
+   with named access and lifetime would be needed to retain raw reports. This
+   improves upon Magnet's early report short circuit; its note 028 observed conservative
    model reports on otherwise valid submissions. "Model assessment" is
    internal provenance; the API currently transports only code and message.
    Update the correction prompt to say a rejected tool value is not evidence
@@ -230,7 +231,7 @@ D. Classify pre-execution outcomes before publication: direct structured
    outcome only when every endpoint completed its route with a valid assistant
    submit_interpretation tool invocation and deterministic capability
    constructor rejection, with intact correction context. A dedicated typed
-   constructor-rejection subtype and per-endpoint terminal record carry that
+   constructor-rejection subtype and per-endpoint in-memory outcome carry that
    proof; generic InterpreterProtocolError also covers malformed invocation
    and canonicalization faults. Preserve each endpoint's bounded reason and
    route. Do not infer this type from generic
@@ -256,10 +257,15 @@ D. Classify pre-execution outcomes before publication: direct structured
    last-issue evidence in operator events subject to log retention.
    Add a small bounded latest-diagnostic summary to the private active Attempt
    journal for stopped-provider inspection: stage, kind, producer, stable
-   reason code, provider-owned path, safe derived count/limit if present,
-   endpoint route, timestamp, and retry count. Use a bounded digest/length
-   instead of an arbitrary literal; a closed allowlist and protected storage
-   review are required for any literal exception.
+   reason code, provider-owned path when known, endpoint route, and timestamp.
+   This is the latest observation, not a per-endpoint history or retry tally;
+   bounded per-endpoint classifications are available only while process logs
+   retain their operator events.
+   The v2 journal does not store count/limit pairs or model-report digests:
+   the former are rendered where the reviewed runner reason needs them, and
+   the latter would add a persistent fingerprint without an operator action.
+   A later schema revision needs a named use and a separate storage review
+   before adding either field or any literal exception.
    If the actual cause is absent, mark that explicitly; do not invent a value.
    Never store raw source or a whole model response in this summary. Version
    and atomically replace this metadata under the existing journal writer;
@@ -426,8 +432,10 @@ Public text here is a shape; exact copy belongs in the reviewed HF/CHF policy.
 * Model report_input_problem -> endpoint observation, then fallback. An
   admitted interpretation wins. All-report routes use a fixed source-free
   attributed interpretation_failed, saying the exact cause is unverified;
-  mixed report/fault/admission routes remain unavailable. Persist safe
-  per-endpoint classification, route, and digest/length, not arbitrary prose.
+  mixed report/fault/admission routes remain unavailable. Operator events
+  retain bounded per-endpoint classifications while logs remain available;
+  the private journal retains only the latest reason and aggregate route,
+  never report prose or its fingerprint.
 * Direct runner VALIDATE REJECTED -> input_rejected only for a reviewed
   deterministic input/model constraint; publish the reason and safe measured
   count/limit. Drift or protocol faults remain operational. Interpreted
@@ -971,3 +979,32 @@ explicit operator approval for the maintenance stop/outage, journal inspection,
 restart, and persistent test Jobs. Keep
 the v1/v2 reader-before-writer and no-v1-rollback constraints above visible
 at that approval boundary.
+
+Offline QA rounds (2026-10-05)
+------------------------------
+
+Independent NMRPeak, Magnet comparison, critical, and repeated Luna-low
+reviews checked the implementation against this note and the API/GUI evidence.
+The journal review found that a stopped-provider read-only inspection wrongly
+required the writer's free-space recovery reserve. A narrow open-path fix now
+allows inspection of otherwise valid records at zero reported free bytes,
+while writable startup still refuses the unsafe state. The regression test
+checks the retained digest and bytes and confirms writable refusal.
+
+The Magnet comparison found that the endpoint fallback integration used a
+candidate whose measurements were absent from its submitted source. It now
+loads the HF/CHF ethanol source and expected value from the model-behavior
+fixture, checks their reported facts, and submits that exact source. Added
+429, timeout, and all-endpoints-unavailable cases exercise retries, fresh
+fallback prompts, and operational exhaustion in both lanes. The note was
+revised to describe the actual v2 journal fields and the separate, independent
+process-log retention of per-endpoint events; it does not promise persisted
+retry counts, count/limit pairs, or report fingerprints.
+
+The full offline `make test` lane passed after these changes: 502 unit,
+9 API contract, 5 HTTP MockTransport integration, 6 model-behavior harness,
+and 17 repository tests. The first sandboxed run could not create localhost
+test sockets; the same suite passed with socket access. Focused journal and
+integration tests also passed. Subsequent independent reviews found no
+further meaningful issue in this diff. This evidence does not authorize or
+replace the pending production maintenance and signed live smoke above.

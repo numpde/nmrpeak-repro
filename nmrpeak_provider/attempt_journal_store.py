@@ -258,10 +258,13 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             removed_staging = self._admit_persisted_state()
             if removed_staging:
                 os.fsync(self._directory_fd)
-            self._require_recovery_space(
-                self._record_names(),
-                prospective_records=0,
-            )
+            # Inspection needs to remain available when a writer cannot safely
+            # resume because the filesystem lacks its recovery reserve.
+            if not self._read_only:
+                self._require_recovery_space(
+                    self._record_names(),
+                    prospective_records=0,
+                )
         except (OSError, ValueError, AttemptJournalStateRejected) as error:
             if self._directory_fd >= 0:
                 os.close(self._directory_fd)

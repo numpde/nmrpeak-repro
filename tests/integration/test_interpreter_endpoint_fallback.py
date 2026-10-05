@@ -6,7 +6,9 @@ simulated; NMRPeak's product constructor remains the final candidate authority.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
@@ -16,7 +18,11 @@ from unittest.mock import patch
 import httpx
 
 from nmrpeak_provider.input_interpreter import _InterpretationCapability, _value_schema_for
-from nmrpeak_provider.interpreter import interpret
+from nmrpeak_provider.interpreter import (
+    InterpreterUnavailable,
+    InterpreterUnavailableReason,
+    interpret,
+)
 from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
 from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE, HF_LIFECYCLE_LANE
 from nmrpeak_provider.openai_chat_interpreter import (
@@ -26,19 +32,32 @@ from nmrpeak_provider.openai_chat_interpreter import (
 from nmrpeak_provider.text_provenance import UserProvidedText
 
 
-_VALUE = {
-    "schema_id": "nmrpeak.structure_generation.request.v1",
-    "model_input": {
-        "formula": "C2H6O",
-        "spectra": {
-            "1H": {"peaks": [{
-                "shift_lo": "1.25", "shift_hi": "1.25", "integral": "3",
-                "multiplicity": "t", "j_hz": ["7.1"],
-            }]},
-            "13C": {"peaks": [{"shift": "58.1"}]},
-        },
-    },
-}
+_FIXTURES = Path(__file__).parents[1] / "model_behavior/fixtures"
+
+
+def _ethanol_source_and_value(lane_name: str) -> tuple[str, dict[str, object]]:
+    corpus = json.loads((_FIXTURES / "interpreter_cases.json").read_text("utf-8"))
+    scenario = next(item for item in corpus["scenarios"] if item["id"] == "ethanol_point")
+    variant = scenario["variants"][lane_name]
+    source = (_FIXTURES / variant["source_file"]).read_text("utf-8")
+    value = variant["expected_interpretation"]
+    peak = value["model_input"]["spectra"]["1H"]["peaks"][0]
+    if peak["shift_lo"] != peak["shift_hi"]:
+        raise AssertionError("The ethanol fixture must contain a point-valued proton shift")
+    source_lines = (
+        f"Molecular formula: {value['model_input']['formula']}.",
+        f"Unassigned 1H peak: {peak['shift_lo']} ppm, multiplicity "
+        f"{peak['multiplicity']}, integral {peak['integral']} H, "
+        f"J {peak['j_hz'][0]} Hz.",
+    )
+    for line in source_lines:
+        if line not in source.splitlines():
+            raise AssertionError("The integration candidate has a fact absent from its source")
+    if lane_name == "chf":
+        carbon = value["model_input"]["spectra"]["13C"]["peaks"][0]["shift"]
+        if f"Unassigned 13C peak: {carbon} ppm." not in source.splitlines():
+            raise AssertionError("The integration candidate has a carbon shift absent from its source")
+    return source, value
 
 
 def _completion(value: object, *, tool: str = "submit_interpretation") -> dict[str, object]:
@@ -55,9 +74,7 @@ def _completion(value: object, *, tool: str = "submit_interpretation") -> dict[s
 class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
     @asynccontextmanager
     async def route(self, lane, behavior):
-        value = json.loads(json.dumps(_VALUE))
-        if lane is HF_LIFECYCLE_LANE:
-            del value["model_input"]["spectra"]["13C"]
+        source, value = _ethanol_source_and_value(lane.offering.implementation_ref)
         capability = _InterpretationCapability(lane)
         expected = capability.construct_interpretation(value)
         requests: list[tuple[str, dict[str, object]]] = []
@@ -69,12 +86,18 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
             host = request.url.host
             requests.append((host, body))
             primary = host == "primary.example.test"
-            if primary and behavior == "unavailable":
+            if behavior == "all_unavailable" or (primary and behavior == "unavailable"):
                 raise httpx.ConnectError("private connection detail", request=request)
+            if primary and behavior == "timeout":
+                await asyncio.Event().wait()
+            if primary and behavior == "busy":
+                response = httpx.Response(429, json={"error": {"message": "private busy detail"}})
+                responses.append(response)
+                return response
             if primary and behavior == "reported":
                 response = httpx.Response(200, json=_completion(value, tool="report_input_problem"))
             elif primary and behavior == "constructor" and len(requests) == 1:
-                invalid = json.loads(json.dumps(value))
+                invalid = deepcopy(value)
                 invalid["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "unsupported-private-label"
                 response = httpx.Response(200, json=_completion(invalid))
             elif primary and behavior == "protocol":
@@ -104,7 +127,8 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                 with patch("nmrpeak_provider.openai_chat_interpreter.asyncio.sleep", return_value=None):
                     endpoints = bind_openai_chat_endpoints(
                         specs, OpenAIChatCallPolicy(
-                            request_timeout_seconds=1, turn_timeout_seconds=3,
+                            request_timeout_seconds=0.02 if behavior == "timeout" else 1,
+                            turn_timeout_seconds=3,
                         ),
                         http_client=client,
                         submit_interpretation_description="Copy source-supported values.",
@@ -117,7 +141,7 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
 
                     async def run():
                         return await interpret(
-                            source_text=UserProvidedText("Formula C2H6O; measured NMR peaks."),
+                            source_text=UserProvidedText(source),
                             capability=capability,
                             endpoints=endpoints.endpoints,
                             interpretation_timeout_seconds=10,
@@ -130,6 +154,8 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                     finally:
                         await endpoints.join_response_releases()
                         self.assertTrue(all(response.is_closed for response in responses))
+                        self.assertTrue(requests)
+                        self.assertEqual(requests[0][1]["messages"][2]["content"], source)
 
     async def test_constructor_repair_preserves_reasoning_and_source_fidelity(self):
         for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
@@ -165,6 +191,35 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(result.attempted_configuration_ids, ("primary", "fallback"))
                         self.assertEqual(len(failures), 1)
                         self.assertEqual(len(requests[-1][1]["messages"]), 3)
+
+    async def test_busy_and_timeout_retry_then_fallback(self):
+        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
+            for behavior in ("busy", "timeout"):
+                with self.subTest(lane=lane.offering.implementation_ref, behavior=behavior):
+                    async with self.route(lane, behavior) as (run, expected, requests, failures):
+                        result = await run()
+                        self.assertEqual(result.admitted, expected)
+                        self.assertEqual(result.attempted_configuration_ids, ("primary", "fallback"))
+                        self.assertEqual(
+                            [host for host, _ in requests],
+                            ["primary.example.test", "primary.example.test", "fallback.example.test"],
+                        )
+                        self.assertEqual(len(failures), 1)
+                        self.assertEqual(requests[-1][1]["messages"], requests[0][1]["messages"])
+
+    async def test_all_unavailable_does_not_become_input_rejection(self):
+        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
+            with self.subTest(lane=lane.offering.implementation_ref):
+                async with self.route(lane, "all_unavailable") as (run, _expected, requests, failures):
+                    with self.assertRaises(InterpreterUnavailable) as raised:
+                        await run()
+                    self.assertIs(raised.exception.reason, InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED)
+                    self.assertEqual(raised.exception.attempted_configuration_ids, ("primary", "fallback"))
+                    self.assertEqual(
+                        [host for host, _ in requests],
+                        ["primary.example.test"] * 2 + ["fallback.example.test"] * 2,
+                    )
+                    self.assertEqual(len(failures), 2)
 
 
 if __name__ == "__main__":

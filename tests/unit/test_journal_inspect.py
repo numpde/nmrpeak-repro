@@ -9,9 +9,11 @@ import unittest
 from unittest.mock import patch
 
 from nmrpeak_provider.attempt_journal import LatestDiagnostic, journal_record_bytes, journal_record_name
+from nmrpeak_provider.attempt_journal_store import AttemptJournalStateRejected, AttemptJournalStore
 from nmrpeak_provider.journal_inspect import inspect_journal
 from tests.unit.test_attempt_lifecycle import journal_directory, terminal_pending, TerminalOperation
 from tests.unit.test_attempt_journal import start_pending, active_attempt
+from tests.unit.test_attempt_journal_store import filesystem_with_available_bytes
 
 
 class JournalInspectionTests(unittest.TestCase):
@@ -93,6 +95,24 @@ class JournalInspectionTests(unittest.TestCase):
         self.assertEqual(record["operation"], "complete")
         self.assertNotIn("retained_failure", record)
         self.assertNotIn("canonical_result_base64", rendered.decode())
+
+    def test_read_only_inspection_remains_available_without_writer_recovery_space(self):
+        with journal_directory() as root:
+            record = start_pending()
+            path = self._write(root, record)
+            before = path.read_bytes()
+            with patch(
+                "nmrpeak_provider.attempt_journal_store.os.fstatvfs",
+                return_value=filesystem_with_available_bytes(0),
+            ):
+                with self.assertRaises(AttemptJournalStateRejected):
+                    AttemptJournalStore(root, maximum_records=1)
+                document = json.loads(inspect_journal(root))
+            inspected, = document["records"]
+            self.assertEqual(inspected["record_digest"], "sha256:" + sha256(before).hexdigest())
+            self.assertEqual(inspected["phase"], "start_pending")
+            self.assertEqual(inspected["delivery"], "unconfirmed")
+            self.assertEqual(path.read_bytes(), before)
 
     def test_missing_and_malformed_journals_are_rejected_without_creation(self):
         with journal_directory() as root:
