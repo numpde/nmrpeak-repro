@@ -1214,3 +1214,74 @@ selection, observation, failure, completion, result-list, result-read, and
 provenance checks against the deployed stack. The running provider and runners
 still use the previously qualified 7ae3bff images, so this is not live execution
 evidence for the later provider-runtime event changes.
+
+Hardened-runtime rollout qualification (2026-10-06)
+---------------------------------------------------
+
+The provider and both runners were rebuilt from clean commit
+`cef5c6bda687b1f190d4c0385b09237a27f8df38`, with dependency network traffic
+bound to `wlp10s0`. The reviewed deployment plan had SHA-256
+`f87719bd5453ebd2b1645dc1acbb575efd8d80025420cfd4158a104060afa599`.
+Independent structural review found that it changed only the provider and
+runner image identities and their derived topology, frozen-generation, and
+runtime-config identities. Checkpoints, generation scopes, contracts, endpoint,
+timeouts, resources, mounts, journal, credentials, networking, and security
+controls remained unchanged.
+
+The operator observed a clean stop and a stopped-writer journal inspection with
+no retained records or unresolved obligations. The guarded startup accepted the
+exact reviewed plan. Its final status reported the provider healthy with image
+`sha256:61330e4f809134ae9203cec52548df2d7d9aaf0191193ebb0a6abd34678864e8`,
+and both runners running with HF image
+`sha256:1444cd2a44c36720b2421b89bf624e9c2c7d38c0d0500364be6e96779eb296fa`,
+and CHF image
+`sha256:3fa559ebba960ce5df7d1533a06ea38bc05671b86baf6f176af2668336e290ed`.
+The contemporaneous startup logs reported zero retained Attempts; both runners
+loaded their reviewed checkpoints and announced ready without an error. These
+shutdown, journal, health, and startup-log statements are operator observations;
+no transcript was committed.
+
+The committed live harness ran from exact clean snapshot
+`sha256:0fed8271b46a2127d088fce9d5d7888c5b988e91a309c4a2dd66aebce7d85261`.
+Read-only observation first reconfirmed all four pre-rollout Jobs and their
+exact public evidence. Fresh failure Jobs then exercised the new runtime. HF
+Job `job:04121dfcbc7038669986aa9556bcbe40f9d1e69cddc82525103dfc0698d4e75a`
+reached Attempt
+`execution_attempt:sha256:ca2e9fcfa85cc185e2a9b05954c2e49514bfeaf09790dab0da1df2650e2e9fe6`
+with `input_rejected` and 665 measured tokens. CHF Job
+`job:d4a931a196123848f88d15a63b390efdc19d64fc4d347ad8b951928aab36db3b`
+reached Attempt
+`execution_attempt:sha256:6ee58540b31b473c116f5bb1a6febcf1447de3cac1cac15c390853f1d96ee8ed`
+with the same code and 886 measured tokens. The provider logs used bounded,
+typed `preparation_failure_retained` events. In the inspected log window, those
+events did not expose the complete input or arbitrary exception text. This is
+also an operator observation rather than a retained full-log assertion.
+
+Fresh positive Jobs proved both real model paths and bound the results to the
+new runner inputs. HF Job
+`job:a884ed2bda5f96d44bbc120331a068ea5d2e4a197db7334396b056a4bd6f12e3`
+reached Attempt
+`execution_attempt:sha256:161afdb330600c0259d9b7f8c438aae27fbdea11caaf68c8971e68a1740a6673`
+and published Result
+`analysis_result:sha256:fca2631b21d1cc139a9a76e9a6e08b45e9e7564c3e9ecfb0672b569b4adf2659`.
+CHF Job
+`job:e354f31a112556376e51dcbcffc35d7988e0c422eec68a96ca41da92ee21bd8d`
+reached Attempt
+`execution_attempt:sha256:1b781e8413f3716babe50b0c4674ede6ec83eee392886fe2e80a26a22098518e`
+and published Result
+`analysis_result:sha256:676cf937d9e357368e3aa578b574717a8c9d6b1630121d5ddc4d5bc02c2c219e`.
+Each Result contained ten candidates. Provenance matched HF image input
+`sha256:0a2dedab014ec43c1863cf83f2eff2d6ac078812a6b780a602cf2ba9e39006c2`
+and CHF image input
+`sha256:66107c47c571baea66b8bb25ad3f89deb84b8f94ce6e1a6c7ffb7a3c21fbf74c`,
+along with the unchanged reviewed checkpoint identities. This closes the prior
+qualification caveat: the typed message-propagation runtime is now deployed and
+has processed fresh public failure and success Attempts on both lanes.
+The owner-only failure and success harness states were retained with SHA-256
+`d5772db938f89e4367d8ed96fad50236ff3c25253e7cd42a5bf27c617ef3c3dd`
+and `1b493e8789c35c4507904f06b52680160310623bbc394bc071b9d227ccf9e44e`,
+respectively. They retain the exact Job-create body bytes, including model
+inputs, extracted public evidence, and the reviewed artifact expectations used
+during successful signed observations. They contain no credential, signature,
+result body, or response transcript and do not independently prove the local
+Docker status or log observations.
