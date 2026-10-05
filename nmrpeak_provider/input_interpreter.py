@@ -13,6 +13,7 @@ import httpx
 from .canonical_json import canonical_json_bytes
 from .interpreter import (
     InterpreterCandidateConstructionRejected,
+    InterpreterEndpointFailure,
     InterpretationCandidateRejected,
     InterpreterProtocolError,
     InterpreterUnavailable,
@@ -32,7 +33,11 @@ from .product_input import (
     InputRejectionReason,
     parse_job_input,
 )
-from .provider_events import InterpreterEndpointFailed
+from .provider_events import (
+    InterpreterEndpointFailed,
+    InterpreterRoute,
+    render_provider_event,
+)
 from .runner_session import (
     RunnerInputRejected,
     RunnerSession,
@@ -200,7 +205,7 @@ class InputInterpreter:
             )
             return outcome
 
-        def report_endpoint_failure(event: InterpreterEndpointFailed) -> None:
+        def report_endpoint_failure(event: InterpreterEndpointFailure) -> None:
             _report_endpoint_failure(
                 event,
                 execution_attempt_ref=execution_attempt_ref,
@@ -227,25 +232,24 @@ class InputInterpreter:
                     admit_interpretation=admit_interpretation,
                 )
             except InterpreterUnavailable as unavailable:
-                attempted = ",".join(
-                    unavailable.attempted_configuration_ids
-                ) or "none"
                 _LOG.warning(
-                    "Cannot interpret Attempt %s: %s; attempted endpoints: %s. "
-                    "No runner request was validated.",
-                    execution_attempt_ref,
-                    unavailable.reason.value,
-                    attempted,
+                    "%s",
+                    render_provider_event(InterpreterRoute(
+                        execution_attempt_ref=execution_attempt_ref,
+                        disposition=unavailable.reason.value,
+                        configuration_id=None,
+                        attempted_configuration_ids=unavailable.attempted_configuration_ids,
+                    )),
                 )
                 raise
             finally:
                 await endpoints.join_response_releases()
-        _LOG.info(
-            "Interpreter accepted endpoint %s after route %s; attempt=%s",
-            result.configuration_id,
-            ",".join(result.attempted_configuration_ids),
-            execution_attempt_ref,
-        )
+        _LOG.info("%s", render_provider_event(InterpreterRoute(
+            execution_attempt_ref=execution_attempt_ref,
+            disposition="accepted",
+            configuration_id=result.configuration_id,
+            attempted_configuration_ids=result.attempted_configuration_ids,
+        )))
         return result.admitted
 
 
@@ -295,29 +299,21 @@ def _admit_source_text(source: bytes) -> UserProvidedText:
 
 
 def _report_endpoint_failure(
-    event: InterpreterEndpointFailed,
+    event: InterpreterEndpointFailure,
     *,
     execution_attempt_ref: str,
 ) -> None:
-    http_facts = "".join(
-        f" {name}={value}"
-        for name, value in (
-            ("status", event.http_status),
-            ("type", event.error_type),
-            ("code", event.error_code),
-            ("request_id", event.request_id),
-        )
-        if value is not None
-    )
-    _LOG.warning(
-        "Interpreter endpoint %s failed while preparing Attempt %s: %s/%s%s%s",
-        event.configuration_id,
-        execution_attempt_ref,
-        event.failure_kind,
-        event.failure_reason,
-        f"/{event.failure_state}" if event.failure_state is not None else "",
-        http_facts,
-    )
+    _LOG.warning("%s", render_provider_event(InterpreterEndpointFailed(
+        execution_attempt_ref=execution_attempt_ref,
+        configuration_id=event.configuration_id,
+        failure_kind=event.failure_kind,
+        failure_reason=event.failure_reason,
+        failure_state=event.failure_state,
+        http_status=event.http_status,
+        error_type=event.error_type,
+        error_code=event.error_code,
+        request_id=event.request_id,
+    )))
 
 
 __all__ = [

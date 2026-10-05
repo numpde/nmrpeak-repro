@@ -54,6 +54,7 @@ from .interpreter import (
     CandidateConstructionExhausted,
     InterpretationRejected,
     InterpreterUnavailable,
+    InterpreterUnavailableReason,
     ReportedInputProblem,
 )
 from .runner_session import (
@@ -95,6 +96,13 @@ from .provider_requests import (
     prepare_execution_attempt_start,
     prepare_job_input_read,
     prepare_jobs_list,
+)
+from .provider_events import (
+    AttemptConditionConfirmed,
+    AttemptConditionUnconfirmed,
+    PreparationFailurePolicyDrift,
+    PreparationFailureRetained,
+    render_provider_event,
 )
 from .product_input import (
     InputIssue,
@@ -725,6 +733,12 @@ def prepare_execution(
         progress,
         api.send(progress),
     )
+    clearing_interpreter_condition = (
+        record.latest_diagnostic is not None
+        and record.latest_diagnostic.kind == "interpreter_unavailable"
+    )
+    if clearing_interpreter_condition:
+        _log_condition_outcome(record, "interpreter", None, progress_outcome)
     if type(progress_outcome) is not AttemptMutationCommitted:
         return progress_outcome
 
@@ -841,6 +855,7 @@ def prepare_execution(
                 ),
             )
             journal.replace(record, held)
+            _report_interpreter_condition(api, held, unavailable.reason)
             return InputInterpretationUnavailable(unavailable)
     _LOG.info(
         'Runner input validated; job=%s attempt=%s',
@@ -865,6 +880,117 @@ def _is_structured_source(raw: bytes) -> bool:
             expected="printable UTF-8 text after JSON whitespace",
         ))
     return prefix.startswith((b"{", b"["))
+
+
+def _report_interpreter_condition(
+    api: ProviderApiClient,
+    record: ActiveAttempt,
+    reason: InterpreterUnavailableReason,
+) -> None:
+    condition = {
+        InterpreterUnavailableReason.PROMPT_UNAVAILABLE:
+            "interpreter_prompt_unavailable",
+        InterpreterUnavailableReason.DEADLINE_EXCEEDED:
+            "interpreter_deadline_exceeded",
+        InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED:
+            "interpreter_endpoints_exhausted",
+    }[reason]
+    _report_progress_condition(api, record, "preparing", "interpreter", condition)
+
+
+def _report_progress_condition(api, record, phase, context, condition) -> None:
+    command = prepare_execution_attempt_progress(
+        execution_attempt_ref=record.execution_attempt_ref, phase=phase,
+        condition_code=condition,
+    )
+    try:
+        observed = interpret_execution_attempt_progress(command, api.send(command))
+    except Exception as error:
+        evidence_type = type(error).__name__
+        if len(evidence_type.encode("utf-8", errors="replace")) > 256:
+            evidence_type = "unclassified_exception"
+        _LOG.warning("%s", render_provider_event(AttemptConditionUnconfirmed(
+            job_ref=record.job_ref,
+            execution_attempt_ref=record.execution_attempt_ref,
+            context=context,
+            condition_code=condition,
+            outcome_type="exception",
+            evidence_type=evidence_type,
+        )))
+        return
+    _log_condition_outcome(record, context, condition, observed)
+
+
+def _log_condition_outcome(record, context, condition, observed) -> None:
+    if type(observed) is AttemptMutationCommitted:
+        _LOG.info("%s", render_provider_event(AttemptConditionConfirmed(
+            job_ref=record.job_ref,
+            execution_attempt_ref=record.execution_attempt_ref,
+            context=context,
+            condition_code=condition,
+            updated_at=observed.receipt.updated_at,
+        )))
+    else:
+        _LOG.warning("%s", render_provider_event(
+            _condition_unconfirmed_event(record, context, condition, observed)
+        ))
+
+
+def _condition_unconfirmed_event(
+    record: ActiveAttempt,
+    context: str,
+    condition: str | None,
+    observed: AttemptMutationNotCommitted | AttemptMutationCommitPossible,
+) -> AttemptConditionUnconfirmed:
+    evidence = observed.evidence
+    status = None
+    reason = None
+    code = None
+    delivery = None
+    problem_type = None
+    problem_title = None
+    transport_request_id = None
+    body_request_id = None
+    if type(evidence) is ProviderProblem:
+        status, code = evidence.status, evidence.code
+        problem_type, problem_title = evidence.problem_type, evidence.title
+        transport_request_id = evidence.transport_request_id
+        body_request_id = evidence.body_request_id
+    elif type(evidence) is ProviderProblemRejected:
+        status, reason = evidence.status, evidence.reason.value
+        if evidence.diagnostic is not None:
+            problem_type = evidence.diagnostic.problem_type
+            problem_title = evidence.diagnostic.title
+            transport_request_id = evidence.diagnostic.header_request_id
+            body_request_id = evidence.diagnostic.body_request_id
+    elif type(evidence) is ProviderRequestUnavailable:
+        status, delivery = evidence.status, evidence.delivery.value
+    elif type(evidence) is ProviderResponseRejected:
+        status, reason, delivery = (
+            evidence.status, evidence.reason.value, evidence.delivery.value,
+        )
+    elif type(evidence) is ProviderTlsRejected:
+        delivery = evidence.delivery.value
+    elif type(evidence) is ProviderSuccessRejected:
+        reason = evidence.reason.value
+    else:
+        raise AssertionError("unhandled interpreter condition evidence")
+    return AttemptConditionUnconfirmed(
+        job_ref=record.job_ref,
+        execution_attempt_ref=record.execution_attempt_ref,
+        context=context,
+        condition_code=condition,
+        outcome_type=type(observed).__name__,
+        evidence_type=type(evidence).__name__,
+        http_status=status,
+        reason=reason,
+        code=code,
+        delivery=delivery,
+        problem_type=problem_type,
+        problem_title=problem_title,
+        transport_request_id=transport_request_id,
+        body_request_id=body_request_id,
+    )
 
 
 def observe_attempt(
@@ -1071,22 +1197,8 @@ def _report_terminal_condition(api, record, automation):
         return
     phase = "preparing" if record.local_phase is LocalExecutionPhase.PRE_EXECUTION else "running"
     condition = terminal_report_condition(automation)
-    command = prepare_execution_attempt_progress(execution_attempt_ref=record.execution_attempt_ref,
-                                                 phase=phase, condition_code=condition)
-    # Native HTTP deadlines bound this single attempt. Never enqueue stale progress,
-    # change terminal certainty, or let observation failure replace its outcome.
-    try:
-        observed = interpret_execution_attempt_progress(command, api.send(command))
-    except Exception as error:
-        _LOG.warning("Attempt %s: condition %s delivery is unconfirmed (%s); terminal recovery is unchanged.",
-                     record.execution_attempt_ref, condition, type(error).__name__)
-        return
-    if type(observed) is AttemptMutationCommitted:
-        _LOG.info("Attempt %s: API accepted condition %s at %s; this does not confirm terminal delivery.",
-                  record.execution_attempt_ref, condition, observed.receipt.updated_at)
-    else:
-        _LOG.warning("Attempt %s: condition %s delivery is unconfirmed; terminal recovery is unchanged. Evidence: %r",
-                     record.execution_attempt_ref, condition, observed)
+    # This disposable progress send never changes terminal delivery certainty.
+    _report_progress_condition(api, record, phase, "terminal_recovery", condition)
 
 
 def _deliver_terminal(
@@ -1378,8 +1490,23 @@ def _retain_preparation_failure(
     path: str = "",
     route: tuple[str, ...] = (),
 ) -> InputFailurePending:
-    publication = policy.resolve(failure)
+    try:
+        publication = policy.resolve(failure)
+    except FailureContractError as error:
+        _LOG.error("%s", render_provider_event(PreparationFailurePolicyDrift(
+            job_ref=record.job_ref,
+            execution_attempt_ref=record.execution_attempt_ref,
+            failure_kind=failure.kind,
+            reason=error.reason,
+        )))
+        raise
     if publication is None:
+        _LOG.error("%s", render_provider_event(PreparationFailurePolicyDrift(
+            job_ref=record.job_ref,
+            execution_attempt_ref=record.execution_attempt_ref,
+            failure_kind=failure.kind,
+            reason="terminal_failure_has_no_publication",
+        )))
         raise FailureContractError("terminal_preparation_failure_has_local_policy")
     prepared = prepare_execution_attempt_fail(
         execution_attempt_ref=record.execution_attempt_ref,
@@ -1407,16 +1534,15 @@ def _retain_preparation_failure(
     )
     terminal = retain_terminal_command(diagnosed, prepared)
     journal.replace(record, terminal)
-    _LOG.info(
-        'Preparation failure retained for API delivery; job=%s attempt=%s kind=%s code=%s reason=%s path=%s route=%s',
-        record.job_ref,
-        record.execution_attempt_ref,
-        failure.kind,
-        publication.failure_code,
-        reason,
-        path or "root",
-        ",".join(route) or "none",
-    )
+    _LOG.info("%s", render_provider_event(PreparationFailureRetained(
+        job_ref=record.job_ref,
+        execution_attempt_ref=record.execution_attempt_ref,
+        failure_kind=failure.kind,
+        failure_code=publication.failure_code,
+        reason=reason,
+        path=path or "root",
+        endpoint_route=route,
+    )))
     return InputFailurePending(terminal)
 
 

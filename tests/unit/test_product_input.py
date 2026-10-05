@@ -52,6 +52,13 @@ def encoded(value: object) -> bytes:
 
 
 class ProductInputTests(unittest.TestCase):
+    def test_every_input_rejection_reason_has_a_public_source_renderer(self) -> None:
+        for reason in InputRejectionReason:
+            with self.subTest(reason=reason):
+                message = render_source_issue(InputIssue(reason), structured=True)
+                self.assertTrue(message.startswith("Input rejected"))
+                self.assertLessEqual(len(message), 1024)
+
     def test_issue_expected_text_is_product_owned_before_public_rendering(self) -> None:
         with self.assertRaisesRegex(ValueError, "product-owned"):
             InputIssue(

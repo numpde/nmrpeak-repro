@@ -17,7 +17,6 @@ from pathlib import Path
 import re
 from typing import Generic, Protocol, TypeVar
 
-import nmrpeak_provider.provider_events as _events
 from nmrpeak_provider.failure_message import is_failure_message
 from nmrpeak_provider.interpreter_policy import MAX_INTERPRETER_ENDPOINTS
 from nmrpeak_provider.runner_protocol import (
@@ -53,6 +52,20 @@ REVIEWED_ENDPOINT_ERROR_CODES = frozenset({
 
 PromptMessage = dict[str, object]
 InterpreterPrompt = list[PromptMessage]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InterpreterEndpointFailure:
+    """Validated endpoint facts awaiting caller-owned operator correlation."""
+
+    configuration_id: str
+    failure_kind: str
+    failure_reason: str
+    failure_state: str | None = None
+    http_status: int | None = None
+    error_type: str | None = None
+    error_code: str | None = None
+    request_id: str | None = None
 
 
 class InterpreterProtocolError(ValueError):
@@ -289,7 +302,7 @@ async def interpret(
     capability: InterpretationCapability[Candidate],
     endpoints: tuple[InterpreterEndpoint, ...],
     interpretation_timeout_seconds: float,
-    report_endpoint_failure: Callable[[_events.InterpreterEndpointFailed], None],
+    report_endpoint_failure: Callable[[InterpreterEndpointFailure], None],
     admit_interpretation: InterpretationAdmission[Candidate, Admitted],
 ) -> InterpretationResult[Admitted]:
     """Return one admitted interpretation using bounded repair and fallback.
@@ -512,7 +525,7 @@ async def interpret(
 
 
 def _report_endpoint_failure(
-    report: Callable[[_events.InterpreterEndpointFailed], None],
+    report: Callable[[InterpreterEndpointFailure], None],
     configuration_id: str,
     *,
     failure_kind: str,
@@ -526,7 +539,7 @@ def _report_endpoint_failure(
     """Project validated endpoint identity and closed facts for its destination."""
 
     report(
-        _events.InterpreterEndpointFailed(
+        InterpreterEndpointFailure(
             configuration_id=configuration_id,
             failure_kind=failure_kind,
             failure_reason=failure_reason,

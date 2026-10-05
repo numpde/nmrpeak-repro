@@ -7,6 +7,7 @@ from dataclasses import replace
 from hashlib import sha256
 import unittest
 
+from nmrpeak_provider import attempt_journal
 from nmrpeak_provider.attempt_journal import (
     ActiveAttempt,
     LatestDiagnostic,
@@ -31,6 +32,8 @@ from nmrpeak_provider.attempt_journal import (
     retain_terminal_command,
 )
 from nmrpeak_provider.canonical_json import canonical_json_bytes
+from nmrpeak_provider.interpreter import InterpreterUnavailableReason
+from nmrpeak_provider.product_input import InputRejectionReason
 from nmrpeak_provider.provider_https import ProviderOperation
 from nmrpeak_provider.provider_requests import (
     prepare_execution_attempt_complete,
@@ -42,6 +45,7 @@ from nmrpeak_provider.provider_success import (
     ExecutionAttemptStarted,
     JobState,
 )
+from nmrpeak_provider.runner_protocol import RunnerRejectionReason
 
 
 ATTEMPT_REF = "execution_attempt:sha256:" + "a" * 64
@@ -49,6 +53,16 @@ OTHER_ATTEMPT_REF = "execution_attempt:sha256:" + "b" * 64
 
 
 class AttemptJournalRecordTests(unittest.TestCase):
+    def test_persisted_diagnostic_reason_catalog_is_exhaustive(self) -> None:
+        expected = {
+            *(reason.value for reason in InputRejectionReason),
+            *(reason.value for reason in RunnerRejectionReason),
+            *(reason.value for reason in InterpreterUnavailableReason),
+            "model_report",
+            "runner_candidate_rejected",
+        }
+        self.assertEqual(attempt_journal._DIAGNOSTIC_REASONS, expected)
+
     def test_legacy_v1_record_bytes_and_digest_are_unchanged(self) -> None:
         active = active_attempt()
         raw = journal_record_bytes(active)

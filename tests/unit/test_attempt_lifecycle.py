@@ -59,6 +59,7 @@ from nmrpeak_provider.attempt_lifecycle import (
     execute_prepared,
     observe_attempt,
     prepare_execution,
+    _report_interpreter_condition,
     reconcile_record,
     run_admitted_job,
     run_recovery_record,
@@ -676,9 +677,12 @@ class AttemptLifecycleTests(unittest.TestCase):
             "If you meant prose beginning with '{' or '[', prefix it with ordinary words.",
         )
         diagnostic = "\n".join(logs.output)
-        self.assertIn("reason=invalid_structure", diagnostic)
-        self.assertIn(f"job={active.job_ref}", diagnostic)
-        self.assertIn(f"attempt={active.execution_attempt_ref}", diagnostic)
+        self.assertIn("reason='invalid_structure'", diagnostic)
+        self.assertIn("path='root'", diagnostic)
+        self.assertIn(f"job_ref='{active.job_ref}'", diagnostic)
+        self.assertIn(
+            f"execution_attempt_ref='{active.execution_attempt_ref}'", diagnostic
+        )
         self.assertNotIn("forged event", diagnostic)
 
     def test_freeform_control_rejection_names_the_source_admission_cause(self) -> None:
@@ -721,7 +725,10 @@ class AttemptLifecycleTests(unittest.TestCase):
     def test_interpreter_unavailability_keeps_pre_execution_retryable(self) -> None:
         canonical_input = b"Formula C2H6O with proton and carbon peaks."
         active = active_attempt(canonical_input)
-        api = CapturingApi(success_response(progress_receipt()))
+        api = CapturingApi(
+            success_response(progress_receipt()),
+            success_response(progress_receipt(condition_code="interpreter_endpoints_exhausted")),
+        )
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(active))
@@ -753,6 +760,75 @@ class AttemptLifecycleTests(unittest.TestCase):
             InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
         )
         self.assertEqual(outcome.evidence.attempted_configuration_ids, ("fake",))
+        self.assertEqual(
+            [json.loads(request.body)["condition_code"] for request in api.requests],
+            [None, "interpreter_endpoints_exhausted"],
+        )
+
+    def test_every_interpreter_unavailability_reason_reports_its_condition(self) -> None:
+        active = active_attempt(b"freeform")
+        cases = (
+            (InterpreterUnavailableReason.PROMPT_UNAVAILABLE,
+             "interpreter_prompt_unavailable"),
+            (InterpreterUnavailableReason.DEADLINE_EXCEEDED,
+             "interpreter_deadline_exceeded"),
+            (InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
+             "interpreter_endpoints_exhausted"),
+        )
+        self.assertEqual({reason for reason, _condition in cases}, set(InterpreterUnavailableReason))
+        for reason, condition in cases:
+            with self.subTest(reason=reason), self.assertLogs(
+                "nmrpeak_provider.attempt_lifecycle", level="INFO"
+            ) as logs:
+                api = CapturingApi(success_response(progress_receipt(condition_code=condition)))
+                _report_interpreter_condition(api, active, reason)
+            self.assertEqual(json.loads(api.requests[0].body)["condition_code"], condition)
+            rendered = "\n".join(logs.output)
+            self.assertIn("provider_event='attempt_condition_confirmed'", rendered)
+            self.assertIn("context='interpreter'", rendered)
+            self.assertIn(f"condition_code='{condition}'", rendered)
+
+    def test_unconfirmed_interpreter_condition_preserves_delivery_uncertainty(self) -> None:
+        active = active_attempt(b"freeform")
+        cases = (
+            (RequestDelivery.NOT_SENT, "AttemptMutationNotCommitted", "not_sent"),
+            (RequestDelivery.POSSIBLE, "AttemptMutationCommitPossible", "possible"),
+        )
+        for delivery, outcome_type, rendered_delivery in cases:
+            with self.subTest(delivery=delivery), self.assertLogs(
+                "nmrpeak_provider.attempt_lifecycle", level="WARNING"
+            ) as logs:
+                api = CapturingApi(ProviderRequestUnavailable(
+                    delivery, cause=RuntimeError("private transport detail")
+                ))
+                _report_interpreter_condition(
+                    api, active, InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED
+                )
+            rendered = "\n".join(logs.output)
+            self.assertIn("provider_event='attempt_condition_unconfirmed'", rendered)
+            self.assertIn("context='interpreter'", rendered)
+            self.assertIn(f"outcome_type='{outcome_type}'", rendered)
+            self.assertIn("evidence_type='ProviderRequestUnavailable'", rendered)
+            self.assertIn(f"delivery='{rendered_delivery}'", rendered)
+            self.assertNotIn("private transport detail", rendered)
+
+    def test_condition_reporting_contains_a_hostile_exception_type(self) -> None:
+        hostile_error = type("X" * 5000, (Exception,), {})()
+
+        class RaisingApi:
+            def send(self, _request: object) -> object:
+                raise hostile_error
+
+        with self.assertLogs(
+            "nmrpeak_provider.attempt_lifecycle", level="WARNING"
+        ) as logs:
+            _report_interpreter_condition(
+                RaisingApi(), active_attempt(b"freeform"),
+                InterpreterUnavailableReason.DEADLINE_EXCEEDED,
+            )
+        rendered = "\n".join(logs.output)
+        self.assertIn("evidence_type='unclassified_exception'", rendered)
+        self.assertNotIn("X" * 100, rendered)
 
     def test_reported_input_problem_uses_existing_terminal_authority(self) -> None:
         canonical_input = b"Proton and carbon peak lists without a molecular formula."
@@ -2188,12 +2264,14 @@ def valid_hf_input() -> bytes:
     ).encode("utf-8")
 
 
-def progress_receipt(*, phase: str = "preparing") -> dict[str, object]:
+def progress_receipt(
+    *, phase: str = "preparing", condition_code: str | None = None
+) -> dict[str, object]:
     return {
         "schema_id": "nmr.provider.execution_attempt_progress_response.v1",
         "execution_attempt_ref": "execution_attempt:sha256:" + "a" * 64,
         "phase": phase,
-        "condition_code": None,
+        "condition_code": condition_code,
         "updated_at": "2026-08-24T12:01:00Z",
     }
 

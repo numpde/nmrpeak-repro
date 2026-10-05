@@ -1108,3 +1108,43 @@ remains unobserved as a natural live model choice and must not be described as
 live coverage. This limitation does not weaken the typed downstream path,
 which is covered through signed API and GUI publication with deterministic
 candidate injection and through the real interpreter/session/TLS path.
+
+Message-boundary and test-execution hardening (2026-10-05)
+---------------------------------------------------------
+
+The follow-up implementation copies and narrows Magnet's closed provider-event
+catalogue and renderer. NMRPeak now owns explicit, immutable events for
+interpreter endpoint failures and route selection, preparation policy drift
+and retained failures, and Attempt condition confirmation or uncertainty.
+Every event fact is a reviewed scalar or bounded tuple; the renderer rejects
+foreign event types, catalogue omissions, duplicate identities, subclass
+overrides, invalid optional-field contracts, wrong scalar types, and oversized
+text. Endpoint failure facts remain an internal interpreter DTO until the
+caller adds the required execution Attempt correlation. API condition
+failures project only admitted status, reason, code, delivery, problem type,
+title, and request identifiers. Arbitrary outcome and exception repr strings
+do not cross this operator boundary.
+
+Interpreter unavailability is retained in the v2 Attempt journal before its
+best-effort condition update. All three closed reasons map to distinct API
+condition codes. The next confirmed preparing update clears that condition;
+both confirmation and uncertainty use the same typed event path. Terminal
+recovery condition updates now share that implementation and identify their
+`terminal_recovery` context without changing terminal delivery certainty.
+
+The default test entry points now execute in a pinned, read-only container
+with a minimal exact Git snapshot. They reject tracked sensitive test inputs,
+nested Git links, revision drift, and Make variable command injection. Opt-in
+live tests accept an explicit endpoint and credential path while keeping both
+out of the image. Image downloads can be forced through a named wireless
+interface; both TCP connections and UDP/TCP DNS queries are bound to that
+interface. Repository tests cover the snapshot adversarial cases, container
+posture, selection handling, WLAN rejection, and DNS binding.
+
+The complete containerized unit suite passed with 527 tests after the typed
+condition consolidation. No new signed live API operation was performed in
+this follow-up because the demo credential was unavailable locally; the
+opt-in live harness is formalized but that is not live coverage. Execution
+and result-stage process-fatal reporting and the older terminal-recovery
+summary remain candidates for the next typed-event increment; their current
+behavior is not represented as part of this completed boundary.
