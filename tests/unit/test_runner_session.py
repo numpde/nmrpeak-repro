@@ -25,7 +25,7 @@ from nmrpeak_provider.hf_runner_protocol import (
     HF_RUNNER_CONTRACT_ID,
 )
 from nmrpeak_provider.runner_protocol import (
-    RUNNER_REJECTION_DIAGNOSTICS,
+    runner_rejection_diagnostic,
     ReadyFrame,
     RetireFrame,
     RunnerRejectionReason,
@@ -251,9 +251,10 @@ class RunnerSessionTests(unittest.TestCase):
         self.assertIsInstance(rejection, RunnerInputRejected)
         assert isinstance(rejection, RunnerInputRejected)
         self.assertEqual(rejection.reason, RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED)
+        self.assertEqual(rejection.token_count, 512)
         self.assertEqual(
             rejection.message,
-            RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED],
+            runner_rejection_diagnostic(RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512),
         )
         accepted = validate(session)
         self.assertIsInstance(accepted, ValidatedRunnerRequest)

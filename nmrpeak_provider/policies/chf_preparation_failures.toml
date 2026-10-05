@@ -21,4 +21,4 @@ forward_failure_message = true
 [failures.candidate_runner_rejected]
 submit_failure_to_api = true
 failure_code = "interpretation_failed"
-failure_message = "The interpreter could not produce input accepted by this model's runner after all correction routes. Generation did not start. This does not prove a defect in the submitted description."
+forward_failure_message = true

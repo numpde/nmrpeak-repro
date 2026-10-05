@@ -42,7 +42,12 @@ from .failure_contract import (
     PreparationFailurePolicy,
 )
 from ._nmr_api_failures import terminal_report_condition
-from .input_issue_message import render_candidate_failure, render_source_issue
+from .input_issue_message import (
+    render_candidate_failure,
+    render_candidate_runner_failure,
+    render_direct_runner_rejection,
+    render_source_issue,
+)
 from .preparation_failure_policy import FailureKind
 from .lifecycle_lane import LifecycleLane
 from .interpreter import (
@@ -58,7 +63,7 @@ from .runner_session import (
     GeneratedRunnerCandidates,
     ValidatedRunnerRequest,
 )
-from .runner_protocol import RunnerRejectionReason, RUNNER_REJECTION_DIAGNOSTICS
+from .runner_protocol import RunnerRejectionReason
 from .provider_api import ProviderApiClient
 from .provider_https import (
     ProviderHttpResponse,
@@ -757,7 +762,7 @@ def prepare_execution(
                 ClassifiedPreparationFailure(
                     FailureKind.DIRECT_RUNNER_REJECTED.value,
                     ProviderDiagnosticText(
-                        RUNNER_REJECTION_DIAGNOSTICS[validated.reason]
+                        render_direct_runner_rejection(validated.token_count)
                     ),
                 ),
                 validated.reason.value,
@@ -814,7 +819,12 @@ def prepare_execution(
         except InterpretationRejected as rejection:
             return _retain_preparation_failure(
                 journal, record, lane.failure_policy,
-                ClassifiedPreparationFailure(FailureKind.CANDIDATE_RUNNER_REJECTED.value),
+                ClassifiedPreparationFailure(
+                    FailureKind.CANDIDATE_RUNNER_REJECTED.value,
+                    ProviderDiagnosticText(
+                        render_candidate_runner_failure(rejection.token_count)
+                    ),
+                ),
                 "runner_candidate_rejected",
                 route=rejection.attempted_configuration_ids,
             )

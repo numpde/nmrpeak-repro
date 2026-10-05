@@ -6,6 +6,11 @@ import re
 
 from .failure_message import is_failure_message
 from .product_input import MAX_JOB_INPUT_BYTES, InputIssue, InputRejectionReason
+from .runner_protocol import (
+    MAXIMUM_TOKENIZED_INPUT_LENGTH,
+    RunnerRejectionReason,
+    runner_rejection_diagnostic,
+)
 
 
 _SAFE_EXPECTED = re.compile(r"[A-Za-z0-9 ,;:_/\-]+", re.ASCII)
@@ -116,4 +121,39 @@ def render_candidate_failure(issue: InputIssue) -> str:
     )
     if not is_failure_message(message):
         raise ValueError("rendered candidate failure violates the Attempt contract")
+    return message
+
+
+def render_direct_runner_rejection(token_count: int) -> str:
+    """Publish a measured direct-input constraint without runner-authored prose."""
+
+    runner_rejection_diagnostic(
+        RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, token_count
+    )
+    message = (
+        f"Input rejected: this complete input produced {token_count} tokenizer tokens; "
+        f"this model accepts at most {MAXIMUM_TOKENIZED_INPUT_LENGTH}. "
+        "Generation did not start. Preserve all measurements when revising the "
+        "Job; contact the provider if the complete input cannot fit."
+    )
+    if not is_failure_message(message):
+        raise ValueError("rendered runner rejection violates the Attempt contract")
+    return message
+
+
+def render_candidate_runner_failure(token_count: int) -> str:
+    """Name the last measured candidate without asserting a source defect."""
+
+    runner_rejection_diagnostic(
+        RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, token_count
+    )
+    message = (
+        "Interpretation failed: the last candidate produced "
+        f"{token_count} tokenizer tokens; this model accepts at most "
+        f"{MAXIMUM_TOKENIZED_INPUT_LENGTH}. All correction routes were tried. "
+        "Generation did not start. This does not prove the submitted description "
+        "exceeds the limit. Keep every measurement when revising the Job."
+    )
+    if not is_failure_message(message):
+        raise ValueError("rendered candidate runner failure violates the Attempt contract")
     return message

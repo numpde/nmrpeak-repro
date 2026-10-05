@@ -81,6 +81,7 @@ def _parse_rule(kind: FailureKind, value: object) -> PreparationFailureRule:
             FailureKind.DIRECT_SOURCE_ISSUE,
             FailureKind.DIRECT_RUNNER_REJECTED,
             FailureKind.CANDIDATE_ISSUE,
+            FailureKind.CANDIDATE_RUNNER_REJECTED,
         }:
             raise ValueError(f"unreviewed forwarding for [{kind.value}]")
         return PreparationFailureRule(

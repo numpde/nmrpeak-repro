@@ -60,6 +60,10 @@ class ChfRuntimeTests(unittest.TestCase):
                     RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT
                     if token_count == 0 else RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
                 )
+                self.assertEqual(
+                    raised.exception.token_count,
+                    token_count if token_count == 512 else None,
+                )
 
 
 class RecordingStack:

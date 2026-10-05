@@ -27,6 +27,7 @@ from .runner_protocol import (
     RunnerRejectionReason,
     ValidateFrame,
     ValidatedFrame,
+    runner_rejection_diagnostic,
 )
 from .owner_session_endpoint import open_owner_session_directory
 from .product_result import NMRPEAK_SOURCE_CLOSURE_REF, ProviderResultFacts
@@ -86,7 +87,14 @@ class RunnerInputRejected:
     """The runner proved that a complete input exceeds its token limit."""
 
     message: str
+    token_count: int
     reason: RunnerRejectionReason = RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
+
+    def __post_init__(self) -> None:
+        if self.reason is not RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED or (
+            self.message != runner_rejection_diagnostic(self.reason, self.token_count)
+        ):
+            raise RunnerProtocolError("Runner input rejection has invalid token evidence")
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,7 +315,9 @@ class RunnerSession(Generic[ModelInput]):
                 if close_error is not None:
                     error.add_note("The rejected runner channel also failed to close.")
                 raise error
-            return RunnerInputRejected(response.diagnostic, response.reason)
+            return RunnerInputRejected(
+                response.diagnostic, response.token_count, response.reason
+            )
         self._retire_with_error(
             f"Cannot validate {self._codec.lane_name} runner input: "
             "response type or correlation is wrong"

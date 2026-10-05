@@ -91,7 +91,9 @@ from nmrpeak_provider.generation_runtime import (
 from nmrpeak_provider.hf_runner_protocol import HF_RUNNER_CODEC, HF_RUNNER_CONTRACT_ID
 from nmrpeak_provider.runner_protocol import (
     ReadyFrame,
+    RunnerRejectionReason,
     ValidateFrame,
+    runner_rejection_diagnostic,
 )
 from nmrpeak_provider.runner_session import (
     RunnerDeadlines,
@@ -217,7 +219,12 @@ class CandidateIssueInterpreter:
 
 class RejectedInterpreter:
     def validate_freeform_input(self, **_values: object) -> object:
-        raise InterpretationRejected("The interpreter candidate was rejected.")
+        raise InterpretationRejected(
+            runner_rejection_diagnostic(
+                RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 640
+            ),
+            640,
+        )
 
 
 class NonStoppingSession:
@@ -818,7 +825,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(diagnostic.endpoint_route, ("primary", "fallback"))
 
-    def test_interpreter_rejection_does_not_publish_model_instructions(
+    def test_interpreter_runner_exhaustion_retains_candidate_token_count(
         self,
     ) -> None:
         canonical_input = b"Formula C2H6O with incomplete peak data."
@@ -842,9 +849,11 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(terminal_body["failure_code"], "interpretation_failed")
         self.assertEqual(
             terminal_body["failure_message"],
-            "The interpreter could not produce input accepted by this model's runner "
-            "after all correction routes. Generation did not start. This does not "
-            "prove a defect in the submitted description.",
+            "Interpretation failed: the last candidate produced 640 tokenizer "
+            "tokens; this model accepts at most 511. All correction routes were "
+            "tried. Generation did not start. This does not prove the submitted "
+            "description exceeds the limit. Keep every measurement when revising "
+            "the Job.",
         )
         self.assertNotIn("submit_interpretation", terminal_body["failure_message"])
 
@@ -879,7 +888,10 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(terminal_body["failure_code"], "input_rejected")
         self.assertEqual(
             terminal_body["failure_message"],
-            "The model accepts at most 511 input tokens; this input exceeds that limit.",
+            "Input rejected: this complete input produced 512 tokenizer tokens; "
+            "this model accepts at most 511. Generation did not start. Preserve "
+            "all measurements when revising the Job; contact the provider if "
+            "the complete input cannot fit.",
         )
         self.assertEqual(outcome.record.latest_diagnostic.kind, "direct_runner_rejected")
         self.assertEqual(outcome.record.latest_diagnostic.reason, "token_limit_exceeded")

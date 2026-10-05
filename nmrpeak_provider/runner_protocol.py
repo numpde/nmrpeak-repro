@@ -17,8 +17,9 @@ from .canonical_json import (
 from .failure_message import is_failure_message
 
 
-RUNNER_PROTOCOL_VERSION = 2
+RUNNER_PROTOCOL_VERSION = 3
 MAXIMUM_TOKENIZED_INPUT_LENGTH = 511
+MAXIMUM_REPORTED_TOKEN_COUNT = (1 << 63) - 1
 RUNNER_SOCKET_PATH = "/run/nmrpeak/session.sock"
 MAX_RUNNER_FRAME_PAYLOAD_BYTES = 131_072
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
@@ -41,13 +42,32 @@ class RunnerRejectionReason(StrEnum):
 
 
 RUNNER_REJECTION_DIAGNOSTICS = {
-    RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED:
-        f"The model accepts at most {MAXIMUM_TOKENIZED_INPUT_LENGTH} input tokens; this input exceeds that limit.",
     RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT:
         "The loaded tokenizer produced no model input tokens.",
     RunnerRejectionReason.DICTIONARY_TOKEN_MISSING:
         "The loaded model dictionary does not contain every token produced for this input.",
 }
+
+
+def runner_rejection_diagnostic(
+    reason: RunnerRejectionReason,
+    token_count: int | None = None,
+) -> str:
+    """Render only closed runner facts; count is the pre-generation token length."""
+
+    if type(reason) is not RunnerRejectionReason:
+        raise RunnerProtocolError("Runner rejection reason is invalid")
+    if reason is RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED:
+        if (type(token_count) is not int or
+                not MAXIMUM_TOKENIZED_INPUT_LENGTH < token_count <= MAXIMUM_REPORTED_TOKEN_COUNT):
+            raise RunnerProtocolError("Runner token count is invalid")
+        return (
+            f"The tokenizer produced {token_count} input tokens; this model "
+            f"accepts at most {MAXIMUM_TOKENIZED_INPUT_LENGTH}."
+        )
+    if token_count is not None:
+        raise RunnerProtocolError("Runner drift rejection cannot carry a token count")
+    return RUNNER_REJECTION_DIAGNOSTICS[reason]
 
 
 class FrameReceiver(Protocol):
@@ -182,12 +202,14 @@ class RejectedFrame:
     correlation: AttemptCorrelation
     reason: RunnerRejectionReason
     diagnostic: str
+    token_count: int | None = None
 
     def __post_init__(self) -> None:
         _require_correlation(self.correlation)
-        if (type(self.reason) is not RunnerRejectionReason
-                or not is_failure_message(self.diagnostic)
-                or self.diagnostic != RUNNER_REJECTION_DIAGNOSTICS[self.reason]):
+        if (not is_failure_message(self.diagnostic)
+                or self.diagnostic != runner_rejection_diagnostic(
+                    self.reason, self.token_count
+                )):
             raise RunnerProtocolError(
                 "Cannot bind NMRPeak runner REJECTED frame: reason or diagnostic is invalid"
             )
@@ -359,11 +381,14 @@ def _frame_document(
     if type(frame) is GenerateFrame:
         return _correlated_document("GENERATE", frame.correlation)
     if type(frame) is RejectedFrame:
-        return {
+        document = {
             **_correlated_document("REJECTED", frame.correlation),
             "reason": frame.reason.value,
             "diagnostic": frame.diagnostic,
         }
+        if frame.token_count is not None:
+            document["token_count"] = frame.token_count
+        return document
     if type(frame) is ResultFrame:
         return {
             **_correlated_document("RESULT", frame.correlation),
@@ -414,17 +439,19 @@ def _parse_validate(
 
 
 def _parse_rejected(document: dict[str, JsonValue]) -> RejectedFrame:
-    correlation = _parse_correlated(
-        document,
-        {"v", "type", "reason", "diagnostic"},
-    )
     try:
-        reason = RunnerRejectionReason(document["reason"])
+        reason = RunnerRejectionReason(document.get("reason"))
     except (TypeError, ValueError):
         raise RunnerProtocolError(
             "Cannot receive NMRPeak runner REJECTED frame: reason is not supported"
         ) from None
-    return RejectedFrame(correlation, reason, document["diagnostic"])
+    fields = {"v", "type", "reason", "diagnostic"}
+    if reason is RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED:
+        fields.add("token_count")
+    correlation = _parse_correlated(document, fields)
+    return RejectedFrame(
+        correlation, reason, document["diagnostic"], document.get("token_count")
+    )
 
 
 def _parse_result(document: dict[str, JsonValue]) -> ResultFrame:

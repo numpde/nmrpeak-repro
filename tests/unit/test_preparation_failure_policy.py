@@ -57,6 +57,16 @@ class PreparationFailurePolicyTests(unittest.TestCase):
                     runner.failure_message,
                     "The model accepts at most 511 input tokens.",
                 )
+                candidate_runner = policy.resolve(ClassifiedPreparationFailure(
+                    FailureKind.CANDIDATE_RUNNER_REJECTED.value,
+                    ProviderDiagnosticText(
+                        "The last interpreted candidate produced 640 tokenizer tokens."
+                    ),
+                ))
+                self.assertEqual(candidate_runner, PublishedPreparationFailure(
+                    "interpretation_failed",
+                    "The last interpreted candidate produced 640 tokenizer tokens.",
+                ))
 
     def test_exhaustive_parse_rejects_missing_and_extra_kinds(self) -> None:
         from pathlib import Path

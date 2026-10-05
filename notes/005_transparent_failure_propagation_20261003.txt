@@ -706,12 +706,14 @@ source-mode routing, report-as-endpoint evidence, classified pre-execution
 publication, and closed operator summaries are now wired. The OpenAI adapter
 retains HTTP status and only reviewed error type/code/request IDs; routine
 retry logs omit arbitrary endpoint prose, API Problem detail, and exception
-strings. The correlated runner wire is v2: only token-limit REJECTED is an
-input/model constraint eligible for repair or direct publication; empty
-tokenizer output and missing dictionary tokens are operational drift. The
-provider, HF runner, and CHF runner must be rebuilt from the same revision.
-The pinned checkpoint release contract IDs stay unchanged because their
-scientific checkpoint contract did not change; wire v2 rejects an old peer.
+strings. The correlated runner wire is v3: token-limit REJECTED carries a
+strictly bounded, measured tokenizer-output count and an exact diagnostic;
+only that reason is an input/model constraint eligible for repair or direct
+publication. Empty tokenizer output and missing dictionary tokens carry no
+count and remain operational drift. The provider, HF runner, and CHF runner
+must be rebuilt from the same revision. The pinned checkpoint release
+contract IDs stay unchanged because their scientific checkpoint contract did
+not change; wire v3 rejects an old peer.
 
 Journal v2 stores the latest locally observed source-free diagnostic on active
 and pending terminal records. It does not prove that Server A committed a
@@ -924,8 +926,8 @@ Historical preflight evidence in this section was produced before the
 superseded for deployment of the current checkout; rebuild the provider image
 and review a new exact plan before any maintenance stop. The runner input
 closures did not change in that QA revision, but both runner image IDs still
-need to be verified in the new plan. The committed provider image input ID
-changed to `sha256:d1719a244572015be7c32c9bca4ebdca5161c8f35ee2e7d0e98a2d3ce452c900`;
+need to be verified in the new plan. The journal-fix-only provider image input
+ID was `sha256:d1719a244572015be7c32c9bca4ebdca5161c8f35ee2e7d0e98a2d3ce452c900`;
 the stopped-provider journal-inspection command also resolves the current
 provider image, so building and verifying it must precede the maintenance
 stop. Rebuild both runner images from the same final clean revision before
@@ -1026,3 +1028,33 @@ digest cited in the historical preflight section cannot authorize a rollout
 of this revision. Fresh provider and runner builds from one clean revision,
 followed by complete plan comparison, are required before the maintenance
 window.
+
+Runner token-count QA (2026-10-05)
+----------------------------------
+
+A further matrix audit found that the v2 runner knew the tokenizer's actual
+length but discarded it before FAIL publication. Wire v3 adds `token_count`
+only for token-limit REJECTED, with exact integer type, a greater-than-511
+constraint, a fixed 63-bit upper bound, and an exact closed diagnostic.
+Drift reasons forbid the field. Runtime, worker, codec, session, and direct
+failure rendering carry the measured value. Interpreted candidates receive
+the count in bounded repair feedback to the configured interpreter endpoint;
+after all runner-admission routes reject,
+the final public message names only the last candidate's count and explicitly
+does not infer a source defect. The direct public message names the count and
+limit and advises preserving all measurements. The v2 journal still stores
+only its reviewed latest reason/path/route summary; the exact retained FAIL
+message carries any published count through replay.
+
+Both HF and CHF now exercise direct and interpreted token-limit rejection
+through the real runner session, policy, durable journal, local TLS Server A
+receipt loss, and exact replay. Runtime/worker and protocol tests cover 511
+admission, 512 rejection, malformed or missing counts, drift rejection, and
+rejection of old wire frames. The full offline suite passed after this change:
+503 unit, 9 API contract, 5 HTTP MockTransport integration, 6 model-behavior
+harness, and 17 repository tests. The fake runner supplies the 640-token count
+in the TLS case; that test proves propagation, not that the fixture text itself
+tokenizes to 640. The v3 source change supersedes the previously rendered d56880c
+three-image plan and its `c6a2dbfb1fa7e582109ebe00ef120f169146914097860e9f08332ea7078324a7`
+digest. Build all three images from the final clean revision and review a new
+complete plan before any maintenance stop.

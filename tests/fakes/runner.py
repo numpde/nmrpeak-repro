@@ -18,7 +18,7 @@ from nmrpeak_provider.runner_protocol import (
     RunnerFrameCodec,
     RunnerModelInput,
     RunnerRejectionReason,
-    RUNNER_REJECTION_DIAGNOSTICS,
+    runner_rejection_diagnostic,
     ValidateFrame,
     ValidatedFrame,
 )
@@ -45,6 +45,7 @@ class FakeRunnerChannel:
         *,
         candidates: object = ("CCO", "OCC"),
         rejected_validations: int = 0,
+        rejected_token_count: int = 512,
         rejected_reason: RunnerRejectionReason = RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
         fault: FakeRunnerFault | None = None,
     ) -> None:
@@ -54,6 +55,7 @@ class FakeRunnerChannel:
         self._codec = codec
         self._candidates = list(candidates) if type(candidates) is tuple else candidates
         self._rejected_validations = rejected_validations
+        self._rejected_token_count = rejected_token_count
         self._rejected_reason = rejected_reason
         self._fault = fault
         self._pending: AttemptCorrelation | None = None
@@ -114,9 +116,17 @@ class FakeRunnerChannel:
             raise OSError("fake runner already has a validated request")
         if self._rejected_validations:
             self._rejected_validations -= 1
+            token_count = (
+                self._rejected_token_count
+                if self._rejected_reason is RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
+                else None
+            )
             self._queue(
-                RejectedFrame(frame.correlation, self._rejected_reason,
-                              RUNNER_REJECTION_DIAGNOSTICS[self._rejected_reason])
+                RejectedFrame(
+                    frame.correlation, self._rejected_reason,
+                    runner_rejection_diagnostic(self._rejected_reason, token_count),
+                    token_count,
+                )
             )
             return
         self._pending = frame.correlation
@@ -144,9 +154,17 @@ class FakeRunnerChannel:
             return
         self._pending = None
         if self._fault is FakeRunnerFault.REJECT_GENERATION:
+            token_count = (
+                self._rejected_token_count
+                if self._rejected_reason is RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
+                else None
+            )
             self._queue(
-                RejectedFrame(frame.correlation, self._rejected_reason,
-                              RUNNER_REJECTION_DIAGNOSTICS[self._rejected_reason])
+                RejectedFrame(
+                    frame.correlation, self._rejected_reason,
+                    runner_rejection_diagnostic(self._rejected_reason, token_count),
+                    token_count,
+                )
             )
             return
         correlation = (

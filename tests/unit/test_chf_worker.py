@@ -22,7 +22,7 @@ from nmrpeak_provider.chf_runner_protocol import (
     CHF_RUNNER_CODEC,
 )
 from nmrpeak_provider.runner_protocol import (
-    RUNNER_REJECTION_DIAGNOSTICS,
+    runner_rejection_diagnostic,
     AttemptCorrelation,
     RunnerProtocolError,
     RunnerRejectionReason,
@@ -164,9 +164,10 @@ class ChfWorkerTests(unittest.TestCase):
             rejection = validate(session)
             self.assertIsInstance(rejection, RunnerInputRejected)
             assert isinstance(rejection, RunnerInputRejected)
+            self.assertEqual(rejection.token_count, 512)
             self.assertEqual(
                 rejection.message,
-                RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED],
+                runner_rejection_diagnostic(RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512),
             )
             validated = validate(session)
             self.assertIsInstance(validated, ValidatedRunnerRequest)
@@ -251,7 +252,7 @@ class RecordingRuntime:
         if self.rejections:
             self.rejections -= 1
             raise NmrpeakRuntimeInputRejected(
-                RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
+                RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512
             )
 
     def generate(self, model_input: ChfRunnerInput) -> JsonValue:

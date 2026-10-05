@@ -20,6 +20,10 @@ from typing import Generic, Protocol, TypeVar
 import nmrpeak_provider.provider_events as _events
 from nmrpeak_provider.failure_message import is_failure_message
 from nmrpeak_provider.interpreter_policy import MAX_INTERPRETER_ENDPOINTS
+from nmrpeak_provider.runner_protocol import (
+    RunnerRejectionReason,
+    runner_rejection_diagnostic,
+)
 from nmrpeak_provider.text_provenance import (
     ModelGeneratedText,
     UserProvidedText,
@@ -149,8 +153,13 @@ class ReportedInputProblem(ValueError):
 class InterpretationCandidateRejected(ValueError):
     """An analysis-specific admission boundary rejected one candidate."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, token_count: int) -> None:
+        if message != runner_rejection_diagnostic(
+            RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, token_count
+        ):
+            raise TypeError("Candidate rejection requires exact runner token evidence")
         self.message = message
+        self.token_count = token_count
         super().__init__(message)
 
 
@@ -158,9 +167,15 @@ class InterpretationRejected(ValueError):
     """Every configured endpoint produced a runner-rejected candidate."""
 
     def __init__(
-        self, message: str, attempted_configuration_ids: tuple[str, ...] = ()
+        self, message: str, token_count: int,
+        attempted_configuration_ids: tuple[str, ...] = (),
     ) -> None:
+        if message != runner_rejection_diagnostic(
+            RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, token_count
+        ):
+            raise TypeError("Interpretation rejection requires exact runner token evidence")
         self.message = message
+        self.token_count = token_count
         self.attempted_configuration_ids = _require_route(attempted_configuration_ids)
         super().__init__(message)
 
@@ -309,6 +324,7 @@ async def interpret(
     endpoint_failures: list[BaseException] = []
     endpoint_kinds: list[str] = []
     last_rejection: str | None = None
+    last_rejection_token_count: int | None = None
     last_constructor_issue: object | None = None
     last_report: ModelGeneratedText | None = None
     deadline = asyncio.timeout(interpretation_timeout_seconds)
@@ -372,6 +388,7 @@ async def interpret(
                         break
                     except InterpretationCandidateRejected as rejection:
                         last_rejection = rejection.message
+                        last_rejection_token_count = rejection.token_count
                         if repair_exhausted or not has_repair_context:
                             endpoint_failures.append(rejection)
                             endpoint_kinds.append(
@@ -466,9 +483,11 @@ async def interpret(
     if len(endpoint_kinds) != len(endpoints):
         raise AssertionError("Interpreter route ended without an endpoint outcome")
     if all(kind == "admission" for kind in endpoint_kinds):
-        if last_rejection is None:
+        if last_rejection is None or last_rejection_token_count is None:
             raise AssertionError("Admission exhaustion has no runner diagnostic")
-        raise InterpretationRejected(last_rejection, tuple(attempted))
+        raise InterpretationRejected(
+            last_rejection, last_rejection_token_count, tuple(attempted)
+        )
     if all(kind == "constructor" for kind in endpoint_kinds):
         if last_constructor_issue is None:
             raise AssertionError("Constructor exhaustion has no typed issue")

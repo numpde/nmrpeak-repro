@@ -420,8 +420,14 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
             "description; the candidate's defect has not been proven to occur "
             "in the source."
         )
+        runner_message = (
+            "Input rejected: this complete input produced 640 tokenizer tokens; "
+            "this model accepts at most 511. Generation did not start. Preserve "
+            "all measurements when revising the Job; contact the provider if "
+            "the complete input cannot fit."
+        )
         for lane, codec, facts, valid_input in cases:
-            for origin in ("source", "candidate"):
+            for origin in ("source", "candidate", "runner"):
                 if origin == "source":
                     document = json.loads(valid_input)
                     document["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "xy"
@@ -431,7 +437,10 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                     expected_message = source_message
                     expected_producer = "provider"
                     expected_route = ()
-                else:
+                    expected_reason = "unsupported_multiplicity"
+                    expected_path = "/model_input/spectra/1H/peaks/0/multiplicity"
+                    expected_kind = "direct_source_issue"
+                elif origin == "candidate":
                     canonical_input = (
                         b"Formula C2H6O. 1H peaks: triplet 1.2 ppm (3H), "
                         b"quartet 3.7 ppm (2H), singlet 2.5 ppm (1H)."
@@ -443,6 +452,19 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                     expected_message = candidate_message
                     expected_producer = "interpreter_candidate"
                     expected_route = ("primary", "fallback")
+                    expected_reason = "unsupported_multiplicity"
+                    expected_path = "/model_input/spectra/1H/peaks/0/multiplicity"
+                    expected_kind = "candidate_issue"
+                else:
+                    canonical_input = valid_input
+                    interpreter = _UNUSED_INTERPRETER
+                    expected_code = "input_rejected"
+                    expected_message = runner_message
+                    expected_producer = "runner"
+                    expected_route = ()
+                    expected_reason = "token_limit_exceeded"
+                    expected_path = None
+                    expected_kind = "direct_runner_rejected"
                 state = ServerA(
                     analysis_kind_ref=lane.offering.analysis_kind_ref,
                     canonical_input=canonical_input,
@@ -472,9 +494,14 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                                 record=admitted.record,
                             )
                             self.assertIs(type(started), StartContinues, repr(started))
+                            session, channel = _runner_session_with_channel(
+                                codec, facts,
+                                rejected_validations=1 if origin == "runner" else 0,
+                                rejected_token_count=640,
+                            )
                             prepared = prepare_execution(
                                 lane=lane, api=api, journal=journal,
-                                session=_runner_session(codec, facts),
+                                session=session,
                                 interpreter=interpreter,
                                 record=started.record,
                                 canonical_input=admitted.canonical_input,
@@ -484,12 +511,14 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                             command = json.loads(retained.terminal_request_body)
                             self.assertEqual(command["failure_code"], expected_code)
                             self.assertEqual(command["failure_message"], expected_message)
-                            self.assertEqual(retained.latest_diagnostic.reason, "unsupported_multiplicity")
+                            self.assertEqual(retained.latest_diagnostic.reason, expected_reason)
+                            self.assertEqual(retained.latest_diagnostic.kind, expected_kind)
                             self.assertEqual(retained.latest_diagnostic.producer, expected_producer)
                             self.assertEqual(retained.latest_diagnostic.endpoint_route, expected_route)
+                            self.assertEqual(retained.latest_diagnostic.path, expected_path)
                             self.assertEqual(
-                                retained.latest_diagnostic.path,
-                                "/model_input/spectra/1H/peaks/0/multiplicity",
+                                len(channel.received_frames),
+                                1 if origin == "runner" else 0,
                             )
                             state.lose_next_failure_response()
                             uncertain = deliver_terminal(
@@ -657,6 +686,143 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 self.assertEqual(state.failures, [])
                 self.assertIsNotNone(state.attempt)
                 self.assertEqual(state.attempt.state, "failed")
+                self.assertEqual(state.attempt.terminal_receipt["failure_message"], expected_message)
+                fail_bodies = [
+                    body for method, target, body in state.requests
+                    if method == "POST" and target == "/provider/v1/execution-attempts/fail"
+                ]
+                self.assertEqual(fail_bodies, [retained.terminal_request_body] * 2)
+
+    def test_interpreted_runner_limit_replays_candidate_count_without_source_blame(self) -> None:
+        corpus = _load_corpus()
+        expected_message = (
+            "Interpretation failed: the last candidate produced 640 tokenizer "
+            "tokens; this model accepts at most 511. All correction routes were "
+            "tried. Generation did not start. This does not prove the submitted "
+            "description exceeds the limit. Keep every measurement when revising "
+            "the Job."
+        )
+        cases = (
+            (HF_LIFECYCLE_LANE, HF_RUNNER_CODEC, _HF_RUNNER_FACTS),
+            (CHF_LIFECYCLE_LANE, CHF_RUNNER_CODEC, _CHF_RUNNER_FACTS),
+        )
+        for lane, codec, facts in cases:
+            with self.subTest(lane=lane.offering.implementation_ref):
+                variant = _select_evaluations(
+                    corpus, lane.offering.implementation_ref,
+                    case_id="ethanol_point", mode="normal",
+                )[0].variant
+                canonical_input = variant.source_text.encode("utf-8")
+                candidate = deepcopy(
+                    _fixture_variant("ethanol_point", lane.offering.implementation_ref)
+                    ["expected_interpretation"]
+                )
+                requests: list[dict[str, object]] = []
+                responses: list[httpx.Response] = []
+
+                def handle(request: httpx.Request) -> httpx.Response:
+                    requests.append(json.loads(request.content))
+                    response = httpx.Response(200, json=_candidate_completion(candidate))
+                    responses.append(response)
+                    return response
+
+                state = ServerA(
+                    analysis_kind_ref=lane.offering.analysis_kind_ref,
+                    canonical_input=canonical_input,
+                )
+                with TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_test_certificates(root)
+                    journal_root = root / "journal"
+                    journal_root.mkdir(mode=0o700)
+                    interpreter = _test_interpreter(root)
+                    model_client = httpx.AsyncClient(
+                        transport=httpx.MockTransport(handle), trust_env=False,
+                    )
+                    with serve_server_a(state=state, certificate_directory=root) as port:
+                        api = _api(port, root)
+                        generation = _generation(
+                            lane.offering.analysis_kind_ref,
+                            lane.offering.implementation_ref,
+                        )
+                        with AttemptJournalStore(journal_root, maximum_records=1) as journal:
+                            admitted = admit_next_job(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                            )
+                            self.assertIs(type(admitted), JobAdmitted, repr(admitted))
+                            started = start_attempt(
+                                lane=lane, api=api, journal=journal,
+                                generation=generation,
+                                frozen_generation_id=_FROZEN_GENERATION_ID,
+                                record=admitted.record,
+                            )
+                            self.assertIs(type(started), StartContinues, repr(started))
+                            session, channel = _runner_session_with_channel(
+                                codec, facts, rejected_validations=3,
+                                rejected_token_count=640,
+                            )
+                            with patch(
+                                "nmrpeak_provider.input_interpreter.httpx.AsyncClient",
+                                return_value=model_client,
+                            ):
+                                prepared = prepare_execution(
+                                    lane=lane, api=api, journal=journal,
+                                    session=session, interpreter=interpreter,
+                                    record=started.record,
+                                    canonical_input=admitted.canonical_input,
+                                )
+                            self.assertIs(type(prepared), InputFailurePending, repr(prepared))
+                            self.assertEqual(len(channel.received_frames), 3)
+                            self.assertTrue(all(
+                                type(frame) is ValidateFrame
+                                for frame in channel.received_frames
+                            ))
+                            self.assertEqual(len(requests), 3)
+                            self.assertEqual(requests[0]["messages"][2]["content"], variant.source_text)
+                            for request in requests[1:]:
+                                repair = request["messages"][-2:]
+                                self.assertEqual([item["role"] for item in repair], ["tool", "user"])
+                                self.assertIn("640 input tokens", repair[0]["content"])
+                            retained = prepared.record
+                            command = json.loads(retained.terminal_request_body)
+                            self.assertEqual(command["failure_code"], "interpretation_failed")
+                            self.assertEqual(command["failure_message"], expected_message)
+                            self.assertEqual(retained.latest_diagnostic.kind, "candidate_runner_rejected")
+                            self.assertEqual(retained.latest_diagnostic.producer, "runner")
+                            self.assertEqual(retained.latest_diagnostic.reason, "runner_candidate_rejected")
+                            self.assertEqual(retained.latest_diagnostic.endpoint_route, ("primary",))
+                            state.lose_next_failure_response()
+                            uncertain = deliver_terminal(api=api, journal=journal, record=retained)
+                            self.assertIs(type(uncertain), AttemptMutationCommitPossible)
+                            self.assertEqual(journal.records(), (retained,))
+
+                        inspected, = json.loads(inspect_journal(journal_root))["records"]
+                        self.assertEqual(inspected["delivery"], "unconfirmed")
+                        self.assertEqual(inspected["retained_failure"], {
+                            "failure_code": "interpretation_failed",
+                            "failure_message": expected_message,
+                        })
+                        runtime = _generation_runtime(chf=_generation(
+                            CHF_LIFECYCLE_LANE.offering.analysis_kind_ref,
+                            CHF_LIFECYCLE_LANE.offering.implementation_ref,
+                        ))
+                        with AttemptJournalStore(journal_root, maximum_records=1) as reopened:
+                            retained_after_restart, = reopened.records()
+                            self.assertEqual(
+                                retained_after_restart.terminal_request_body,
+                                retained.terminal_request_body,
+                            )
+                            recovered = reconcile_record(
+                                runtime=runtime, api=api, journal=reopened,
+                                record=retained_after_restart,
+                            )
+                            self.assertIs(type(recovered), TerminalDelivered, repr(recovered))
+                            self.assertTrue(recovered.receipt.replayed)
+                            self.assertEqual(reopened.records(), ())
+                self.assertTrue(all(response.is_closed for response in responses))
+                self.assertEqual(state.failures, [])
                 self.assertEqual(state.attempt.terminal_receipt["failure_message"], expected_message)
                 fail_bodies = [
                     body for method, target, body in state.requests
@@ -968,6 +1134,9 @@ def _runner_session(
 def _runner_session_with_channel(
     codec: RunnerFrameCodec,
     facts: ProviderResultFacts,
+    *,
+    rejected_validations: int = 0,
+    rejected_token_count: int = 512,
 ) -> tuple[RunnerSession, FakeRunnerChannel]:
     ready = ReadyFrame(
         boot_generation="boot:" + "1" * 32,
@@ -980,7 +1149,11 @@ def _runner_session_with_channel(
         device="cpu",
         decode_policy_id=facts.identity.decode_policy.decode_policy_id,
     )
-    channel = FakeRunnerChannel(codec, ready)
+    channel = FakeRunnerChannel(
+        codec, ready,
+        rejected_validations=rejected_validations,
+        rejected_token_count=rejected_token_count,
+    )
     session = RunnerSession.admit(
         channel,
         facts,

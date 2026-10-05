@@ -81,7 +81,8 @@ def serve_loaded_nmrpeak_runtime(
                 connection.sendall(
                     codec.encode(
                         RejectedFrame(
-                            command.correlation, rejection.reason, str(rejection)
+                            command.correlation, rejection.reason,
+                            str(rejection), rejection.token_count,
                         )
                     )
                 )

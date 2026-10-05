@@ -37,6 +37,10 @@ from nmrpeak_provider.lifecycle_lane import (
 from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
 from nmrpeak_provider.product_input import InputRejected, InputRejectionReason
 from nmrpeak_provider.runner_session import RunnerInputRejected, ValidatedRunnerRequest
+from nmrpeak_provider.runner_protocol import (
+    RunnerRejectionReason,
+    runner_rejection_diagnostic,
+)
 
 
 SOURCE = b"Formula C2H6O. 1H: 1.25 (t, 3H, J 7.1 Hz). 13C: 58.1."
@@ -84,7 +88,12 @@ class CapturingSession:
         self.model_inputs.append(model_input)
         if self.reject_count:
             self.reject_count -= 1
-            return RunnerInputRejected("The loaded runner rejected this input.")
+            return RunnerInputRejected(
+                runner_rejection_diagnostic(
+                    RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512
+                ),
+                512,
+            )
         return ValidatedRunnerRequest(self, object())
 
 
@@ -289,7 +298,7 @@ class InputInterpreterTests(unittest.TestCase):
         )
         self.assertEqual(
             prompts[1][-2]["content"],
-            "The loaded runner rejected this input.",
+            "The tokenizer produced 512 input tokens; this model accepts at most 511.",
         )
 
     def test_runner_rejection_falls_back_with_a_fresh_prompt(self) -> None:
@@ -326,8 +335,9 @@ class InputInterpreterTests(unittest.TestCase):
             )
         self.assertEqual(
             raised.exception.message,
-            "The loaded runner rejected this input.",
+            "The tokenizer produced 512 input tokens; this model accepts at most 511.",
         )
+        self.assertEqual(raised.exception.token_count, 512)
 
     def test_single_endpoint_report_remains_unverified_model_evidence(self) -> None:
         async def call(_prompt: object) -> InterpreterTurn:

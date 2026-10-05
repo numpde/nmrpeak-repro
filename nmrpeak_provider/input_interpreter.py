@@ -191,7 +191,9 @@ class InputInterpreter:
                     'Interpretation rejected by runner; attempt=%s reason=runner_input_rejected',
                     execution_attempt_ref,
                 )
-                raise InterpretationCandidateRejected(outcome.message)
+                raise InterpretationCandidateRejected(
+                    outcome.message, outcome.token_count
+                )
             _LOG.info(
                 'Interpretation validated by runner; attempt=%s',
                 execution_attempt_ref,

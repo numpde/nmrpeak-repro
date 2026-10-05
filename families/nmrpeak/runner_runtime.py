@@ -11,8 +11,8 @@ from nmrpeak_provider.canonical_json import JsonValue
 from nmrpeak_provider.product_decode import DecodePolicy
 from nmrpeak_provider.runner_protocol import (
     MAXIMUM_TOKENIZED_INPUT_LENGTH,
-    RUNNER_REJECTION_DIAGNOSTICS,
     RunnerRejectionReason,
+    runner_rejection_diagnostic,
 )
 
 
@@ -35,11 +35,14 @@ class TokenizerMode:
 class NmrpeakRuntimeInputRejected(ValueError):
     """The loaded tokenizer deterministically rejects one complete input."""
 
-    def __init__(self, reason: RunnerRejectionReason) -> None:
+    def __init__(
+        self, reason: RunnerRejectionReason, token_count: int | None = None
+    ) -> None:
         if type(reason) is not RunnerRejectionReason:
             raise TypeError("NMRPeak runtime rejection requires a closed reason")
         self.reason = reason
-        super().__init__(RUNNER_REJECTION_DIAGNOSTICS[reason])
+        self.token_count = token_count
+        super().__init__(runner_rejection_diagnostic(reason, token_count))
 
 
 class NmrpeakInferenceStack(Protocol):
@@ -69,7 +72,7 @@ class NmrpeakRuntime:
             )
         if len(tokens) > MAXIMUM_TOKENIZED_INPUT_LENGTH:
             raise NmrpeakRuntimeInputRejected(
-                RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED
+                RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, len(tokens)
             )
 
     def generate(self, model_input: object) -> JsonValue:

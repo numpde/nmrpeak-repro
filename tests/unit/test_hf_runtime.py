@@ -8,8 +8,8 @@ from families.nmrpeak.runner_runtime import (
     TokenizerMode,
 )
 from nmrpeak_provider.runner_protocol import (
-    RUNNER_REJECTION_DIAGNOSTICS,
     RunnerRejectionReason,
+    runner_rejection_diagnostic,
 )
 from models.nmrpeak_hf_v1.runner.runtime import HF_TOKENIZER_MODE, NmrpeakHfRuntime
 from nmrpeak_provider.hf_binding import HfRunnerInput
@@ -61,12 +61,16 @@ class HfRuntimeTests(unittest.TestCase):
                     RunnerRejectionReason.TOKENIZER_EMPTY_OUTPUT
                     if token_count == 0 else RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
                 )
+                self.assertEqual(
+                    raised.exception.token_count,
+                    token_count if token_count == 512 else None,
+                )
 
     def test_token_limit_diagnostic_matches_runtime_limit(self) -> None:
         self.assertEqual(MAXIMUM_TOKENIZED_INPUT_LENGTH, 511)
         self.assertIn(
             str(MAXIMUM_TOKENIZED_INPUT_LENGTH),
-            RUNNER_REJECTION_DIAGNOSTICS[RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED],
+            runner_rejection_diagnostic(RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512),
         )
 
     def test_hf_owns_the_pinned_proton_and_formula_tokenizer_mode(self) -> None:
