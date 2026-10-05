@@ -177,6 +177,45 @@ class AttemptConditionUnconfirmed(ProviderEvent):
     body_request_id: str | None = _event_field(omit_if_none=True, default=None)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExecutionObservationLost(ProviderEvent):
+    EVENT_CODE = "execution_observation_lost"
+
+    job_ref: str
+    execution_attempt_ref: str
+    evidence_type: str
+    http_status: int | None = _event_field(omit_if_none=True, default=None)
+    reason: str | None = _event_field(omit_if_none=True, default=None)
+    code: str | None = _event_field(omit_if_none=True, default=None)
+    delivery: str | None = _event_field(omit_if_none=True, default=None)
+    problem_type: str | None = _event_field(omit_if_none=True, default=None)
+    problem_title: str | None = _event_field(omit_if_none=True, default=None)
+    transport_request_id: str | None = _event_field(omit_if_none=True, default=None)
+    body_request_id: str | None = _event_field(omit_if_none=True, default=None)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TerminalRecoveryHeld(ProviderEvent):
+    EVENT_CODE = "terminal_recovery_held"
+
+    job_ref: str
+    execution_attempt_ref: str
+    operation: str
+    command_fingerprint: str
+    delivery: str
+    automatic_resends: str
+    automatic_reads: str
+    new_work_for_attempt: str
+    action: str
+    description: str
+    code: str | None = _event_field(omit_if_none=True, default=None)
+    detail: str | None = _event_field(omit_if_none=True, default=None)
+    request_id: str | None = _event_field(omit_if_none=True, default=None)
+    observed_state: str | None = _event_field(omit_if_none=True, default=None)
+    next_actor: str
+    next_action: str
+
+
 PROVIDER_EVENT_TYPES: tuple[type[ProviderEvent], ...] = (
     InterpreterEndpointFailed,
     InterpreterRoute,
@@ -184,6 +223,8 @@ PROVIDER_EVENT_TYPES: tuple[type[ProviderEvent], ...] = (
     PreparationFailureRetained,
     AttemptConditionConfirmed,
     AttemptConditionUnconfirmed,
+    ExecutionObservationLost,
+    TerminalRecoveryHeld,
 )
 
 

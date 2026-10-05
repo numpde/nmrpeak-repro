@@ -1137,14 +1137,16 @@ with a minimal exact Git snapshot. They reject tracked sensitive test inputs,
 nested Git links, revision drift, and Make variable command injection. Opt-in
 live tests accept an explicit endpoint and credential path while keeping both
 out of the image. Image downloads can be forced through a named wireless
-interface; both TCP connections and UDP/TCP DNS queries are bound to that
-interface. Repository tests cover the snapshot adversarial cases, container
+interface; outbound TCP connections and UDP DNS queries are bound to that
+interface, and truncated UDP DNS responses fail closed. Repository tests cover
+the snapshot adversarial cases, container
 posture, selection handling, WLAN rejection, and DNS binding.
 
-The complete containerized unit suite passed with 527 tests after the typed
+The complete containerized unit suite passed with 528 tests after the typed
 condition consolidation. No new signed live API operation was performed in
 this follow-up because the demo credential was unavailable locally; the
 opt-in live harness is formalized but that is not live coverage. Execution
-and result-stage process-fatal reporting and the older terminal-recovery
-summary remain candidates for the next typed-event increment; their current
-behavior is not represented as part of this completed boundary.
+and result-stage process-fatal reporting remain candidates for the next typed
+event increment. Observation-loss and terminal-recovery summaries now use the
+same bounded event catalogue; process-fatal behavior is not represented as
+part of this completed boundary.

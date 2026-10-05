@@ -78,6 +78,34 @@ _CASES = (
         "outcome_type='AttemptMutationCommitPossible'; "
         "evidence_type='ProviderRequestUnavailable'; delivery='possible'",
     ),
+    (
+        events.ExecutionObservationLost(
+            job_ref="job:one", execution_attempt_ref="attempt:one",
+            evidence_type="ProviderRequestUnavailable", delivery="possible",
+        ),
+        "provider_event='execution_observation_lost'; job_ref='job:one'; "
+        "execution_attempt_ref='attempt:one'; "
+        "evidence_type='ProviderRequestUnavailable'; delivery='possible'",
+    ),
+    (
+        events.TerminalRecoveryHeld(
+            job_ref="job:one", execution_attempt_ref="attempt:one",
+            operation="fail", command_fingerprint="sha256:" + "b" * 64,
+            delivery="unconfirmed", automatic_resends="stopped_including_restart",
+            automatic_reads="stopped", new_work_for_attempt="stopped",
+            action="do_not_resend",
+            description="Attempt expired.", observed_state="expired",
+            next_actor="provider_operator", next_action="reconcile original command",
+        ),
+        "provider_event='terminal_recovery_held'; job_ref='job:one'; "
+        "execution_attempt_ref='attempt:one'; operation='fail'; "
+        "command_fingerprint='sha256:" + "b" * 64 + "'; "
+        "delivery='unconfirmed'; automatic_resends='stopped_including_restart'; "
+        "automatic_reads='stopped'; new_work_for_attempt='stopped'; "
+        "action='do_not_resend'; "
+        "description='Attempt expired.'; observed_state='expired'; "
+        "next_actor='provider_operator'; next_action='reconcile original command'",
+    ),
 )
 
 

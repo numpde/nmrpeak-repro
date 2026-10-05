@@ -16,6 +16,7 @@ import unittest
 from nmrpeak_provider.attempt_identity import derive_provider_attempt_key
 from nmrpeak_provider.attempt_journal import (
     ActiveAttempt,
+    LatestDiagnostic,
     LocalExecutionPhase,
     ObserveUntilExpiry,
     RetainTerminalConflict,
@@ -829,6 +830,37 @@ class AttemptLifecycleTests(unittest.TestCase):
         rendered = "\n".join(logs.output)
         self.assertIn("evidence_type='unclassified_exception'", rendered)
         self.assertNotIn("X" * 100, rendered)
+
+    def test_preparing_update_reports_interpreter_condition_clear_outcome(self) -> None:
+        canonical_input = b"freeform"
+        active = replace(active_attempt(canonical_input), latest_diagnostic=LatestDiagnostic(
+            stage="preparation", kind="interpreter_unavailable", producer="interpreter",
+            reason="deadline_exceeded", observed_at="2026-10-05T20:00:00+00:00",
+        ))
+        cases = (
+            (success_response(progress_receipt()), "attempt_condition_confirmed"),
+            (ProviderRequestUnavailable(RequestDelivery.NOT_SENT),
+             "attempt_condition_unconfirmed"),
+        )
+        for response, event_code in cases:
+            with self.subTest(event_code=event_code), journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    pending = pending_from_active(active)
+                    journal.admit(pending)
+                    journal.replace(pending, active)
+                    with self.assertLogs(
+                        "nmrpeak_provider.attempt_lifecycle", level="INFO"
+                    ) as logs:
+                        prepare_execution(
+                            lane=CHF_LIFECYCLE_LANE, api=CapturingApi(response),
+                            journal=journal, session=UnusedSession(),
+                            interpreter=REJECTING_INTERPRETER, record=active,
+                            canonical_input=canonical_input,
+                        )
+            rendered = "\n".join(logs.output)
+            self.assertIn(f"provider_event='{event_code}'", rendered)
+            self.assertIn("context='interpreter'", rendered)
+            self.assertIn("condition_code=None", rendered)
 
     def test_reported_input_problem_uses_existing_terminal_authority(self) -> None:
         canonical_input = b"Proton and carbon peak lists without a molecular formula."

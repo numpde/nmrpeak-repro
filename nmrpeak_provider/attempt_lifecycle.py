@@ -100,8 +100,10 @@ from .provider_requests import (
 from .provider_events import (
     AttemptConditionConfirmed,
     AttemptConditionUnconfirmed,
+    ExecutionObservationLost,
     PreparationFailurePolicyDrift,
     PreparationFailureRetained,
+    TerminalRecoveryHeld,
     render_provider_event,
 )
 from .product_input import (
@@ -943,6 +945,19 @@ def _condition_unconfirmed_event(
     observed: AttemptMutationNotCommitted | AttemptMutationCommitPossible,
 ) -> AttemptConditionUnconfirmed:
     evidence = observed.evidence
+    facts = _provider_evidence_facts(evidence)
+    return AttemptConditionUnconfirmed(
+        job_ref=record.job_ref,
+        execution_attempt_ref=record.execution_attempt_ref,
+        context=context,
+        condition_code=condition,
+        outcome_type=type(observed).__name__,
+        evidence_type=type(evidence).__name__,
+        **facts,
+    )
+
+
+def _provider_evidence_facts(evidence) -> dict[str, object]:
     status = None
     reason = None
     code = None
@@ -974,14 +989,8 @@ def _condition_unconfirmed_event(
     elif type(evidence) is ProviderSuccessRejected:
         reason = evidence.reason.value
     else:
-        raise AssertionError("unhandled interpreter condition evidence")
-    return AttemptConditionUnconfirmed(
-        job_ref=record.job_ref,
-        execution_attempt_ref=record.execution_attempt_ref,
-        context=context,
-        condition_code=condition,
-        outcome_type=type(observed).__name__,
-        evidence_type=type(evidence).__name__,
+        raise AssertionError("unhandled provider evidence")
+    return dict(
         http_status=status,
         reason=reason,
         code=code,
@@ -1278,12 +1287,21 @@ def terminal_recovery_facts(record: TerminalPending) -> dict:
 
 def _log_terminal_recovery(record):
     facts = terminal_recovery_facts(record)
-    _LOG.warning(
-        "Attempt %s: exact %s command retained; delivery is unconfirmed. Automatic publication stays stopped across restart. "
-        "API code %s; request %s; cause: %s; guidance: %s; observed state: %s. Next actor %s must %s. recovery=%s",
-        facts["execution_attempt_ref"], facts["operation"], facts["code"], facts["request_id"], facts["detail"],
-        facts["description"], facts["observed_state"], facts["next_actor"], facts["next_action"], json.dumps(facts),
-    )
+    _LOG.warning("%s", render_provider_event(TerminalRecoveryHeld(
+        job_ref=facts["job_ref"],
+        execution_attempt_ref=facts["execution_attempt_ref"],
+        operation=facts["operation"],
+        command_fingerprint=facts["command_fingerprint"],
+        delivery=facts["delivery"],
+        automatic_resends=facts["automatic_resends"],
+        automatic_reads=facts["automatic_reads"],
+        new_work_for_attempt=facts["new_work_for_attempt"],
+        action=facts["action"],
+        description=facts["description"],
+        code=facts["code"], detail=facts["detail"], request_id=facts["request_id"],
+        observed_state=facts["observed_state"], next_actor=facts["next_actor"],
+        next_action=facts["next_action"],
+    )))
 
 
 def _terminal_held(record):
@@ -1424,13 +1442,13 @@ def _stopped_execution_outcome(
     observation: AttemptObservation,
 ) -> ExecutionCutOff | ExecutionResolved | ObservationLost:
     if type(observation) is AttemptObservationFailed:
-        _LOG.warning(
-            'Generation stopped because API observation was lost; job=%s attempt=%s evidence=%r; '
-            'journal retained for reconciliation',
-            record.job_ref,
-            record.execution_attempt_ref,
-            observation.evidence,
-        )
+        evidence = observation.evidence
+        _LOG.warning("%s", render_provider_event(ExecutionObservationLost(
+            job_ref=record.job_ref,
+            execution_attempt_ref=record.execution_attempt_ref,
+            evidence_type=type(evidence).__name__,
+            **_provider_evidence_facts(evidence),
+        )))
         return ObservationLost(record, observation.evidence)
     snapshot = observation.snapshot
     _LOG.info(
