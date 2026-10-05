@@ -2,7 +2,7 @@ PYTHON ?= python3
 REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 .DEFAULT_GOAL := help
 
-.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
 	@printf '%s\n' \
@@ -22,6 +22,10 @@ help:
 		'      Opt in to persistent HF/CHF Jobs against a deployed API; see tests/live/README.md.' \
 		'  make test/live/failure-propagation/observe ...' \
 		'      Recheck the signed API evidence in an existing owner-only state file.' \
+		'  make test/live/success-propagation ... CONFIRM_PERSISTENT_JOBS=1' \
+		'      Opt in to successful HF/CHF generation and Analysis Result verification.' \
+		'  make test/live/success-propagation/observe ...' \
+		'      Recheck successful Attempts and Results without creating or opening Jobs.' \
 		'  make check/source' \
 		'      Verify the pinned NMRPeak and Uni-Core source closure.' \
 		'  make upstream-contracts/check NMR_API_V1_DIR=<path> RELEASE=<revision>' \
@@ -148,6 +152,47 @@ test/live/failure-propagation test/live/failure-propagation/observe:
 	if test -n "$$LIVE_CA_CERTIFICATE_INPUT"; then set -- "$$@" --ca-certificate "$$LIVE_CA_CERTIFICATE_INPUT"; fi; \
 	if test "$@" = test/live/failure-propagation; then set -- "$$@" --confirm-persistent-jobs; fi; \
 	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -m tests.live.failure_propagation "$$@"
+
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_API_ORIGIN_INPUT := $(value LIVE_API_ORIGIN)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_API_TOPOLOGY_INPUT := $(value LIVE_API_TOPOLOGY)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_USER_CREDENTIAL_INPUT := $(value LIVE_USER_CREDENTIAL)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_PROJECT_REF_INPUT := $(value LIVE_PROJECT_REF)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_PROVIDER_REF_INPUT := $(value LIVE_PROVIDER_REF)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_RUN_LABEL_INPUT := $(value LIVE_RUN_LABEL)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_STATE_INPUT := $(value LIVE_STATE)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_CA_CERTIFICATE_INPUT := $(value LIVE_CA_CERTIFICATE)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_HF_CHECKPOINT_INPUT := $(value LIVE_EXPECTED_HF_CHECKPOINT)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_CHF_CHECKPOINT_INPUT := $(value LIVE_EXPECTED_CHF_CHECKPOINT)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_HF_IMAGE_INPUT_ID_INPUT := $(value LIVE_EXPECTED_HF_IMAGE_INPUT_ID)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_CHF_IMAGE_INPUT_ID_INPUT := $(value LIVE_EXPECTED_CHF_IMAGE_INPUT_ID)
+test/live/success-propagation test/live/success-propagation/observe:
+	@test "$(origin LIVE_API_ORIGIN)" = command\ line || { echo 'LIVE_API_ORIGIN must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_API_TOPOLOGY)" = command\ line || { echo 'LIVE_API_TOPOLOGY must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_USER_CREDENTIAL)" = command\ line || { echo 'LIVE_USER_CREDENTIAL must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_PROJECT_REF)" = command\ line || { echo 'LIVE_PROJECT_REF must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_PROVIDER_REF)" = command\ line || { echo 'LIVE_PROVIDER_REF must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_RUN_LABEL)" = command\ line || { echo 'LIVE_RUN_LABEL must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_STATE)" = command\ line || { echo 'LIVE_STATE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_EXPECTED_HF_CHECKPOINT)" = command\ line || { echo 'LIVE_EXPECTED_HF_CHECKPOINT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_EXPECTED_CHF_CHECKPOINT)" = command\ line || { echo 'LIVE_EXPECTED_CHF_CHECKPOINT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_EXPECTED_HF_IMAGE_INPUT_ID)" = command\ line || { echo 'LIVE_EXPECTED_HF_IMAGE_INPUT_ID must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_EXPECTED_CHF_IMAGE_INPUT_ID)" = command\ line || { echo 'LIVE_EXPECTED_CHF_IMAGE_INPUT_ID must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_CA_CERTIFICATE)" = undefined -o "$(origin LIVE_CA_CERTIFICATE)" = command\ line || { echo 'LIVE_CA_CERTIFICATE must be set on the make command line' >&2; exit 2; }
+	@if test "$@" = test/live/success-propagation; then \
+		test "$(origin CONFIRM_PERSISTENT_JOBS)" = command\ line -a "$(value CONFIRM_PERSISTENT_JOBS)" = 1 || { echo 'set CONFIRM_PERSISTENT_JOBS=1 to create persistent Jobs' >&2; exit 2; }; \
+	fi
+	@set -- "$$(test "$@" = test/live/success-propagation && printf run || printf observe)" \
+		--api-origin "$$LIVE_API_ORIGIN_INPUT" --expected-topology "$$LIVE_API_TOPOLOGY_INPUT" \
+		--credential "$$LIVE_USER_CREDENTIAL_INPUT" --project-ref "$$LIVE_PROJECT_REF_INPUT" \
+		--provider-ref "$$LIVE_PROVIDER_REF_INPUT" --run-label "$$LIVE_RUN_LABEL_INPUT" \
+		--state "$$LIVE_STATE_INPUT" \
+		--expected-hf-checkpoint "$$LIVE_EXPECTED_HF_CHECKPOINT_INPUT" \
+		--expected-chf-checkpoint "$$LIVE_EXPECTED_CHF_CHECKPOINT_INPUT" \
+		--expected-hf-image-input "$$LIVE_EXPECTED_HF_IMAGE_INPUT_ID_INPUT" \
+		--expected-chf-image-input "$$LIVE_EXPECTED_CHF_IMAGE_INPUT_ID_INPUT"; \
+	if test -n "$$LIVE_CA_CERTIFICATE_INPUT"; then set -- "$$@" --ca-certificate "$$LIVE_CA_CERTIFICATE_INPUT"; fi; \
+	if test "$@" = test/live/success-propagation; then set -- "$$@" --confirm-persistent-jobs; fi; \
+	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -m tests.live.success_propagation "$$@"
 
 check/source:
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
