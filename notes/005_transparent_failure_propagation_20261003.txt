@@ -1,7 +1,7 @@
 NMRPeak transparent failure propagation refactor (2026-10-03)
 ===========================================================
 
-Status: implementation candidate in this checkout; rollout qualification pending.
+Status: deployed and qualified at implementation commit 7ae3bff; limitations below.
 Scope: nmrpeak-repro provider, interpreter, HF/CHF runner boundary, Attempt
 lifecycle, operator evidence, and end-to-end message verification.
 Related: notes/001_nmrpeak_multi_runner_deployment_20260824.txt,
@@ -1058,3 +1058,53 @@ tokenizes to 640. The v3 source change supersedes the previously rendered d56880
 three-image plan and its `c6a2dbfb1fa7e582109ebe00ef120f169146914097860e9f08332ea7078324a7`
 digest. Build all three images from the final clean revision and review a new
 complete plan before any maintenance stop.
+
+Production rollout qualification (2026-10-05)
+---------------------------------------------
+
+The operator approved the exact 13,505-byte `nmr-dapp32-com` plan with
+SHA-256 `5409f40d84f8dcdc34e9e55123142eac2f259bde0471e7f59044ebe07360fd85`.
+The plan selected three images built from implementation commit
+`7ae3bff7637d492d6a3c880b0b509812fba3b03f`: provider
+`sha256:17d40b66a926d573b28084459c68565560782660909fbb5a229274df7284c815`,
+HF runner
+`sha256:a369c55138edb9efc60566d321089c0d0a65dbd34185c75f17527b831f8e7024`,
+and CHF runner
+`sha256:e5299e20ff100a129a08889f412f5cbf1cbf0e4e497c07b1b80d4da37280c34e`.
+A byte-for-byte rerender matched the approved plan before shutdown. The old
+deployment stopped cleanly, and stopped-writer v2 inspection found no retained
+records or unresolved obligations. Startup accepted the exact plan digest;
+the provider became healthy and both runners used the reviewed image IDs.
+
+The production demo identity `credential:user:demo:initial` owns
+`project:user-demo`. Live authority inspection confirmed current entitlement
+to every active AnalysisKind and 235 of 256 Job slots free before this smoke.
+Two persistent Jobs selected only `provider:nmrpeak-pa-a`. The complete HF
+input produced 1,106 tokenizer tokens and failed Attempt
+`execution_attempt:sha256:c74d534a5721ebac9012e1b1b7fb7fa7c2331c080b2072fdbe45e57bb656f3d9`.
+The complete CHF input produced 1,327 tokenizer tokens and failed Attempt
+`execution_attempt:sha256:d8dd939bee4270bdc286876022b188371138c4383524d95cfb64c5d76835bb35`.
+Both retained `input_rejected` and the reviewed direct message, including the
+measured count, the 511-token limit, the pre-generation certainty, and advice
+to preserve every measurement.
+
+Authorized signed Attempt-list reads returned those exact pairs. A pinned
+Playwright 1.61.1 run against the deployed GUI verified exact literal text in
+both panel and column presentations; neither view introduced active markup.
+After confirmed delivery, a second approved stop found the journal empty, as
+expected for cleanly retired terminal obligations. Restart used the same plan
+and image IDs. Signed post-restart reads returned the same Job refs, Attempt
+refs, codes, and messages; the owner-only smoke evidence file remained
+byte-identical with SHA-256
+`1588c7777114445d108bcf379c9906edad1b438831017cf22297199cfd89144a`.
+
+Production did not encounter an ambiguous terminal send, so this rollout does
+not claim a live crash-window replay. The local TLS receipt-loss tests and the
+actual-process crash tests remain the direct evidence for exact retained-command
+replay and delivery-unconfirmed inspection. The rollout review accepts that
+deterministic branch evidence together with the qualified live source-grounded
+model reports for the current one-cycle policy. Candidate-only exhaustion
+remains unobserved as a natural live model choice and must not be described as
+live coverage. This limitation does not weaken the typed downstream path,
+which is covered through signed API and GUI publication with deterministic
+candidate injection and through the real interpreter/session/TLS path.
