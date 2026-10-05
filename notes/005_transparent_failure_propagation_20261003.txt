@@ -926,10 +926,10 @@ and review a new exact plan before any maintenance stop. The runner input
 closures did not change in that QA revision, but both runner image IDs still
 need to be verified in the new plan. The committed provider image input ID
 changed to `sha256:d1719a244572015be7c32c9bca4ebdca5161c8f35ee2e7d0e98a2d3ce452c900`;
-that image is not yet present locally. The stopped-provider journal-inspection
-command also resolves the current provider image, so building and verifying
-it must precede the maintenance stop. Rebuild both runner images from the
-same final clean revision before previewing the trio, despite their unchanged
+the stopped-provider journal-inspection command also resolves the current
+provider image, so building and verifying it must precede the maintenance
+stop. Rebuild both runner images from the same final clean revision before
+previewing the trio, despite their unchanged
 input closures, to satisfy the same-revision image gate above.
 
 Server A still stores the cited CHF Attempt as `failed` with `input_rejected`.
