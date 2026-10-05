@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 import unittest
 
 
@@ -26,3 +27,17 @@ class ContainerPostureTests(unittest.TestCase):
             ".agents", ".aws", ".codex", "config/deployments", "secrets", "weights"
         ):
             self.assertFalse((Path("/workspace") / relative).exists(), relative)
+
+    def test_sensitive_checkout_roots_are_not_tracked(self) -> None:
+        tracked = subprocess.run(
+            ("git", "-C", "/workspace", "ls-files", "-z"),
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout.decode("utf-8").split("\0")
+        sensitive = (".agents", ".aws", ".codex", "config/deployments", "secrets", "weights")
+        exposed = sorted(
+            path for path in tracked if path and any(
+                path == root or path.startswith(root + "/") for root in sensitive
+            )
+        )
+        self.assertEqual(exposed, [])
