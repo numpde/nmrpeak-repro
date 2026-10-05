@@ -919,6 +919,19 @@ rollout qualification.
 Deployment preflight (2026-10-04)
 ---------------------------------
 
+Historical preflight evidence in this section was produced before the
+2026-10-05 journal-store change. Its provider image and plan digest are
+superseded for deployment of the current checkout; rebuild the provider image
+and review a new exact plan before any maintenance stop. The runner input
+closures did not change in that QA revision, but both runner image IDs still
+need to be verified in the new plan. The committed provider image input ID
+changed to `sha256:d1719a244572015be7c32c9bca4ebdca5161c8f35ee2e7d0e98a2d3ce452c900`;
+that image is not yet present locally. The stopped-provider journal-inspection
+command also resolves the current provider image, so building and verifying
+it must precede the maintenance stop. Rebuild both runner images from the
+same final clean revision before previewing the trio, despite their unchanged
+input closures, to satisfy the same-revision image gate above.
+
 Server A still stores the cited CHF Attempt as `failed` with `input_rejected`.
 Its 291-character failure-message SHA-256 is
 `9afcb8f0bc0b968184ff64562691648b6721b83980961c6b39b0a30ecb688019`,
@@ -962,7 +975,7 @@ and all three immutable image IDs. Stop if any byte differs. Both Makefile `up`
 targets now require `EXPECTED_PLAN_SHA256`, computed over the exact
 newline-terminated `config` output. Startup independently rerenders the plan
 under the deployment lock and rejects a digest mismatch before materializing
-inputs or starting Docker services. For this reviewed plan the required value
+inputs or starting Docker services. For the earlier reviewed plan the value
 is `0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`.
 Keep image builds and tag changes quiescent through startup. After stopping, inspect
 every retained journal obligation with the v1/v2 reader before starting a v2
@@ -1007,4 +1020,9 @@ and 17 repository tests. The first sandboxed run could not create localhost
 test sockets; the same suite passed with socket access. Focused journal and
 integration tests also passed. Subsequent independent reviews found no
 further meaningful issue in this diff. This evidence does not authorize or
-replace the pending production maintenance and signed live smoke above.
+replace the pending production maintenance and signed live smoke above. Commit
+16b61ad changes a provider image input, so the older provider image and plan
+digest cited in the historical preflight section cannot authorize a rollout
+of this revision. Fresh provider and runner builds from one clean revision,
+followed by complete plan comparison, are required before the maintenance
+window.
