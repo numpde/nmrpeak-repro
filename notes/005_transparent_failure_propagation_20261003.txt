@@ -2,8 +2,9 @@ NMRPeak transparent failure propagation refactor (2026-10-03)
 ===========================================================
 
 Status: the production rollout through implementation commit 7ae3bff is deployed
-and qualified. Later hardening described at the end is offline-qualified and is
-not claimed as deployed; limitations remain below.
+and qualified. Later hardening through c479dce is offline-qualified and its
+current live harness has passed against that deployment; the later provider
+runtime is not claimed as deployed. Limitations remain below.
 Scope: nmrpeak-repro provider, interpreter, HF/CHF runner boundary, Attempt
 lifecycle, operator evidence, and end-to-end message verification.
 Related: notes/001_nmrpeak_multi_runner_deployment_20260824.txt,
@@ -1145,18 +1146,16 @@ the snapshot adversarial cases, container
 posture, selection handling, WLAN rejection, and DNS binding.
 
 The complete containerized unit suite passed with 540 tests after the typed
-condition and process-failure consolidation. No new signed live API operation
-was performed in this follow-up because the demo credential was unavailable
-locally; the opt-in live harness is formalized but that is not live coverage.
-Execution and result-stage process-fatal paths now emit bounded events with
-Job, Attempt, a closed stage/failure pair, result uncertainty, cleanup state,
-and restart reconciliation. The event is emitted for running-update,
-observation, worker-start, generation, result-validation, and journal-retention
-failures. Provider cleanup events likewise admit only reviewed resource/action
-pairs. The original exception remains process-fatal, its protected traceback
-remains available for diagnosis, and the durable Attempt remains for recovery;
-this does not invent a public scientific failure. Execution-monitoring read
-loss, authoritative stop triggers, and terminal-recovery summaries use the same
+condition and process-failure consolidation. Execution and result-stage
+process-fatal paths now emit bounded events with Job, Attempt, a closed
+stage/failure pair, result uncertainty, cleanup state, and restart
+reconciliation. The event is emitted for running-update, observation,
+worker-start, generation, result-validation, and journal-retention failures.
+Provider cleanup events likewise admit only reviewed resource/action pairs. The
+original exception remains process-fatal, its protected traceback remains
+available for diagnosis, and the durable Attempt remains for recovery; this
+does not invent a public scientific failure. Execution-monitoring read loss,
+authoritative stop triggers, and terminal-recovery summaries use the same
 bounded event catalogue. The runner protocol still has RESULT but no correlated
 FAILED frame; adding expected no-result semantics remains a separate protocol
 design task.
@@ -1169,3 +1168,49 @@ syntax into every affected variable. WLAN tests now directly assert
 `SO_BINDTODEVICE` on both UDP resolver and outbound TCP sockets and prove that a
 DNS truncation response fails closed. The containerized repository lane passed
 37 tests after these additions.
+
+Current-harness live qualification (2026-10-06)
+------------------------------------------------
+
+The committed opt-in harness at c479dce ran from the exact clean source
+snapshot `sha256:3a1107905cbda829fcdfe54952b724e8f7bf11ee1d323b2ecdb8d7e7cf0831af`
+against `https://nmr.dapp32.com`, signed using the configured demo credential
+for `project:user-demo`. The failure lane created one persistent Job for each
+analysis kind and verified the exact public failure path. HF Job
+`job:b7fed036cff1f5675293f5e835e9bb1e487a3f19339b8333d3bf632de223a824`
+reached Attempt
+`execution_attempt:sha256:a90e45ee972071d8c09c7595be65dcfa759329b8b5a73486fdff4bb467244b1c`
+with `input_rejected` and a measured 665 tokens. CHF Job
+`job:b1b188f5cdfbe191bcdab67ecb97e007342daef7733b5eb452f8d52b2a2fd461`
+reached Attempt
+`execution_attempt:sha256:f015427ac24232667c1254dfc2c284aa6f7ada4b2ea378cf809ae41cdab4ff1f`
+with the same code and a measured 886 tokens.
+
+The positive lane then created smaller HF and CHF Jobs, waited for their exact
+Attempts, followed every Analysis Result page, and verified canonical result
+bytes and deployed provenance. HF Job
+`job:4181e623ea6b098dbf9b18d2243682f6ed2351cdc11c26129d165a3f2e0c413e`
+reached Attempt
+`execution_attempt:sha256:1d06e23697fe269226591c0be295c5a76c8c72c289f5cba0eaa8ef486936127c`
+published Result
+`analysis_result:sha256:8486246feaf02518dc7113797f4b93307fda99a767396c53b25cfb1d2d656deb`
+with ten candidates. CHF Job
+`job:a24dd33893e946bac1b978b3a82a21fd0fa0322bdf8046d5ff61d4a8d9be6d76`
+reached Attempt
+`execution_attempt:sha256:9e0eeb00a5faef80ded7d937f89b55042a659c319e7942da4e20fd70f5fb81c5`
+published Result
+`analysis_result:sha256:fb028d1199b1af9f967470e930acf9606d88b3e7fed6b31870323514c6a74d85`
+with ten candidates. The results matched HF checkpoint
+`sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6`
+and image input
+`sha256:b7d2dad04d659e7e1f38d46b174f4875c8ecf94491c1b54d3970d123817074a6`,
+and CHF checkpoint
+`sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02`
+and image input
+`sha256:0c0eb330b40acb297af4934b39ea6ab9f2b7d6d361ff55159fe6da4c2b228de6`.
+
+For these four Jobs, this demonstrates the current harness's signed create,
+selection, observation, failure, completion, result-list, result-read, and
+provenance checks against the deployed stack. The running provider and runners
+still use the previously qualified 7ae3bff images, so this is not live execution
+evidence for the later provider-runtime event changes.
