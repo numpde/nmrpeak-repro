@@ -9,7 +9,7 @@ from dataclasses import MISSING, dataclass, field, fields
 from functools import cache
 import re
 from types import MappingProxyType, UnionType
-from typing import ClassVar, get_args, get_origin
+from typing import ClassVar, Literal, get_args, get_origin
 
 
 MAX_PROVIDER_EVENT_BYTES = 16 * 1024
@@ -48,6 +48,19 @@ def _bounded_text(value: object) -> str:
     return repr(value)
 
 
+def bounded_exception_type(error: BaseException) -> str:
+    """Project an exception class name without admitting attacker-sized names."""
+
+    if not isinstance(error, BaseException):
+        raise TypeError("provider event exception projection requires an exception")
+    name = type(error).__name__
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeError:
+        return "unclassified_exception"
+    return name if len(encoded) <= 256 else "unclassified_exception"
+
+
 @cache
 def _fact_renderer(annotation: object):
     if annotation is str:
@@ -60,6 +73,15 @@ def _fact_renderer(annotation: object):
         return render_integer
     origin = get_origin(annotation)
     arguments = get_args(annotation)
+    if origin is Literal and arguments and all(type(item) is str for item in arguments):
+        allowed = frozenset(arguments)
+
+        def render_literal(value: object) -> str:
+            if type(value) is not str or value not in allowed:
+                raise ProviderEventError("fact_value")
+            return _bounded_text(value)
+
+        return render_literal
     if origin is tuple and arguments == (str, Ellipsis):
         def render_tuple(value: object) -> str:
             if type(value) is not tuple or len(value) > _MAX_TUPLE_ITEMS:
@@ -93,6 +115,7 @@ class ProviderEvent:
     def __post_init__(self) -> None:
         if type(self) is ProviderEvent:
             raise ProviderEventError("event_type")
+        _validate_event_semantics(self)
         _render_event_message(self)
 
 
@@ -195,6 +218,76 @@ class ExecutionObservationLost(ProviderEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ExecutionStopRequired(ProviderEvent):
+    EVENT_CODE = "execution_stop_required"
+
+    job_ref: str
+    execution_attempt_ref: str
+    attempt_state: Literal["in_progress", "succeeded", "failed", "expired"]
+    job_state: Literal["open", "cancelled", "closed"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExecutionProcessFailed(ProviderEvent):
+    EVENT_CODE = "execution_process_failed"
+
+    job_ref: str
+    execution_attempt_ref: str
+    stage: Literal[
+        "running_progress",
+        "execution_entry_retention",
+        "attempt_observation",
+        "generation_start",
+        "generation_exchange",
+        "generation_shutdown",
+        "execution_state_retention",
+        "result_validation",
+        "completion_preparation",
+        "completion_retention",
+    ]
+    failure_kind: Literal[
+        "running_progress_failed",
+        "running_progress_unconfirmed",
+        "journal_retention_failed",
+        "initial_observation_failed",
+        "ongoing_observation_failed",
+        "final_observation_failed",
+        "pre_generation_stop_unconfirmed",
+        "generation_start_failed",
+        "generation_coordination_failed",
+        "generation_shutdown_failed",
+        "generation_shutdown_unconfirmed",
+        "runner_session_retired",
+        "generation_failed",
+        "result_too_large",
+        "candidates_not_array",
+        "candidate_count_out_of_range",
+        "candidate_not_text",
+        "candidate_too_large",
+        "candidate_outside_decoder_vocabulary",
+        "result_correlation_failed",
+        "result_validation_failed",
+        "completion_preparation_failed",
+    ]
+    error_type: str
+    result_state: Literal["unknown"]
+    recovery: Literal["restart_reconciliation"]
+    cleanup_state: Literal["confirmed", "unconfirmed"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderCleanupFailed(ProviderEvent):
+    EVENT_CODE = "provider_cleanup_failed"
+
+    resource: Literal[
+        "attempt_journal", "hf_runner_session", "chf_runner_session"
+    ]
+    operation: Literal["close", "retire"]
+    error_type: str
+    failure_effect: Literal["attached_to_primary", "process_fatal"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TerminalRecoveryHeld(ProviderEvent):
     EVENT_CODE = "terminal_recovery_held"
 
@@ -224,8 +317,67 @@ PROVIDER_EVENT_TYPES: tuple[type[ProviderEvent], ...] = (
     AttemptConditionConfirmed,
     AttemptConditionUnconfirmed,
     ExecutionObservationLost,
+    ExecutionStopRequired,
+    ExecutionProcessFailed,
+    ProviderCleanupFailed,
     TerminalRecoveryHeld,
 )
+
+
+_EXECUTION_FAILURE_KINDS_BY_STAGE = MappingProxyType({
+    "running_progress": frozenset({"running_progress_failed"}),
+    "execution_entry_retention": frozenset({"journal_retention_failed"}),
+    "attempt_observation": frozenset({
+        "initial_observation_failed",
+        "ongoing_observation_failed",
+        "final_observation_failed",
+    }),
+    "generation_start": frozenset({"generation_start_failed"}),
+    "generation_exchange": frozenset({
+        "generation_coordination_failed",
+        "runner_session_retired",
+        "generation_failed",
+    }),
+    "generation_shutdown": frozenset({
+        "running_progress_unconfirmed",
+        "pre_generation_stop_unconfirmed",
+        "generation_shutdown_unconfirmed",
+        "generation_shutdown_failed",
+    }),
+    "execution_state_retention": frozenset({"journal_retention_failed"}),
+    "result_validation": frozenset({
+        "result_too_large",
+        "candidates_not_array",
+        "candidate_count_out_of_range",
+        "candidate_not_text",
+        "candidate_too_large",
+        "candidate_outside_decoder_vocabulary",
+        "result_correlation_failed",
+        "result_validation_failed",
+    }),
+    "completion_preparation": frozenset({"completion_preparation_failed"}),
+    "completion_retention": frozenset({"journal_retention_failed"}),
+})
+_CLEANUP_OPERATION_BY_RESOURCE = MappingProxyType({
+    "attempt_journal": "close",
+    "hf_runner_session": "retire",
+    "chf_runner_session": "retire",
+})
+
+
+def _validate_event_semantics(event: ProviderEvent) -> None:
+    if (
+        type(event) is ExecutionProcessFailed
+        and type(event.stage) is str
+        and type(event.failure_kind) is str
+    ):
+        allowed = _EXECUTION_FAILURE_KINDS_BY_STAGE.get(event.stage)
+        if allowed is not None and event.failure_kind not in allowed:
+            raise ProviderEventError("fact_combination")
+    if type(event) is ProviderCleanupFailed and type(event.resource) is str:
+        operation = _CLEANUP_OPERATION_BY_RESOURCE.get(event.resource)
+        if operation is not None and operation != event.operation:
+            raise ProviderEventError("fact_combination")
 
 
 def require_provider_event(value: object) -> ProviderEvent:

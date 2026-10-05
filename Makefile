@@ -254,19 +254,22 @@ upstream-contracts/check upstream-contracts/write:
 		"$(REPOSITORY_ROOT)" "$$NMR_API_V1_DIR_INPUT" "$$RELEASE_INPUT"
 
 runner/lock/stage runner/lock/check runner/lock/apply: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
+runner/lock/stage runner/lock/check runner/lock/apply: private export TARGET_INPUT := $(value TARGET)
 runner/lock/stage runner/lock/check runner/lock/apply:
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
 	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
-	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$(TARGET)"
+	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$$TARGET_INPUT"
 
 runner/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
+runner/image/build: private export RUNNER_INPUT := $(value RUNNER)
+runner/image/build: private export TARGET_INPUT := $(value TARGET)
 runner/image/build:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
 	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
-	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" "$(RUNNER)" "$(TARGET)"
+	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" "$$RUNNER_INPUT" "$$TARGET_INPUT"
 
 provider/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 provider/image/build:
@@ -416,18 +419,23 @@ release/install:
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-release.sh" \
 		install "$$RUNNER_INPUT" "$$RELEASE_INPUT" "$$ARCHIVE_INPUT" "$$DECLARATION_INPUT"
 
+checkpoint/import: private export RUNNER_INPUT := $(value RUNNER)
+checkpoint/import: private export RELEASE_INPUT := $(value RELEASE)
+checkpoint/import: private export ARCHIVE_INPUT := $(value ARCHIVE)
 checkpoint/import:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
 	@test "$(origin RELEASE)" = command\ line || { echo 'RELEASE must be set on the make command line' >&2; exit 2; }
 	@test "$(origin ARCHIVE)" = command\ line || { echo 'ARCHIVE must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-volume.sh" \
-		import "$(RUNNER)" "$(RELEASE)" "$(ARCHIVE)"
+		import "$$RUNNER_INPUT" "$$RELEASE_INPUT" "$$ARCHIVE_INPUT"
 
+checkpoint/recover: private export VOLUME_INPUT := $(value VOLUME)
+checkpoint/recover: private export CONFIRM_INPUT := $(value CONFIRM)
 checkpoint/recover:
 	@test "$(origin VOLUME)" = command\ line || { echo 'VOLUME must be set on the make command line' >&2; exit 2; }
 	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-volume.sh" \
-		recover "$(VOLUME)" "$(CONFIRM)"
+		recover "$$VOLUME_INPUT" "$$CONFIRM_INPUT"
 
 # Current shared failure interpretation has its own source and API revisions;
 # the historical RELEASE projection above keeps its original meaning.

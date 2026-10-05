@@ -28,6 +28,11 @@ from .provider_credential import (
     parse_provider_signing_credential,
 )
 from .provider_identity_lock import ProviderIdentityLock
+from .provider_events import (
+    ProviderCleanupFailed,
+    bounded_exception_type,
+    render_provider_event,
+)
 from .input_interpreter import (
     INTERPRETER_CONFIG_DIRECTORY,
     InputInterpreter,
@@ -143,30 +148,47 @@ def _run_provider(config_path: Path, readiness: ProviderReadiness) -> None:
                 primary_error = error
                 raise
             finally:
-                cleanup_errors: list[BaseException] = []
-                if journal is not None:
-                    try:
-                        journal.close()
-                    except BaseException as error:
-                        _LOG.exception("Provider journal cleanup failed")
-                        cleanup_errors.append(error)
-                for session in (hf_session, chf_session):
-                    if session is not None and not session.retired:
-                        try:
-                            session.retire()
-                        except BaseException as error:
-                            _LOG.exception("Provider runner-session cleanup failed")
-                            cleanup_errors.append(error)
-                if cleanup_errors:
-                    if primary_error is not None:
-                        primary_error.add_note(
-                            "Provider cleanup could not confirm every local resource closure."
-                        )
-                    else:
-                        raise cleanup_errors[0]
+                _cleanup_provider_resources(
+                    journal, hf_session, chf_session, primary_error
+                )
     finally:
         for signal_number, handler in previous_handlers.items():
             signal.signal(signal_number, handler)
+
+
+def _cleanup_provider_resources(journal, hf_session, chf_session, primary_error) -> None:
+    cleanup_errors: list[BaseException] = []
+    resources = (
+        ("attempt_journal", "close", journal, lambda value: value.close()),
+        ("hf_runner_session", "retire", hf_session, lambda value: value.retire()),
+        ("chf_runner_session", "retire", chf_session, lambda value: value.retire()),
+    )
+    for resource, operation, value, cleanup in resources:
+        if value is None or (
+            operation == "retire" and value.retired
+        ):
+            continue
+        try:
+            cleanup(value)
+        except BaseException as error:
+            _LOG.error("%s", render_provider_event(ProviderCleanupFailed(
+                resource=resource,
+                operation=operation,
+                error_type=bounded_exception_type(error),
+                failure_effect=(
+                    "attached_to_primary" if primary_error is not None
+                    else "process_fatal"
+                ),
+            )))
+            _LOG.exception("Provider %s cleanup failed", resource)
+            cleanup_errors.append(error)
+    if cleanup_errors:
+        if primary_error is not None:
+            primary_error.add_note(
+                "Provider cleanup could not confirm every local resource closure."
+            )
+        else:
+            raise cleanup_errors[0]
 
 
 def _prepare_hello(frozen: FrozenGeneration):

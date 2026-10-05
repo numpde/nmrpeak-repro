@@ -101,9 +101,12 @@ from .provider_events import (
     AttemptConditionConfirmed,
     AttemptConditionUnconfirmed,
     ExecutionObservationLost,
+    ExecutionProcessFailed,
+    ExecutionStopRequired,
     PreparationFailurePolicyDrift,
     PreparationFailureRetained,
     TerminalRecoveryHeld,
+    bounded_exception_type,
     render_provider_event,
 )
 from .product_input import (
@@ -908,9 +911,7 @@ def _report_progress_condition(api, record, phase, context, condition) -> None:
     try:
         observed = interpret_execution_attempt_progress(command, api.send(command))
     except Exception as error:
-        evidence_type = type(error).__name__
-        if len(evidence_type.encode("utf-8", errors="replace")) > 256:
-            evidence_type = "unclassified_exception"
+        evidence_type = bounded_exception_type(error)
         _LOG.warning("%s", render_provider_event(AttemptConditionUnconfirmed(
             job_ref=record.job_ref,
             execution_attempt_ref=record.execution_attempt_ref,
@@ -921,6 +922,44 @@ def _report_progress_condition(api, record, phase, context, condition) -> None:
         )))
         return
     _log_condition_outcome(record, context, condition, observed)
+
+
+def _log_execution_process_failure(
+    record: ActiveAttempt,
+    *,
+    stage: str,
+    failure_kind: str,
+    error: BaseException,
+    cleanup_state: str,
+) -> None:
+    _LOG.error("%s", render_provider_event(ExecutionProcessFailed(
+        job_ref=record.job_ref,
+        execution_attempt_ref=record.execution_attempt_ref,
+        stage=stage,
+        failure_kind=failure_kind,
+        error_type=bounded_exception_type(error),
+        result_state="unknown",
+        recovery="restart_reconciliation",
+        cleanup_state=cleanup_state,
+    )))
+
+
+def _cancel_session_after_failure(
+    session: RunnerSession,
+    error: BaseException,
+    *,
+    note: str,
+) -> str:
+    """Stop one runner without replacing the exception that triggered cleanup."""
+
+    try:
+        session.cancel()
+    except BaseException as cleanup_error:
+        error.add_note(
+            f"{note} Cleanup failure type: {bounded_exception_type(cleanup_error)}."
+        )
+        return "unconfirmed"
+    return "confirmed"
 
 
 def _log_condition_outcome(record, context, condition, observed) -> None:
@@ -1055,30 +1094,111 @@ def execute_prepared(
         phase="running",
         condition_code=None,
     )
-    running_outcome = interpret_execution_attempt_progress(
-        running,
-        api.send(running),
-    )
+    try:
+        running_outcome = interpret_execution_attempt_progress(
+            running,
+            api.send(running),
+        )
+    except BaseException as error:
+        cleanup_state = _cancel_session_after_failure(
+            session,
+            error,
+            note="The validated NMRPeak session also failed to stop.",
+        )
+        _log_execution_process_failure(
+            record,
+            stage="running_progress",
+            failure_kind="running_progress_failed",
+            error=error,
+            cleanup_state=cleanup_state,
+        )
+        raise
     if type(running_outcome) is not AttemptMutationCommitted:
-        session.cancel()
+        _LOG.warning("%s", render_provider_event(
+            _condition_unconfirmed_event(
+                record, "execution_running", None, running_outcome
+            )
+        ))
+        try:
+            session.cancel()
+        except RunnerSessionRetired as error:
+            failure = ExecutionShutdownFailed(
+                "NMRPeak runner stop was unconfirmed after the running update"
+            )
+            _log_execution_process_failure(
+                record,
+                stage="generation_shutdown",
+                failure_kind="running_progress_unconfirmed",
+                error=error,
+                cleanup_state="unconfirmed",
+            )
+            raise failure from error
         return running_outcome
 
     entered = mark_execution_entered(record)
     try:
         journal.replace(record, entered)
     except BaseException as error:
+        cleanup_state = "confirmed"
         try:
             session.cancel()
         except RunnerSessionRetired:
+            cleanup_state = "unconfirmed"
             error.add_note(
                 "The validated NMRPeak session also failed to stop before generation."
             )
+        _log_execution_process_failure(
+            record,
+            stage="execution_entry_retention",
+            failure_kind="journal_retention_failed",
+            error=error,
+            cleanup_state=cleanup_state,
+        )
         raise
 
-    initial_observation = observe_attempt(api=api, record=entered)
+    try:
+        initial_observation = observe_attempt(api=api, record=entered)
+    except BaseException as error:
+        cleanup_state = _cancel_session_after_failure(
+            session,
+            error,
+            note="The validated NMRPeak session also failed to stop.",
+        )
+        _log_execution_process_failure(
+            entered,
+            stage="attempt_observation",
+            failure_kind="initial_observation_failed",
+            error=error,
+            cleanup_state=cleanup_state,
+        )
+        raise
     if not _observation_allows_execution(initial_observation):
-        session.cancel()
-        return _stopped_execution_outcome(journal, entered, initial_observation)
+        _log_execution_stop_trigger(entered, initial_observation)
+        try:
+            session.cancel()
+        except RunnerSessionRetired as error:
+            failure = ExecutionShutdownFailed(
+                "NMRPeak runner stop was unconfirmed before generation"
+            )
+            _log_execution_process_failure(
+                entered,
+                stage="generation_shutdown",
+                failure_kind="pre_generation_stop_unconfirmed",
+                error=error,
+                cleanup_state="unconfirmed",
+            )
+            raise failure from error
+        try:
+            return _stopped_execution_outcome(journal, entered, initial_observation)
+        except BaseException as error:
+            _log_execution_process_failure(
+                entered,
+                stage="execution_state_retention",
+                failure_kind="journal_retention_failed",
+                error=error,
+                cleanup_state="confirmed",
+            )
+            raise
 
     work = _GenerationWork()
     worker = Thread(
@@ -1086,33 +1206,65 @@ def execute_prepared(
         args=(session, prepared.request),
         name="nmrpeak-generation",
     )
-    started_at = time.monotonic()
-    worker.start()
-    _LOG.info(
-        'Generation worker started; job=%s attempt=%s',
-        record.job_ref,
-        record.execution_attempt_ref,
-    )
+    failure_stage = "generation_start"
+    failure_kind = "generation_start_failed"
     try:
+        started_at = time.monotonic()
+        worker.start()
+        _LOG.info(
+            'Generation worker started; job=%s attempt=%s',
+            record.job_ref,
+            record.execution_attempt_ref,
+        )
         while not work.done.is_set():
+            failure_stage = "attempt_observation"
+            failure_kind = "ongoing_observation_failed"
             current = observe_attempt(api=api, record=entered)
             if not _observation_allows_execution(current):
+                _log_execution_stop_trigger(entered, current)
+                failure_stage = "generation_shutdown"
+                failure_kind = "generation_shutdown_unconfirmed"
                 _cancel_and_join_generation(session, worker, observation)
+                failure_stage = "execution_state_retention"
+                failure_kind = "journal_retention_failed"
                 return _stopped_execution_outcome(journal, entered, current)
+            failure_stage = "generation_exchange"
+            failure_kind = "generation_coordination_failed"
             work.done.wait(observation.poll_interval_seconds)
 
+        failure_stage = "generation_shutdown"
+        failure_kind = "generation_shutdown_failed"
         worker.join(observation.shutdown_join_seconds)
         if worker.is_alive():
             raise ExecutionShutdownFailed(
                 "NMRPeak generation signalled completion but its worker did not stop"
             )
+        failure_stage = "attempt_observation"
+        failure_kind = "final_observation_failed"
         final_observation = observe_attempt(api=api, record=entered)
         if not _observation_allows_execution(final_observation):
-            session.cancel()
+            _log_execution_stop_trigger(entered, final_observation)
+            failure_stage = "generation_shutdown"
+            failure_kind = "generation_shutdown_unconfirmed"
+            try:
+                session.cancel()
+            except RunnerSessionRetired as error:
+                raise ExecutionShutdownFailed(
+                    "NMRPeak runner stop was unconfirmed after generation"
+                ) from error
+            failure_stage = "execution_state_retention"
+            failure_kind = "journal_retention_failed"
             return _stopped_execution_outcome(journal, entered, final_observation)
+        failure_stage = "generation_exchange"
         if work.error is not None:
+            failure_kind = (
+                "runner_session_retired"
+                if type(work.error) is RunnerSessionRetired
+                else "generation_failed"
+            )
             raise work.error
         if work.candidates is None:
+            failure_kind = "generation_failed"
             raise AssertionError(
                 "NMRPeak generation finished without candidates or an error"
             )
@@ -1129,13 +1281,34 @@ def execute_prepared(
             f"During NMRPeak generation for job {record.job_ref}, "
             f"attempt {record.execution_attempt_ref}."
         )
+        cleanup_state = "unconfirmed"
         if worker.is_alive():
             try:
                 _cancel_and_join_generation(session, worker, observation)
+                cleanup_state = "confirmed"
             except ExecutionShutdownFailed:
+                cleanup_state = "unconfirmed"
                 error.add_note(
                     "The NMRPeak generation worker also failed to stop after the error."
                 )
+        elif type(error) not in {ExecutionShutdownFailed, RunnerSessionRetired}:
+            cleanup_state = _cancel_session_after_failure(
+                session,
+                error,
+                note="The NMRPeak runner session also failed to stop after the error.",
+            )
+        if type(error) is ExecutionShutdownFailed:
+            failure_stage = "generation_shutdown"
+            failure_kind = "generation_shutdown_unconfirmed"
+        elif type(error) is RunnerSessionRetired and failure_stage == "generation_exchange":
+            failure_kind = "runner_session_retired"
+        _log_execution_process_failure(
+            entered,
+            stage=failure_stage,
+            failure_kind=failure_kind,
+            error=error,
+            cleanup_state=cleanup_state,
+        )
         raise
 
 
@@ -1160,21 +1333,64 @@ def select_completion(
             ),
             generated.session.result_facts,
         )
-    except RunnerResultRejected as error:
-        try:
-            generated.session.cancel()
-        except RunnerSessionRetired:
-            error.add_note(
-                "The rejected NMRPeak result's runner session also failed to stop."
-            )
+    except BaseException as error:
+        cleanup_state = _cancel_session_after_failure(
+            generated.session,
+            error,
+            note="The rejected NMRPeak result's runner session also failed to stop.",
+        )
+        failure_kind = (
+            error.reason.value
+            if type(error) is RunnerResultRejected
+            else "result_correlation_failed"
+            if type(error) is ValueError
+            else "result_validation_failed"
+        )
+        _log_execution_process_failure(
+            record,
+            stage="result_validation",
+            failure_kind=failure_kind,
+            error=error,
+            cleanup_state=cleanup_state,
+        )
         raise
-    prepared = prepare_execution_attempt_complete(
-        execution_attempt_ref=record.execution_attempt_ref,
-        result_schema_id=RESULT_SCHEMA_ID,
-        canonical_result=result,
-    )
-    terminal = retain_terminal_command(record, prepared)
-    journal.replace(record, terminal)
+    try:
+        prepared = prepare_execution_attempt_complete(
+            execution_attempt_ref=record.execution_attempt_ref,
+            result_schema_id=RESULT_SCHEMA_ID,
+            canonical_result=result,
+        )
+        terminal = retain_terminal_command(record, prepared)
+    except BaseException as error:
+        cleanup_state = _cancel_session_after_failure(
+            generated.session,
+            error,
+            note="The NMRPeak runner session also failed to stop after completion preparation failed.",
+        )
+        _log_execution_process_failure(
+            record,
+            stage="completion_preparation",
+            failure_kind="completion_preparation_failed",
+            error=error,
+            cleanup_state=cleanup_state,
+        )
+        raise
+    try:
+        journal.replace(record, terminal)
+    except BaseException as error:
+        cleanup_state = _cancel_session_after_failure(
+            generated.session,
+            error,
+            note="The NMRPeak runner session also failed to stop after completion retention failed.",
+        )
+        _log_execution_process_failure(
+            record,
+            stage="completion_retention",
+            failure_kind="journal_retention_failed",
+            error=error,
+            cleanup_state=cleanup_state,
+        )
+        raise
     _LOG.info(
         "Completion retained for API delivery; job=%s attempt=%s result_sha256=%s result_bytes=%d",
         record.job_ref, record.execution_attempt_ref,
@@ -1442,13 +1658,6 @@ def _stopped_execution_outcome(
     observation: AttemptObservation,
 ) -> ExecutionCutOff | ExecutionResolved | ObservationLost:
     if type(observation) is AttemptObservationFailed:
-        evidence = observation.evidence
-        _LOG.warning("%s", render_provider_event(ExecutionObservationLost(
-            job_ref=record.job_ref,
-            execution_attempt_ref=record.execution_attempt_ref,
-            evidence_type=type(evidence).__name__,
-            **_provider_evidence_facts(evidence),
-        )))
         return ObservationLost(record, observation.evidence)
     snapshot = observation.snapshot
     _LOG.info(
@@ -1462,6 +1671,28 @@ def _stopped_execution_outcome(
         journal.retire(record)
         return ExecutionResolved(snapshot)
     return ExecutionCutOff(record, snapshot)
+
+
+def _log_execution_stop_trigger(
+    record: ActiveAttempt,
+    observation: AttemptObservation,
+) -> None:
+    if type(observation) is AttemptObserved:
+        snapshot = observation.snapshot
+        _LOG.warning("%s", render_provider_event(ExecutionStopRequired(
+            job_ref=record.job_ref,
+            execution_attempt_ref=record.execution_attempt_ref,
+            attempt_state=snapshot.state.value,
+            job_state=snapshot.job_state.value,
+        )))
+        return
+    evidence = observation.evidence
+    _LOG.warning("%s", render_provider_event(ExecutionObservationLost(
+        job_ref=record.job_ref,
+        execution_attempt_ref=record.execution_attempt_ref,
+        evidence_type=type(evidence).__name__,
+        **_provider_evidence_facts(evidence),
+    )))
 
 
 def _cancel_and_join_generation(

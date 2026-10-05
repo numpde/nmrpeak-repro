@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
 from nmrpeak_provider.frozen_generation import FrozenGeneration
 from nmrpeak_provider.provider_main import (
+    _cleanup_provider_resources,
     _prepare_hello,
     main,
     run_provider,
@@ -151,6 +152,52 @@ with patch('nmrpeak_provider.provider_main.run_provider', run):
         self.assertIn("endpoint one refused the connection", rendered)
         self.assertIn("All interpreter endpoints failed", rendered)
         self.assertIn("The hf provider lane stopped", rendered)
+
+    def test_cleanup_attempts_every_resource_and_correlates_each_failure(self) -> None:
+        events = []
+
+        class FailingResource:
+            retired = False
+
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def close(self) -> None:
+                events.append(self.name)
+                raise OSError("private journal detail")
+
+            def retire(self) -> None:
+                events.append(self.name)
+                raise RuntimeError("private runner detail")
+
+        primary = RuntimeError("primary")
+        with self.assertLogs("nmrpeak_provider.provider_main", level="ERROR") as logs:
+            _cleanup_provider_resources(
+                FailingResource("journal"), FailingResource("hf"),
+                FailingResource("chf"), primary,
+            )
+        self.assertEqual(events, ["journal", "hf", "chf"])
+        rendered = "\n".join(logs.output)
+        for resource in ("attempt_journal", "hf_runner_session", "chf_runner_session"):
+            self.assertIn(f"resource='{resource}'", rendered)
+        self.assertIn("error_type='OSError'", rendered)
+        self.assertIn("error_type='RuntimeError'", rendered)
+        self.assertIn("failure_effect='attached_to_primary'", rendered)
+        self.assertIn(
+            "Provider cleanup could not confirm every local resource closure.",
+            primary.__notes__,
+        )
+
+        events.clear()
+        with self.assertLogs(
+            "nmrpeak_provider.provider_main", level="ERROR"
+        ) as fatal_logs, self.assertRaisesRegex(OSError, "private journal detail"):
+            _cleanup_provider_resources(
+                FailingResource("journal"), FailingResource("hf"),
+                FailingResource("chf"), None,
+            )
+        self.assertEqual(events, ["journal", "hf", "chf"])
+        self.assertIn("failure_effect='process_fatal'", "\n".join(fatal_logs.output))
 
     def test_hello_uses_only_the_two_authenticated_frozen_descriptions(self) -> None:
         frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)

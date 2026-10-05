@@ -60,13 +60,22 @@ class TerminalConditionTests(unittest.TestCase):
         progress = progress_receipt(phase="running")
         progress["condition_code"] = "terminal_report_delivery_held"
         api = CapturingApi(success_response(progress))
-        with journal_directory() as root, AttemptJournalStore(root, maximum_records=1) as journal:
+        with journal_directory() as root, AttemptJournalStore(
+            root, maximum_records=1
+        ) as journal, self.assertLogs(
+            "nmrpeak_provider.attempt_lifecycle", level="INFO"
+        ) as logs:
             persist_terminal(journal, terminal)
             outcome = deliver_terminal(api=api, journal=journal, record=terminal)
             self.assertIsInstance(outcome, TerminalPublicationHeld)
             self.assertEqual(journal.records(), (terminal,))
         self.assertEqual([r.operation for r in api.requests], [ProviderOperation.EXECUTION_ATTEMPT_PROGRESS])
         self.assertEqual(json.loads(api.requests[0].body)["condition_code"], progress["condition_code"])
+        rendered = "\n".join(logs.output)
+        self.assertIn("provider_event='terminal_recovery_held'", rendered)
+        self.assertIn("action='reconcile_original'", rendered)
+        self.assertIn("automatic_reads='stopped'", rendered)
+        self.assertIn("provider_event='attempt_condition_confirmed'", rendered)
 
     def test_legacy_unknown_phase_keeps_exact_command_without_guessing(self):
         terminal = replace(terminal_pending(TerminalOperation.FAIL), local_phase=None)
@@ -85,7 +94,9 @@ class TerminalConditionTests(unittest.TestCase):
         api = CapturingApi(ProviderRequestUnavailable(RequestDelivery.POSSIBLE), success_response(reconciling),
                            success_response(attempt_snapshot(execution_attempt_ref=terminal.execution_attempt_ref,
                                             job_ref=terminal.job_ref, state="in_progress", job_state="open")), success_response(held))
-        with journal_directory() as root:
+        with journal_directory() as root, self.assertLogs(
+            "nmrpeak_provider.attempt_lifecycle", level="INFO"
+        ) as logs:
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 persist_terminal(journal, terminal)
                 self.assertIsInstance(deliver_terminal(api=api, journal=journal, record=terminal), TerminalReconciliationPending)
@@ -94,6 +105,10 @@ class TerminalConditionTests(unittest.TestCase):
                 self.assertEqual(journal.records()[0].terminal_request_body, terminal.terminal_request_body)
         self.assertEqual([r.operation for r in api.requests], [ProviderOperation.EXECUTION_ATTEMPT_READ, ProviderOperation.EXECUTION_ATTEMPT_PROGRESS] * 2)
         self.assertEqual([json.loads(api.requests[i].body)["condition_code"] for i in (1, 3)], [reconciling["condition_code"], held["condition_code"]])
+        rendered = "\n".join(logs.output)
+        self.assertIn("automatic_reads='retry_with_backoff'", rendered)
+        self.assertIn("automatic_reads='stopped'", rendered)
+        self.assertIn("observed_state='in_progress'", rendered)
 
     def test_known_closed_attempt_does_not_receive_obsolete_condition(self):
         terminal = replace(terminal_pending(TerminalOperation.FAIL), terminal_hold_action="do_not_resend",

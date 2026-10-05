@@ -14,6 +14,7 @@ from nmrpeak_provider.product_result import (
     ProviderResultFacts,
     ResultLaneIdentity,
     RunnerResultRejected,
+    RunnerResultRejectionReason,
     canonical_result_bytes,
 )
 
@@ -86,27 +87,39 @@ class ProductResultTests(unittest.TestCase):
 
     def test_candidate_collection_is_closed_and_bounded(self) -> None:
         cases = (
-            ((), "JSON array"),
-            ([], "between one and 10"),
-            (["C"] * 11, "between one and 10"),
-            ([1], "non-empty strings"),
-            ([""], "non-empty strings"),
-            (["C C"], "decoder vocabulary"),
-            (["C\nC"], "decoder vocabulary"),
-            (["C" * 3_501], "size limit"),
+            ((), "JSON array", RunnerResultRejectionReason.CANDIDATES_NOT_ARRAY),
+            ([], "between one and 10", RunnerResultRejectionReason.CANDIDATE_COUNT_OUT_OF_RANGE),
+            (["C"] * 11, "between one and 10", RunnerResultRejectionReason.CANDIDATE_COUNT_OUT_OF_RANGE),
+            ([1], "non-empty strings", RunnerResultRejectionReason.CANDIDATE_NOT_TEXT),
+            ([""], "non-empty strings", RunnerResultRejectionReason.CANDIDATE_NOT_TEXT),
+            (["C C"], "decoder vocabulary", RunnerResultRejectionReason.CANDIDATE_OUTSIDE_DECODER_VOCABULARY),
+            (["C\nC"], "decoder vocabulary", RunnerResultRejectionReason.CANDIDATE_OUTSIDE_DECODER_VOCABULARY),
+            (["C" * 3_501], "size limit", RunnerResultRejectionReason.CANDIDATE_TOO_LARGE),
         )
-        for candidates, message in cases:
+        for candidates, message, reason in cases:
             with self.subTest(message=message):
-                with self.assertRaisesRegex(RunnerResultRejected, message):
+                with self.assertRaisesRegex(RunnerResultRejected, message) as caught:
                     canonical_result_bytes(candidates, hf_facts())
+                self.assertIs(caught.exception.reason, reason)
 
     def test_largest_admitted_result_stays_below_the_provider_cap(self) -> None:
         encoded = canonical_result_bytes(["C" * 3_498] * 10, hf_facts())
         self.assertLess(len(encoded), MAX_RESULT_BYTES)
 
     def test_final_canonical_byte_cap_rejects_json_escape_expansion(self) -> None:
-        with self.assertRaisesRegex(RunnerResultRejected, "canonical byte limit"):
+        with self.assertRaisesRegex(RunnerResultRejected, "canonical byte limit") as caught:
             canonical_result_bytes(["\\" * 3_498] * 10, hf_facts())
+        self.assertIs(caught.exception.reason, RunnerResultRejectionReason.RESULT_TOO_LARGE)
+
+    def test_result_rejection_reason_catalogue_is_complete(self) -> None:
+        self.assertEqual(set(_reason for _input, _message, _reason in (
+            ((), "", RunnerResultRejectionReason.CANDIDATES_NOT_ARRAY),
+            ([], "", RunnerResultRejectionReason.CANDIDATE_COUNT_OUT_OF_RANGE),
+            ([1], "", RunnerResultRejectionReason.CANDIDATE_NOT_TEXT),
+            (["C" * 3_501], "", RunnerResultRejectionReason.CANDIDATE_TOO_LARGE),
+            (["C C"], "", RunnerResultRejectionReason.CANDIDATE_OUTSIDE_DECODER_VOCABULARY),
+            (["\\" * 3_498] * 10, "", RunnerResultRejectionReason.RESULT_TOO_LARGE),
+        )), set(RunnerResultRejectionReason))
 
     def test_provenance_rejects_unowned_or_malformed_identities(self) -> None:
         forged_identity = ResultLaneIdentity(

@@ -88,6 +88,37 @@ _CASES = (
         "evidence_type='ProviderRequestUnavailable'; delivery='possible'",
     ),
     (
+        events.ExecutionStopRequired(
+            job_ref="job:one", execution_attempt_ref="attempt:one",
+            attempt_state="in_progress", job_state="cancelled",
+        ),
+        "provider_event='execution_stop_required'; job_ref='job:one'; "
+        "execution_attempt_ref='attempt:one'; attempt_state='in_progress'; "
+        "job_state='cancelled'",
+    ),
+    (
+        events.ExecutionProcessFailed(
+            job_ref="job:one", execution_attempt_ref="attempt:one",
+            stage="result_validation", failure_kind="candidate_not_text",
+            error_type="RunnerResultRejected", result_state="unknown",
+            recovery="restart_reconciliation", cleanup_state="confirmed",
+        ),
+        "provider_event='execution_process_failed'; job_ref='job:one'; "
+        "execution_attempt_ref='attempt:one'; stage='result_validation'; "
+        "failure_kind='candidate_not_text'; error_type='RunnerResultRejected'; "
+        "result_state='unknown'; recovery='restart_reconciliation'; "
+        "cleanup_state='confirmed'",
+    ),
+    (
+        events.ProviderCleanupFailed(
+            resource="hf_runner_session", operation="retire",
+            error_type="RunnerSessionRetired", failure_effect="attached_to_primary",
+        ),
+        "provider_event='provider_cleanup_failed'; resource='hf_runner_session'; "
+        "operation='retire'; error_type='RunnerSessionRetired'; "
+        "failure_effect='attached_to_primary'",
+    ),
+    (
         events.TerminalRecoveryHeld(
             job_ref="job:one", execution_attempt_ref="attempt:one",
             operation="fail", command_fingerprint="sha256:" + "b" * 64,
@@ -146,6 +177,53 @@ class ProviderEventTests(unittest.TestCase):
                 configuration_id=1,  # type: ignore[arg-type]
                 failure_kind="transport", failure_reason="failed",
             )
+
+    def test_execution_process_categories_are_closed(self) -> None:
+        values = {
+            "job_ref": "job:one",
+            "execution_attempt_ref": "attempt:one",
+            "stage": "result_validation",
+            "failure_kind": "candidate_not_text",
+            "error_type": "RunnerResultRejected",
+            "result_state": "unknown",
+            "recovery": "restart_reconciliation",
+            "cleanup_state": "confirmed",
+        }
+        for field_name in (
+            "stage", "failure_kind", "result_state", "recovery", "cleanup_state"
+        ):
+            with self.subTest(field_name=field_name):
+                invalid = values | {field_name: "arbitrary"}
+                with self.assertRaises(events.ProviderEventError):
+                    events.ExecutionProcessFailed(**invalid)
+        with self.assertRaisesRegex(events.ProviderEventError, "fact_combination"):
+            events.ExecutionProcessFailed(
+                **(values | {
+                    "stage": "result_validation",
+                    "failure_kind": "running_progress_failed",
+                })
+            )
+        with self.assertRaises(events.ProviderEventError):
+            events.ExecutionProcessFailed(**(values | {"stage": []}))
+
+    def test_cleanup_categories_are_closed(self) -> None:
+        values = {
+            "resource": "hf_runner_session",
+            "operation": "retire",
+            "error_type": "RunnerSessionRetired",
+            "failure_effect": "attached_to_primary",
+        }
+        for field_name in ("resource", "operation", "failure_effect"):
+            with self.subTest(field_name=field_name):
+                invalid = values | {field_name: "arbitrary"}
+                with self.assertRaises(events.ProviderEventError):
+                    events.ProviderCleanupFailed(**invalid)
+        with self.assertRaisesRegex(events.ProviderEventError, "fact_combination"):
+            events.ProviderCleanupFailed(
+                **(values | {"resource": "attempt_journal", "operation": "retire"})
+            )
+        with self.assertRaises(events.ProviderEventError):
+            events.ProviderCleanupFailed(**(values | {"resource": []}))
         with self.assertRaises(events.ProviderEventError):
             events.InterpreterEndpointFailed(
                 execution_attempt_ref="attempt:one",

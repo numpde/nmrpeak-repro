@@ -1,7 +1,9 @@
 NMRPeak transparent failure propagation refactor (2026-10-03)
 ===========================================================
 
-Status: deployed and qualified at implementation commit 7ae3bff; limitations below.
+Status: the production rollout through implementation commit 7ae3bff is deployed
+and qualified. Later hardening described at the end is offline-qualified and is
+not claimed as deployed; limitations remain below.
 Scope: nmrpeak-repro provider, interpreter, HF/CHF runner boundary, Attempt
 lifecycle, operator evidence, and end-to-end message verification.
 Related: notes/001_nmrpeak_multi_runner_deployment_20260824.txt,
@@ -1142,11 +1144,28 @@ interface, and truncated UDP DNS responses fail closed. Repository tests cover
 the snapshot adversarial cases, container
 posture, selection handling, WLAN rejection, and DNS binding.
 
-The complete containerized unit suite passed with 528 tests after the typed
-condition consolidation. No new signed live API operation was performed in
-this follow-up because the demo credential was unavailable locally; the
-opt-in live harness is formalized but that is not live coverage. Execution
-and result-stage process-fatal reporting remain candidates for the next typed
-event increment. Observation-loss and terminal-recovery summaries now use the
-same bounded event catalogue; process-fatal behavior is not represented as
-part of this completed boundary.
+The complete containerized unit suite passed with 540 tests after the typed
+condition and process-failure consolidation. No new signed live API operation
+was performed in this follow-up because the demo credential was unavailable
+locally; the opt-in live harness is formalized but that is not live coverage.
+Execution and result-stage process-fatal paths now emit bounded events with
+Job, Attempt, a closed stage/failure pair, result uncertainty, cleanup state,
+and restart reconciliation. The event is emitted for running-update,
+observation, worker-start, generation, result-validation, and journal-retention
+failures. Provider cleanup events likewise admit only reviewed resource/action
+pairs. The original exception remains process-fatal, its protected traceback
+remains available for diagnosis, and the durable Attempt remains for recovery;
+this does not invent a public scientific failure. Execution-monitoring read
+loss, authoritative stop triggers, and terminal-recovery summaries use the same
+bounded event catalogue. The runner protocol still has RESULT but no correlated
+FAILED frame; adding expected no-result semantics remains a separate protocol
+design task.
+
+The Make boundary audit subsequently found four older operator recipes that
+still expanded command-line values directly into shell text. Runner lock/image
+and checkpoint import/recovery targets now export those values as data, matching
+the safer deployment and live-test targets. Repository tests inject shell
+syntax into every affected variable. WLAN tests now directly assert
+`SO_BINDTODEVICE` on both UDP resolver and outbound TCP sockets and prove that a
+DNS truncation response fails closed. The containerized repository lane passed
+37 tests after these additions.

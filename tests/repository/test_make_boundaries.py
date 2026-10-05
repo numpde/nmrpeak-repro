@@ -11,6 +11,21 @@ REPOSITORY_ROOT = Path(__file__).parents[2]
 
 
 class MakeBoundaryTests(unittest.TestCase):
+    def _assert_dry_run_keeps_values_out_of_shell(self, target: str, values: tuple[str, ...]) -> None:
+        marker = "/tmp/nmrpeak-make-injection-marker"
+        Path(marker).unlink(missing_ok=True)
+        injected = f'payload"; touch {marker}; echo "'
+        result = subprocess.run(
+            ("make", "--dry-run", target, *(f"{name}={injected}" for name in values)),
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(f"touch {marker}", result.stdout)
+        self.assertFalse(Path(marker).exists())
+
     def test_persistent_job_confirmation_cannot_inject_shell_syntax(self) -> None:
         marker = "/tmp/nmrpeak-make-injection-marker"
         Path(marker).unlink(missing_ok=True)
@@ -48,6 +63,19 @@ class MakeBoundaryTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn(f"touch {marker}", result.stdout)
                 self.assertFalse(Path(marker).exists())
+
+    def test_operator_target_values_cannot_inject_shell_syntax(self) -> None:
+        cases = (
+            ("runner/lock/stage", ("TARGET",)),
+            ("runner/lock/check", ("TARGET",)),
+            ("runner/lock/apply", ("TARGET",)),
+            ("runner/image/build", ("RUNNER", "TARGET")),
+            ("checkpoint/import", ("RUNNER", "RELEASE", "ARCHIVE")),
+            ("checkpoint/recover", ("VOLUME", "CONFIRM")),
+        )
+        for target, values in cases:
+            with self.subTest(target=target):
+                self._assert_dry_run_keeps_values_out_of_shell(target, values)
 
     def test_image_builder_rejects_a_non_wireless_interface(self) -> None:
         result = subprocess.run(

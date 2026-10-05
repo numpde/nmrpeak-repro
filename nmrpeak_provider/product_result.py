@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from hashlib import sha256
 import re
 
@@ -83,8 +84,39 @@ class ProviderResultFacts:
                 )
 
 
+class RunnerResultRejectionReason(Enum):
+    RESULT_TOO_LARGE = "result_too_large"
+    CANDIDATES_NOT_ARRAY = "candidates_not_array"
+    CANDIDATE_COUNT_OUT_OF_RANGE = "candidate_count_out_of_range"
+    CANDIDATE_NOT_TEXT = "candidate_not_text"
+    CANDIDATE_TOO_LARGE = "candidate_too_large"
+    CANDIDATE_OUTSIDE_DECODER_VOCABULARY = "candidate_outside_decoder_vocabulary"
+
+
+_RESULT_REJECTION_MESSAGES = {
+    RunnerResultRejectionReason.RESULT_TOO_LARGE:
+        "Runner result exceeds its canonical byte limit",
+    RunnerResultRejectionReason.CANDIDATES_NOT_ARRAY:
+        "Runner result candidates must be a JSON array",
+    RunnerResultRejectionReason.CANDIDATE_COUNT_OUT_OF_RANGE:
+        f"Runner result must contain between one and {MAX_CANDIDATES} candidates",
+    RunnerResultRejectionReason.CANDIDATE_NOT_TEXT:
+        "Runner result candidates must be non-empty strings",
+    RunnerResultRejectionReason.CANDIDATE_TOO_LARGE:
+        "Runner result candidate exceeds its size limit",
+    RunnerResultRejectionReason.CANDIDATE_OUTSIDE_DECODER_VOCABULARY:
+        "Runner result candidate contains text outside the decoder vocabulary",
+}
+
+
 class RunnerResultRejected(ValueError):
     """Hostile runner output cannot be journaled as a success."""
+
+    def __init__(self, reason: RunnerResultRejectionReason) -> None:
+        if type(reason) is not RunnerResultRejectionReason:
+            raise TypeError("Runner result rejection requires a closed reason")
+        self.reason = reason
+        super().__init__(_RESULT_REJECTION_MESSAGES[reason])
 
 
 def canonical_result_bytes(
@@ -114,7 +146,7 @@ def canonical_result_bytes(
     }
     encoded = canonical_json_bytes(result)
     if len(encoded) > MAX_RESULT_BYTES:
-        raise RunnerResultRejected("Runner result exceeds its canonical byte limit")
+        raise RunnerResultRejected(RunnerResultRejectionReason.RESULT_TOO_LARGE)
     return encoded
 
 
@@ -128,29 +160,27 @@ def source_closure_ref(manifest: bytes) -> str:
 
 def _validate_candidates(candidates: object) -> tuple[str, ...]:
     if type(candidates) is not list:
-        raise RunnerResultRejected("Runner result candidates must be a JSON array")
+        raise RunnerResultRejected(RunnerResultRejectionReason.CANDIDATES_NOT_ARRAY)
     if not 1 <= len(candidates) <= MAX_CANDIDATES:
         raise RunnerResultRejected(
-            f"Runner result must contain between one and {MAX_CANDIDATES} candidates"
+            RunnerResultRejectionReason.CANDIDATE_COUNT_OUT_OF_RANGE
         )
     validated: list[str] = []
     for candidate in candidates:
         if type(candidate) is not str or not candidate:
-            raise RunnerResultRejected(
-                "Runner result candidates must be non-empty strings"
-            )
+            raise RunnerResultRejected(RunnerResultRejectionReason.CANDIDATE_NOT_TEXT)
         if (
             len(candidate) > MAX_GENERATED_CHARACTERS
             or len(candidate.encode("utf-8")) > MAX_GENERATED_BYTES
         ):
-            raise RunnerResultRejected("Runner result candidate exceeds its size limit")
+            raise RunnerResultRejected(RunnerResultRejectionReason.CANDIDATE_TOO_LARGE)
         outside_decoder_vocabulary = any(
             character not in SUPPORTED_GENERATED_CHARACTERS
             for character in candidate
         )
         if outside_decoder_vocabulary:
             raise RunnerResultRejected(
-                "Runner result candidate contains text outside the decoder vocabulary"
+                RunnerResultRejectionReason.CANDIDATE_OUTSIDE_DECODER_VOCABULARY
             )
         validated.append(candidate)
     return tuple(validated)

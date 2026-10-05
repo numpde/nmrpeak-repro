@@ -12,8 +12,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 import unittest
+from unittest.mock import patch
 
 from nmrpeak_provider.attempt_identity import derive_provider_attempt_key
+from nmrpeak_provider._nmr_api_failures import FailureInterpretation
 from nmrpeak_provider.attempt_journal import (
     ActiveAttempt,
     LatestDiagnostic,
@@ -61,6 +63,7 @@ from nmrpeak_provider.attempt_lifecycle import (
     observe_attempt,
     prepare_execution,
     _report_interpreter_condition,
+    _provider_evidence_facts,
     reconcile_record,
     run_admitted_job,
     run_recovery_record,
@@ -100,6 +103,7 @@ from nmrpeak_provider.runner_protocol import (
 from nmrpeak_provider.runner_session import (
     RunnerDeadlines,
     RunnerSession,
+    RunnerSessionRetired,
     GeneratedRunnerCandidates,
     ValidatedRunnerRequest,
 )
@@ -133,7 +137,15 @@ from nmrpeak_provider.provider_https import (
     ProviderHttpResponse,
     ProviderOperation,
     ProviderRequestUnavailable,
+    ProviderResponseRejected,
+    ProviderTlsRejected,
     RequestDelivery,
+    ResponseRejection,
+)
+from nmrpeak_provider.provider_problems import (
+    ProblemRejection,
+    ProviderProblem,
+    ProviderProblemRejected,
 )
 from nmrpeak_provider.provider_success import (
     ProviderSuccessRejected,
@@ -170,6 +182,14 @@ class CapturingApi:
     def send(self, request: object) -> object:
         self.requests.append(request)
         return self.responses.pop(0)
+
+
+class RaisingApi(CapturingApi):
+    def send(self, request: object) -> object:
+        response = super().send(request)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 class UnusedSession:
@@ -243,6 +263,22 @@ class NonStoppingSession:
 
     def cancel(self) -> None:
         pass
+
+
+class CancelRejectedSession:
+    def cancel(self) -> None:
+        raise RunnerSessionRetired("private runner shutdown detail")
+
+
+class FailedWorkerSession:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def generate(self, request: object) -> object:
+        raise RuntimeError("private worker failure detail")
+
+    def cancel(self) -> None:
+        self.cancelled = True
 
 
 class AttemptLifecycleTests(unittest.TestCase):
@@ -813,6 +849,62 @@ class AttemptLifecycleTests(unittest.TestCase):
             self.assertIn(f"delivery='{rendered_delivery}'", rendered)
             self.assertNotIn("private transport detail", rendered)
 
+    def test_provider_evidence_projection_covers_every_admitted_variant(self) -> None:
+        cases = (
+            (
+                ProviderProblem(
+                    status=409, problem_type="urn:test", title="Conflict",
+                    instance="private", transport_request_id="header-id",
+                    body_request_id="body-id", code="operation_conflict", detail=None,
+                ),
+                {"http_status": 409, "code": "operation_conflict",
+                 "problem_type": "urn:test", "problem_title": "Conflict",
+                 "transport_request_id": "header-id", "body_request_id": "body-id"},
+            ),
+            (
+                ProviderProblemRejected(ProblemRejection.INVALID_CURRENT_CONTRACT, 400),
+                {"http_status": 400, "reason": "invalid_current_contract"},
+            ),
+            (
+                ProviderProblemRejected(
+                    ProblemRejection.INVALID_CURRENT_CONTRACT,
+                    400,
+                    FailureInterpretation(
+                        supported=True, verified=False, rejection="invalid_shape",
+                        status=400, problem_type="urn:test:rejected", title="Rejected",
+                        body_request_id="body-id", header_request_id="header-id",
+                    ),
+                ),
+                {"http_status": 400, "reason": "invalid_current_contract",
+                 "problem_type": "urn:test:rejected", "problem_title": "Rejected",
+                 "transport_request_id": "header-id", "body_request_id": "body-id"},
+            ),
+            (
+                ProviderRequestUnavailable(RequestDelivery.NOT_SENT, status=503),
+                {"http_status": 503, "delivery": "not_sent"},
+            ),
+            (
+                ProviderResponseRejected(
+                    ResponseRejection.INVALID_TOPOLOGY, 502,
+                    RequestDelivery.RESPONSE_RECEIVED,
+                ),
+                {"http_status": 502, "reason": "invalid_topology",
+                 "delivery": "response_received"},
+            ),
+            (ProviderTlsRejected(), {"delivery": "not_sent"}),
+            (
+                ProviderSuccessRejected(SuccessRejection.INVALID_SHAPE),
+                {"reason": "invalid_shape"},
+            ),
+        )
+        for evidence, expected in cases:
+            with self.subTest(evidence=type(evidence).__name__):
+                projected = _provider_evidence_facts(evidence)
+                self.assertEqual(
+                    {key: value for key, value in projected.items() if value is not None},
+                    expected,
+                )
+
     def test_condition_reporting_contains_a_hostile_exception_type(self) -> None:
         hostile_error = type("X" * 5000, (Exception,), {})()
 
@@ -1202,6 +1294,57 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertTrue(channel.closed)
                 self.assertEqual(len(channel.received_frames), 1)
 
+    def test_initial_resolved_stop_retirement_failure_is_correlated(self) -> None:
+        active = active_attempt(valid_chf_input())
+        session, channel, prepared = validated_execution(active)
+        api = CapturingApi(
+            success_response(progress_receipt(phase="running")),
+            success_response(attempt_snapshot(
+                execution_attempt_ref=active.execution_attempt_ref,
+                job_ref=active.job_ref,
+                state="expired",
+                job_state="closed",
+            )),
+        )
+
+        class RetireRejectedJournal:
+            def __init__(self, store: AttemptJournalStore) -> None:
+                self.store = store
+
+            def replace(self, old, new) -> None:
+                self.store.replace(old, new)
+
+            def retire(self, record) -> None:
+                raise OSError("private retirement detail")
+
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as store:
+                pending = pending_from_active(active)
+                store.admit(pending)
+                store.replace(pending, active)
+                with self.assertLogs(
+                    "nmrpeak_provider.attempt_lifecycle", level="WARNING"
+                ) as logs, self.assertRaisesRegex(OSError, "private retirement"):
+                    execute_prepared(
+                        api=api,
+                        journal=RetireRejectedJournal(store),
+                        session=session,
+                        prepared=prepared,
+                        observation=ObservationPolicy(0.01, 0.1),
+                    )
+                retained, = store.records()
+                self.assertIs(
+                    retained.local_phase, LocalExecutionPhase.EXECUTION_ENTERED
+                )
+        self.assertTrue(channel.closed)
+        rendered = "\n".join(logs.output)
+        self.assertIn("provider_event='execution_stop_required'", rendered)
+        self.assertIn("attempt_state='expired'", rendered)
+        self.assertIn("stage='execution_state_retention'", rendered)
+        self.assertIn("failure_kind='journal_retention_failed'", rendered)
+        self.assertIn("cleanup_state='confirmed'", rendered)
+        self.assertNotIn("private retirement detail", rendered)
+
     def test_observer_cancels_blocked_generation_on_cutoff_or_lost_read(self) -> None:
         cases = (
             (
@@ -1276,6 +1419,196 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertTrue(channel.closed)
         self.assertEqual(len(channel.received_frames), 1)
 
+    def test_early_execution_exceptions_are_correlated_and_cancel_the_runner(self) -> None:
+        cases = (
+            (
+                (OSError("private running update detail"),),
+                "running_progress",
+                "running_progress_failed",
+                LocalExecutionPhase.PRE_EXECUTION,
+            ),
+            (
+                (
+                    success_response(progress_receipt(phase="running")),
+                    OSError("private observation detail"),
+                ),
+                "attempt_observation",
+                "initial_observation_failed",
+                LocalExecutionPhase.EXECUTION_ENTERED,
+            ),
+        )
+        for responses, stage, failure_kind, retained_phase in cases:
+            with self.subTest(stage=stage), journal_directory() as root:
+                active = active_attempt(valid_chf_input())
+                session, channel, prepared = validated_execution(active)
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    pending = pending_from_active(active)
+                    journal.admit(pending)
+                    journal.replace(pending, active)
+                    with self.assertLogs(
+                        "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+                    ) as logs, self.assertRaises(OSError):
+                        execute_prepared(
+                            api=RaisingApi(*responses),
+                            journal=journal,
+                            session=session,
+                            prepared=prepared,
+                            observation=ObservationPolicy(0.01, 0.1),
+                        )
+                    retained, = journal.records()
+                    self.assertIs(retained.local_phase, retained_phase)
+                self.assertTrue(channel.closed)
+                rendered = "\n".join(logs.output)
+                self.assertIn("provider_event='execution_process_failed'", rendered)
+                self.assertIn(f"stage='{stage}'", rendered)
+                self.assertIn(f"failure_kind='{failure_kind}'", rendered)
+                self.assertIn("cleanup_state='confirmed'", rendered)
+                self.assertNotIn("private", rendered)
+
+    def test_generation_start_failure_is_correlated_and_cancels_the_runner(self) -> None:
+        active = active_attempt(valid_chf_input())
+        session, channel, prepared = validated_execution(active)
+
+        class StartRejectedThread:
+            def start(self) -> None:
+                raise RuntimeError("private thread start detail")
+
+            def is_alive(self) -> bool:
+                return False
+
+        api = CapturingApi(
+            success_response(progress_receipt(phase="running")),
+            success_response(attempt_snapshot(
+                execution_attempt_ref=active.execution_attempt_ref,
+                job_ref=active.job_ref,
+                state="in_progress",
+                job_state="open",
+            )),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                pending = pending_from_active(active)
+                journal.admit(pending)
+                journal.replace(pending, active)
+                with (
+                    patch(
+                        "nmrpeak_provider.attempt_lifecycle.Thread",
+                        return_value=StartRejectedThread(),
+                    ),
+                    self.assertLogs(
+                        "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+                    ) as logs,
+                    self.assertRaisesRegex(RuntimeError, "private thread start"),
+                ):
+                    execute_prepared(
+                        api=api,
+                        journal=journal,
+                        session=session,
+                        prepared=prepared,
+                        observation=ObservationPolicy(0.01, 0.1),
+                    )
+        self.assertTrue(channel.closed)
+        rendered = "\n".join(logs.output)
+        self.assertIn("stage='generation_start'", rendered)
+        self.assertIn("failure_kind='generation_start_failed'", rendered)
+        self.assertIn("cleanup_state='confirmed'", rendered)
+        self.assertNotIn("private thread start detail", rendered)
+
+    def test_generation_observation_exceptions_keep_their_actual_stage(self) -> None:
+        active = active_attempt(valid_chf_input())
+        session, channel, prepared = validated_execution(
+            active, fault=FakeRunnerFault.BLOCK_GENERATION
+        )
+        api = RaisingApi(
+            success_response(progress_receipt(phase="running")),
+            success_response(attempt_snapshot(
+                execution_attempt_ref=active.execution_attempt_ref,
+                job_ref=active.job_ref,
+                state="in_progress",
+                job_state="open",
+            )),
+            OSError("private polling observation detail"),
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                pending = pending_from_active(active)
+                journal.admit(pending)
+                journal.replace(pending, active)
+                with self.assertLogs(
+                    "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+                ) as logs, self.assertRaisesRegex(OSError, "private polling"):
+                    execute_prepared(
+                        api=api,
+                        journal=journal,
+                        session=session,
+                        prepared=prepared,
+                        observation=ObservationPolicy(0.01, 0.2),
+                    )
+        self.assertTrue(channel.closed)
+        rendered = "\n".join(logs.output)
+        self.assertIn("stage='attempt_observation'", rendered)
+        self.assertIn("failure_kind='ongoing_observation_failed'", rendered)
+        self.assertIn("cleanup_state='confirmed'", rendered)
+        self.assertNotIn("private polling observation detail", rendered)
+
+    def test_cancellation_failure_preserves_the_trigger_before_fatal_exit(self) -> None:
+        active = active_attempt(valid_chf_input())
+        prepared = PreparedForExecution(active, object())
+        cases = (
+            (
+                (ProviderRequestUnavailable(RequestDelivery.POSSIBLE),),
+                "attempt_condition_unconfirmed",
+                "context='execution_running'",
+                "running_progress_unconfirmed",
+            ),
+            (
+                (
+                    success_response(progress_receipt(phase="running")),
+                    ProviderRequestUnavailable(RequestDelivery.POSSIBLE),
+                ),
+                "execution_observation_lost",
+                "delivery='possible'",
+                "pre_generation_stop_unconfirmed",
+            ),
+            (
+                (
+                    success_response(progress_receipt(phase="running")),
+                    success_response(
+                        attempt_snapshot(
+                            execution_attempt_ref=active.execution_attempt_ref,
+                            job_ref=active.job_ref,
+                            state="in_progress",
+                            job_state="cancelled",
+                        )
+                    ),
+                ),
+                "execution_stop_required",
+                "job_state='cancelled'",
+                "pre_generation_stop_unconfirmed",
+            ),
+        )
+        for responses, trigger_event, trigger_fact, failure_kind in cases:
+            with self.subTest(trigger_event=trigger_event), journal_directory() as root:
+                with AttemptJournalStore(root, maximum_records=1) as journal:
+                    pending = pending_from_active(active)
+                    journal.admit(pending)
+                    journal.replace(pending, active)
+                    with self.assertLogs(
+                        "nmrpeak_provider.attempt_lifecycle", level="WARNING"
+                    ) as logs, self.assertRaises(ExecutionShutdownFailed):
+                        execute_prepared(
+                            api=CapturingApi(*responses), journal=journal,
+                            session=CancelRejectedSession(), prepared=prepared,
+                            observation=ObservationPolicy(0.01, 0.1),
+                        )
+                rendered = "\n".join(logs.output)
+                self.assertIn(f"provider_event='{trigger_event}'", rendered)
+                self.assertIn(trigger_fact, rendered)
+                self.assertIn("provider_event='execution_process_failed'", rendered)
+                self.assertIn(f"failure_kind='{failure_kind}'", rendered)
+                self.assertIn("cleanup_state='unconfirmed'", rendered)
+                self.assertNotIn("private runner shutdown detail", rendered)
+
     def test_non_stopping_worker_is_reported_as_process_fatal(self) -> None:
         active = active_attempt(valid_chf_input())
         session = NonStoppingSession()
@@ -1304,9 +1637,10 @@ class AttemptLifecycleTests(unittest.TestCase):
                 journal.admit(pending_from_active(active))
                 journal.replace(pending_from_active(active), active)
                 try:
-                    with self.assertRaisesRegex(
-                        ExecutionShutdownFailed,
-                        "confirmed stopped state",
+                    with self.assertLogs(
+                        "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+                    ) as logs, self.assertRaisesRegex(
+                        ExecutionShutdownFailed, "confirmed stopped state"
                     ):
                         execute_prepared(
                             api=api,
@@ -1322,6 +1656,50 @@ class AttemptLifecycleTests(unittest.TestCase):
                     journal.records()[0].local_phase,
                     LocalExecutionPhase.EXECUTION_ENTERED,
                 )
+        rendered = "\n".join(logs.output)
+        self.assertIn("provider_event='execution_process_failed'", rendered)
+        self.assertIn("stage='generation_shutdown'", rendered)
+        self.assertIn("failure_kind='generation_shutdown_unconfirmed'", rendered)
+        self.assertIn("result_state='unknown'", rendered)
+        self.assertIn("recovery='restart_reconciliation'", rendered)
+
+    def test_exited_failed_worker_still_retires_its_runner_session(self) -> None:
+        active = active_attempt(valid_chf_input())
+        session = FailedWorkerSession()
+        prepared = PreparedForExecution(active, object())
+        open_snapshot = success_response(
+            attempt_snapshot(
+                execution_attempt_ref=active.execution_attempt_ref,
+                job_ref=active.job_ref,
+                state="in_progress",
+                job_state="open",
+            )
+        )
+        api = CapturingApi(
+            success_response(progress_receipt(phase="running")),
+            open_snapshot,
+            open_snapshot,
+        )
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as journal:
+                pending = pending_from_active(active)
+                journal.admit(pending)
+                journal.replace(pending, active)
+                with self.assertLogs(
+                    "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+                ) as logs, self.assertRaisesRegex(RuntimeError, "private worker"):
+                    execute_prepared(
+                        api=api,
+                        journal=journal,
+                        session=session,
+                        prepared=prepared,
+                        observation=ObservationPolicy(0.01, 0.1),
+                    )
+        self.assertTrue(session.cancelled)
+        rendered = "\n".join(logs.output)
+        self.assertIn("failure_kind='generation_failed'", rendered)
+        self.assertIn("cleanup_state='confirmed'", rendered)
+        self.assertNotIn("private worker failure detail", rendered)
 
     def test_generated_candidates_become_one_durable_completion(self) -> None:
         entered = entered_attempt(valid_chf_input())
@@ -1375,13 +1753,21 @@ class AttemptLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(entered))
                 journal.replace(pending_from_active(entered), entered)
-                with self.assertRaises(RunnerResultRejected):
+                with self.assertLogs(
+                    "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+                ) as logs, self.assertRaises(RunnerResultRejected):
                     select_completion(
                         journal=journal,
                         generated=generated,
                     )
                 self.assertEqual(journal.records(), (entered,))
         self.assertTrue(channel.closed)
+        rendered = "\n".join(logs.output)
+        self.assertIn("provider_event='execution_process_failed'", rendered)
+        self.assertIn("stage='result_validation'", rendered)
+        self.assertIn("failure_kind='candidate_count_out_of_range'", rendered)
+        self.assertIn(f"job_ref='{entered.job_ref}'", rendered)
+        self.assertIn(f"execution_attempt_ref='{entered.execution_attempt_ref}'", rendered)
 
     def test_completion_rejects_candidates_from_another_attempt(self) -> None:
         generated_for = entered_attempt(valid_chf_input())
@@ -1393,8 +1779,9 @@ class AttemptLifecycleTests(unittest.TestCase):
             execution_attempt_ref="execution_attempt:sha256:" + "b" * 64,
             local_phase=LocalExecutionPhase.EXECUTION_ENTERED,
         )
+        channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame())
         session = RunnerSession.admit(
-            FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame()),
+            channel,
             RUNNER_FACTS,
             RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
             CHF_RUNNER_CODEC,
@@ -1408,12 +1795,51 @@ class AttemptLifecycleTests(unittest.TestCase):
             with AttemptJournalStore(root, maximum_records=1) as journal:
                 journal.admit(pending_from_active(selected_record))
                 journal.replace(pending_from_active(selected_record), selected_record)
-                with self.assertRaisesRegex(ValueError, "retained Attempt"):
-                    select_completion(
-                        journal=journal,
-                        generated=generated,
-                    )
+                with self.assertLogs(
+                    "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+                ) as logs, self.assertRaisesRegex(ValueError, "retained Attempt"):
+                    select_completion(journal=journal, generated=generated)
                 self.assertEqual(journal.records(), (selected_record,))
+        self.assertTrue(channel.closed)
+        rendered = "\n".join(logs.output)
+        self.assertIn("stage='result_validation'", rendered)
+        self.assertIn("failure_kind='result_correlation_failed'", rendered)
+        self.assertIn("cleanup_state='confirmed'", rendered)
+
+    def test_completion_retention_failure_is_correlated_and_cancels_runner(self) -> None:
+        entered = entered_attempt(valid_chf_input())
+        channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame())
+        session = RunnerSession.admit(
+            channel,
+            RUNNER_FACTS,
+            RunnerDeadlines(0.1, 0.1, 0.1, 0.1, 0.1),
+            CHF_RUNNER_CODEC,
+        )
+        generated = CandidatesGenerated(
+            entered,
+            generated_candidates(session, entered),
+            session,
+        )
+
+        class BrokenJournal:
+            def replace(self, old, new):
+                self.old = old
+                self.new = new
+                raise OSError("private journal retention detail")
+
+        journal = BrokenJournal()
+        with self.assertLogs(
+            "nmrpeak_provider.attempt_lifecycle", level="ERROR"
+        ) as logs, self.assertRaises(OSError):
+            select_completion(journal=journal, generated=generated)
+        self.assertEqual(journal.old, entered)
+        self.assertIs(type(journal.new), TerminalPending)
+        self.assertTrue(channel.closed)
+        rendered = "\n".join(logs.output)
+        self.assertIn("stage='completion_retention'", rendered)
+        self.assertIn("failure_kind='journal_retention_failed'", rendered)
+        self.assertIn("cleanup_state='confirmed'", rendered)
+        self.assertNotIn("private journal retention detail", rendered)
 
     def test_command_bound_terminal_receipts_retire_complete_and_fail(self) -> None:
         for operation in (TerminalOperation.COMPLETE, TerminalOperation.FAIL):
