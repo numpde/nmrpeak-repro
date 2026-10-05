@@ -24,6 +24,7 @@ from tests.live.failure_propagation import (
     _negative_attempt_outcome,
     _exclusive_state_lock,
     _public_problem_evidence,
+    _read_private_credential,
     _reject_cancelled_without_attempt,
     _strict_json,
     _validate_state_shape,
@@ -37,6 +38,22 @@ from tests.live.success_propagation import (
 
 
 class LiveFailurePropagationTests(unittest.TestCase):
+    def test_signing_credential_requires_private_regular_owned_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            credential = directory / "credential.json"
+            credential.write_bytes(b"{}")
+            credential.chmod(0o600)
+            self.assertEqual(_read_private_credential(credential), b"{}")
+            credential.chmod(0o640)
+            with self.assertRaisesRegex(LiveTestError, "owner-only"):
+                _read_private_credential(credential)
+            credential.chmod(0o600)
+            link = directory / "credential-link.json"
+            link.symlink_to(credential)
+            with self.assertRaisesRegex(LiveTestError, "credential read failed"):
+                _read_private_credential(link)
+
     def test_unexpected_failure_summary_does_not_repeat_message(self) -> None:
         item = {
             "execution_attempt_ref": "execution_attempt:sha256:" + "a" * 64,

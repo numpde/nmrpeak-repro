@@ -1,17 +1,36 @@
+override SHELL := bash
+override .SHELLFLAGS := -eu -o pipefail -c
 PYTHON ?= python3
-REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+override REPOSITORY_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+override NMRPEAK_TEST_UID := $(shell id -u)
+override NMRPEAK_TEST_GID := $(shell id -g)
+override NMRPEAK_TEST_CHECKOUT_KEY := $(shell printf '%s' "$(REPOSITORY_ROOT)" | sha256sum | cut -c1-12)
+override NMRPEAK_TEST_BASE_KEY := $(shell "$(REPOSITORY_ROOT)/scripts/test-image-key.sh" "$(REPOSITORY_ROOT)")
+override NMRPEAK_TEST_IMAGE := nmrpeak-repro/python-test:$(NMRPEAK_TEST_BASE_KEY)
+override NMRPEAK_TEST_PROJECT := nmrpeak-repro-test-$(NMRPEAK_TEST_UID)-$(NMRPEAK_TEST_CHECKOUT_KEY)
+override NMRPEAK_TEST_COMPOSE := env \
+	NMRPEAK_TEST_IMAGE="$(NMRPEAK_TEST_IMAGE)" \
+	NMRPEAK_TEST_UID="$(NMRPEAK_TEST_UID)" \
+	NMRPEAK_TEST_GID="$(NMRPEAK_TEST_GID)" \
+	NMRPEAK_TEST_CHECKOUT="$(REPOSITORY_ROOT)" \
+	docker --context default compose --env-file /dev/null \
+	-p "$(NMRPEAK_TEST_PROJECT)" -f compose/test.yml
+override NMRPEAK_TEST_NON_ROOT_GUARD = if [[ "$(NMRPEAK_TEST_UID)" == 0 || "$(NMRPEAK_TEST_GID)" == 0 || "$(NMRPEAK_TEST_UID)" == 65532 ]]; then printf '%s\n' 'Containerized tests require a non-root invoking user distinct from provider UID 65532.' >&2; exit 2; fi
 .DEFAULT_GOAL := help
 
-.PHONY: help check/source checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
 	@printf '%s\n' \
 		'NMR API provider' \
 		'' \
 		'Verify this checkout:' \
-		'  make test [PYTHON=<prepared-python>]' \
-		'      Run the networkless, credential-free, checkpoint-free default lane.' \
-		'      Requires the dependencies in requirements.lock to be installed; does not install them.' \
+		'  make test' \
+		'      Run the complete default lane in the pinned, networkless test container.' \
+		'      One read-only source snapshot excludes credentials, deployment state, weights, and ignored files.' \
+		'  make test-image/base/build NMRPEAK_WIFI_INTERFACE=<name>' \
+		'      Prepare the content-keyed dependency image; apt, pip, and base pulls use the Wi-Fi-bound proxy.' \
+		'      Ordinary test targets never pull images or use the network.' \
 		'  make test/unit' \
 		'  make test/contract' \
 		'  make test/integration' \
@@ -94,35 +113,34 @@ help:
 		'      Remove one unused provider identity lock after exact confirmation.' \
 		'  There is no blanket cleanup target.'
 
-test: test/unit test/contract test/integration test/model-behavior-fixtures test/repository
+test: check/test-image
+	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
+		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" all
 
-test/unit:
-	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \
-		-s "$(REPOSITORY_ROOT)/tests/unit" \
-		-t "$(REPOSITORY_ROOT)" -v
+test-image/base/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
+test-image/base/build:
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line -a -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
+	@"$(REPOSITORY_ROOT)/scripts/test-image-base.sh" \
+		"$(REPOSITORY_ROOT)" "$$NMRPEAK_WIFI_INTERFACE_INPUT"
 
-test/contract:
-	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \
-		-s "$(REPOSITORY_ROOT)/tests/contract" \
-		-t "$(REPOSITORY_ROOT)" -v
+check/test-image:
+	@$(NMRPEAK_TEST_NON_ROOT_GUARD); \
+	endpoint="$$(docker --context default context inspect default --format '{{.Endpoints.docker.Host}}')"; \
+	case "$$endpoint" in unix:///*) ;; *) echo "Docker context default is not local: $$endpoint" >&2; exit 2 ;; esac; \
+	image_id="$$(docker --context default image ls --quiet --no-trunc "$(NMRPEAK_TEST_IMAGE)")"; \
+	if [[ -z "$$image_id" ]]; then \
+		printf '%s\n' 'The exact local test dependency image is absent.' \
+			'Run: make test-image/base/build NMRPEAK_WIFI_INTERFACE=wlp10s0' >&2; exit 2; \
+	fi; \
+	observed="$$(docker --context default image inspect "$$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"; \
+	if [[ "$$observed" != "$(NMRPEAK_TEST_BASE_KEY)" ]]; then \
+		echo 'The local test image label does not match its requested dependency identity.' >&2; exit 2; \
+	fi; \
+	$(NMRPEAK_TEST_COMPOSE) config --quiet
 
-test/integration:
-	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \
-		-s "$(REPOSITORY_ROOT)/tests/integration" \
-		-t "$(REPOSITORY_ROOT)" -v
-
-test/model-behavior-fixtures:
-	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest \
-		tests.model_behavior.test_run_interpreter -v
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT):$${PYTHONPATH:-}" \
-		$(PYTHON) "$(REPOSITORY_ROOT)/tests/model_behavior/run_interpreter.py" --lane hf --list
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT):$${PYTHONPATH:-}" \
-		$(PYTHON) "$(REPOSITORY_ROOT)/tests/model_behavior/run_interpreter.py" --lane chf --list
-
-test/repository:
-	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover \
-		-s "$(REPOSITORY_ROOT)/tests/repository" \
-		-t "$(REPOSITORY_ROOT)" -v
+test/unit test/contract test/integration test/repository test/model-behavior-fixtures: check/test-image
+	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
+		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" "$(@F)"
 
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_API_ORIGIN_INPUT := $(value LIVE_API_ORIGIN)
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_API_TOPOLOGY_INPUT := $(value LIVE_API_TOPOLOGY)
@@ -132,6 +150,8 @@ test/live/failure-propagation test/live/failure-propagation/observe: private exp
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_RUN_LABEL_INPUT := $(value LIVE_RUN_LABEL)
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_STATE_INPUT := $(value LIVE_STATE)
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_CA_CERTIFICATE_INPUT := $(value LIVE_CA_CERTIFICATE)
+test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_SOURCE_REVISION_INPUT := $(value LIVE_SOURCE_REVISION)
+test/live/failure-propagation test/live/failure-propagation/observe: check/test-image
 test/live/failure-propagation test/live/failure-propagation/observe:
 	@test "$(origin LIVE_API_ORIGIN)" = command\ line || { echo 'LIVE_API_ORIGIN must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_API_TOPOLOGY)" = command\ line || { echo 'LIVE_API_TOPOLOGY must be set on the make command line' >&2; exit 2; }
@@ -140,18 +160,23 @@ test/live/failure-propagation test/live/failure-propagation/observe:
 	@test "$(origin LIVE_PROVIDER_REF)" = command\ line || { echo 'LIVE_PROVIDER_REF must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_RUN_LABEL)" = command\ line || { echo 'LIVE_RUN_LABEL must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_STATE)" = command\ line || { echo 'LIVE_STATE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_SOURCE_REVISION)" = command\ line || { echo 'LIVE_SOURCE_REVISION must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_CA_CERTIFICATE)" = undefined -o "$(origin LIVE_CA_CERTIFICATE)" = command\ line || { echo 'LIVE_CA_CERTIFICATE must be set on the make command line' >&2; exit 2; }
 	@if test "$@" = test/live/failure-propagation; then \
 		test "$(origin CONFIRM_PERSISTENT_JOBS)" = command\ line -a "$(value CONFIRM_PERSISTENT_JOBS)" = 1 || { echo 'set CONFIRM_PERSISTENT_JOBS=1 to create persistent Jobs' >&2; exit 2; }; \
 	fi
 	@set -- "$$(test "$@" = test/live/failure-propagation && printf run || printf observe)" \
 		--api-origin "$$LIVE_API_ORIGIN_INPUT" --expected-topology "$$LIVE_API_TOPOLOGY_INPUT" \
-		--credential "$$LIVE_USER_CREDENTIAL_INPUT" --project-ref "$$LIVE_PROJECT_REF_INPUT" \
+		--credential /run/nmrpeak-live/credential.json --project-ref "$$LIVE_PROJECT_REF_INPUT" \
 		--provider-ref "$$LIVE_PROVIDER_REF_INPUT" --run-label "$$LIVE_RUN_LABEL_INPUT" \
-		--state "$$LIVE_STATE_INPUT"; \
-	if test -n "$$LIVE_CA_CERTIFICATE_INPUT"; then set -- "$$@" --ca-certificate "$$LIVE_CA_CERTIFICATE_INPUT"; fi; \
+		--state "/run/nmrpeak-live/state/$$(basename -- "$$LIVE_STATE_INPUT")"; \
+	if test -n "$$LIVE_CA_CERTIFICATE_INPUT"; then set -- "$$@" --ca-certificate /run/nmrpeak-live/ca.pem; fi; \
 	if test "$@" = test/live/failure-propagation; then set -- "$$@" --confirm-persistent-jobs; fi; \
-	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -m tests.live.failure_propagation "$$@"
+	"$(REPOSITORY_ROOT)/scripts/container-live-test.sh" \
+		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" \
+		"$$LIVE_SOURCE_REVISION_INPUT" "$$LIVE_USER_CREDENTIAL_INPUT" \
+		"$$LIVE_STATE_INPUT" "$$LIVE_CA_CERTIFICATE_INPUT" \
+		tests.live.failure_propagation -- "$$@"
 
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_API_ORIGIN_INPUT := $(value LIVE_API_ORIGIN)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_API_TOPOLOGY_INPUT := $(value LIVE_API_TOPOLOGY)
@@ -165,6 +190,8 @@ test/live/success-propagation test/live/success-propagation/observe: private exp
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_CHF_CHECKPOINT_INPUT := $(value LIVE_EXPECTED_CHF_CHECKPOINT)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_HF_IMAGE_INPUT_ID_INPUT := $(value LIVE_EXPECTED_HF_IMAGE_INPUT_ID)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_CHF_IMAGE_INPUT_ID_INPUT := $(value LIVE_EXPECTED_CHF_IMAGE_INPUT_ID)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_SOURCE_REVISION_INPUT := $(value LIVE_SOURCE_REVISION)
+test/live/success-propagation test/live/success-propagation/observe: check/test-image
 test/live/success-propagation test/live/success-propagation/observe:
 	@test "$(origin LIVE_API_ORIGIN)" = command\ line || { echo 'LIVE_API_ORIGIN must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_API_TOPOLOGY)" = command\ line || { echo 'LIVE_API_TOPOLOGY must be set on the make command line' >&2; exit 2; }
@@ -173,6 +200,7 @@ test/live/success-propagation test/live/success-propagation/observe:
 	@test "$(origin LIVE_PROVIDER_REF)" = command\ line || { echo 'LIVE_PROVIDER_REF must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_RUN_LABEL)" = command\ line || { echo 'LIVE_RUN_LABEL must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_STATE)" = command\ line || { echo 'LIVE_STATE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LIVE_SOURCE_REVISION)" = command\ line || { echo 'LIVE_SOURCE_REVISION must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_EXPECTED_HF_CHECKPOINT)" = command\ line || { echo 'LIVE_EXPECTED_HF_CHECKPOINT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_EXPECTED_CHF_CHECKPOINT)" = command\ line || { echo 'LIVE_EXPECTED_CHF_CHECKPOINT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LIVE_EXPECTED_HF_IMAGE_INPUT_ID)" = command\ line || { echo 'LIVE_EXPECTED_HF_IMAGE_INPUT_ID must be set on the make command line' >&2; exit 2; }
@@ -183,16 +211,20 @@ test/live/success-propagation test/live/success-propagation/observe:
 	fi
 	@set -- "$$(test "$@" = test/live/success-propagation && printf run || printf observe)" \
 		--api-origin "$$LIVE_API_ORIGIN_INPUT" --expected-topology "$$LIVE_API_TOPOLOGY_INPUT" \
-		--credential "$$LIVE_USER_CREDENTIAL_INPUT" --project-ref "$$LIVE_PROJECT_REF_INPUT" \
+		--credential /run/nmrpeak-live/credential.json --project-ref "$$LIVE_PROJECT_REF_INPUT" \
 		--provider-ref "$$LIVE_PROVIDER_REF_INPUT" --run-label "$$LIVE_RUN_LABEL_INPUT" \
-		--state "$$LIVE_STATE_INPUT" \
+		--state "/run/nmrpeak-live/state/$$(basename -- "$$LIVE_STATE_INPUT")" \
 		--expected-hf-checkpoint "$$LIVE_EXPECTED_HF_CHECKPOINT_INPUT" \
 		--expected-chf-checkpoint "$$LIVE_EXPECTED_CHF_CHECKPOINT_INPUT" \
 		--expected-hf-image-input "$$LIVE_EXPECTED_HF_IMAGE_INPUT_ID_INPUT" \
 		--expected-chf-image-input "$$LIVE_EXPECTED_CHF_IMAGE_INPUT_ID_INPUT"; \
-	if test -n "$$LIVE_CA_CERTIFICATE_INPUT"; then set -- "$$@" --ca-certificate "$$LIVE_CA_CERTIFICATE_INPUT"; fi; \
+	if test -n "$$LIVE_CA_CERTIFICATE_INPUT"; then set -- "$$@" --ca-certificate /run/nmrpeak-live/ca.pem; fi; \
 	if test "$@" = test/live/success-propagation; then set -- "$$@" --confirm-persistent-jobs; fi; \
-	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -m tests.live.success_propagation "$$@"
+	"$(REPOSITORY_ROOT)/scripts/container-live-test.sh" \
+		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" \
+		"$$LIVE_SOURCE_REVISION_INPUT" "$$LIVE_USER_CREDENTIAL_INPUT" \
+		"$$LIVE_STATE_INPUT" "$$LIVE_CA_CERTIFICATE_INPUT" \
+		tests.live.success_propagation -- "$$@"
 
 check/source:
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \

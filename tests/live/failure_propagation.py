@@ -175,6 +175,33 @@ def _write_state(path: Path, value: object) -> None:
             ) from error
 
 
+def _read_private_credential(path: Path) -> bytes:
+    """Read one bounded owner-only credential without following the leaf."""
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or
+                stat.S_IMODE(metadata.st_mode) & 0o077):
+            raise LiveTestError("credential must be an owner-only regular file owned by this user")
+        if not 1 <= metadata.st_size <= 65_536:
+            raise LiveTestError("credential must contain between 1 and 65536 bytes")
+        payload = bytearray()
+        while len(payload) < metadata.st_size:
+            chunk = os.read(descriptor, metadata.st_size - len(payload))
+            if not chunk:
+                raise LiveTestError("credential ended before its measured size")
+            payload.extend(chunk)
+        if os.read(descriptor, 1):
+            raise LiveTestError("credential grew while it was being read")
+        return bytes(payload)
+    except OSError as error:
+        raise LiveTestError(f"credential read failed: {type(error).__name__}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 @contextmanager
 def _exclusive_state_lock(path: Path):
     """Prevent two processes from owning one durable create intent."""
@@ -219,7 +246,7 @@ class SignedApi:
         except (OSError, ssl.SSLError) as error:
             raise LiveTestError(f"TLS trust loading failed: {type(error).__name__}") from error
         try:
-            credential = _strict_json(credential_path.read_text(encoding="utf-8"))
+            credential = _strict_json(_read_private_credential(credential_path).decode("utf-8"))
             if not isinstance(credential, dict):
                 raise TypeError("credential is not an object")
             self.credential_ref = credential["credential_ref"]

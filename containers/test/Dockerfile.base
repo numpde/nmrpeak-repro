@@ -1,0 +1,47 @@
+# Use the daemon-bundled frontend: a syntax image could require an unproxied
+# BuildKit pull before this Dockerfile's WLAN-bound proxy settings take effect.
+# Networked preparation image. Ordinary tests never build or pull this image.
+ARG PYTHON_BASE_IMAGE=invalid.invalid/nmrpeak-test-base:must-be-supplied
+FROM ${PYTHON_BASE_IMAGE}
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG NO_PROXY
+ARG no_proxy
+
+ENV HOME=/tmp \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_COMPILE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_NO_INPUT=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONHASHSEED=0 \
+    PYTHONSAFEPATH=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /build
+COPY containers/test/os-packages.lock requirements.lock ./
+RUN test -n "$HTTP_PROXY" && test "$HTTP_PROXY" = "$http_proxy" \
+    && test -n "$HTTPS_PROXY" && test "$HTTPS_PROXY" = "$https_proxy" \
+    && test -z "$NO_PROXY" && test -z "$no_proxy" \
+    && packages="$(tr '\n' ' ' < os-packages.lock)" \
+    && apt-get -o "Acquire::http::Proxy=$http_proxy" -o "Acquire::https::Proxy=$https_proxy" update \
+    && apt-get -o "Acquire::http::Proxy=$http_proxy" -o "Acquire::https::Proxy=$https_proxy" \
+        install --no-install-recommends -y ${packages} \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m pip install --require-hashes --only-binary=:all: \
+        --requirement requirements.lock \
+    && python -m pip check \
+    && ln -s /usr/local/bin/python3 /usr/bin/python3 \
+    && rm -rf /build
+
+ARG TEST_BASE_IDENTITY
+RUN printf '%s\n' "$TEST_BASE_IDENTITY" | grep -Eq '^[0-9a-f]{64}$'
+LABEL io.numpde.nmrpeak.test-base-key="$TEST_BASE_IDENTITY"
+
+RUN mkdir -p /workspace /run/nmrpeak-live/state \
+    && touch /run/nmrpeak-live/credential.json /run/nmrpeak-live/ca.pem
+WORKDIR /workspace

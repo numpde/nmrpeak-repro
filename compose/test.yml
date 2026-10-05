@@ -1,0 +1,78 @@
+x-test-common: &test-common
+    image: ${NMRPEAK_TEST_IMAGE:?set NMRPEAK_TEST_IMAGE}
+    pull_policy: never
+    user: "${NMRPEAK_TEST_UID:?set NMRPEAK_TEST_UID}:${NMRPEAK_TEST_GID:?set NMRPEAK_TEST_GID}"
+    init: true
+    working_dir: /workspace
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    cpus: "2.0"
+    mem_limit: 1g
+    memswap_limit: 1g
+    environment:
+      HOME: /tmp
+      NMRPEAK_TEST_CONTAINER: "1"
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: /workspace
+      PYTHONSAFEPATH: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    # Tests execute generated fake tools, so /tmp is executable by design.
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,exec,size=1g,mode=1777
+
+services:
+  test-runner:
+    <<: *test-common
+    network_mode: "none"
+    volumes:
+      # The host helper materializes a self-contained snapshot containing only
+      # tracked and explicit nonignored source files plus sanitized Git data.
+      - type: bind
+        source: ${NMRPEAK_TEST_CHECKOUT:?set NMRPEAK_TEST_CHECKOUT}
+        target: /workspace
+        read_only: true
+        bind:
+          create_host_path: false
+    entrypoint:
+      - python
+      - -P
+      - /workspace/repository_checks/run_unittest.py
+    command:
+      - /workspace/tests/unit
+      - --top-level
+      - /workspace
+
+  live-test-runner:
+    <<: *test-common
+    volumes:
+      - type: bind
+        source: ${NMRPEAK_TEST_CHECKOUT:?set NMRPEAK_TEST_CHECKOUT}
+        target: /workspace
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NMRPEAK_LIVE_CREDENTIAL:-/dev/null}
+        target: /run/nmrpeak-live/credential.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NMRPEAK_LIVE_STATE_DIRECTORY:-/tmp}
+        target: /run/nmrpeak-live/state
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NMRPEAK_LIVE_CA_CERTIFICATE:-/dev/null}
+        target: /run/nmrpeak-live/ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    entrypoint:
+      - python
+      - -P
