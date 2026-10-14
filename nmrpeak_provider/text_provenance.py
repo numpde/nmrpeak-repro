@@ -9,16 +9,16 @@ log, wire, or display sink still owns whether that provenance is acceptable.
 from typing import NewType
 
 
-# Caller text may contain private scientific material or hostile presentation
-# content. Verification of its bytes and identity does not make it publishable.
+# Caller excerpts need contextual redaction and safe text rendering before
+# diagnostic publication; scientific values are not automatically sensitive.
 UserProvidedText = NewType("UserProvidedText", str)
 
 # Model prose may hallucinate or reproduce user text from its prompt. A valid
 # model protocol response therefore remains distinct from reviewed product copy.
 ModelGeneratedText = NewType("ModelGeneratedText", str)
 
-# Provider-owned, source-free facts may reach a caller only through a reviewed
-# failure-publication rule. This marker does not validate or sanitize text.
+# Provider diagnostics include attributed external explanations after redaction.
+# Publication rules own their bounds; this marker performs no sanitization.
 ProviderDiagnosticText = NewType("ProviderDiagnosticText", str)
 
 # Server A authors problem details for its authenticated caller. They may quote

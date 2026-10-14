@@ -1,5 +1,9 @@
 Preparation failure explanation (2026-09-14)
 ============================================
+
+Diagnostic disclosure policy superseded by note 006 on 2026-10-14.
+The decisions and rollout evidence below are historical.
+
 The actual API/GUI rehearsal exposed only invalid_structure to the user.
 InputRejected can originate in source admission or interpreted model input;
 its internal reason is not proof that the user supplied incorrect data.

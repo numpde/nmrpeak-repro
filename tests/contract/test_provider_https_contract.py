@@ -1,4 +1,4 @@
-"""Keep the HTTPS operation table equal to the authenticated API release."""
+"""Keep consumed HTTPS operations equal to their authenticated API release."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ class ProviderHttpsContractTests(unittest.TestCase):
         for path, path_item in release.openapi["paths"].items():
             for method, operation in path_item.items():
                 operation_id = operation["operationId"]
+                if operation_id not in release.routes:
+                    continue
                 expected[ProviderOperation(operation_id)] = {
                     "method": method.upper(),
                     "request_body_limit": operation["x-nmr-max-request-body-bytes"],

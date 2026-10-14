@@ -17,10 +17,10 @@ from .canonical_json import (
 
 PROVIDER_HTTP_CONTRACT_ID = "nmr.provider.http.v1"
 PROVIDER_HTTP_RELEASE_REF = (
-    "sha256:ad01fc7c8a070ae752ab1bffb8abe954f3629e21b262cd0e9f0a554a3b07684c"
+    "sha256:719055db7751605c0e5325ca23bcbe66cde631376d4b2b99523c8e4db75f0d01"
 )
 PROVIDER_HTTP_RELEASE_SOURCE_REVISION = (
-    "c385071ab0958ce0ab2803424060e80f9b884658"
+    "12a53e720fc87e1a4144c76203f8853d5afaf753"
 )
 
 _MANIFEST_SCHEMA_ID = "nmr.provider.http_contract_release_manifest.v1"
@@ -206,7 +206,7 @@ def _load_schemas(
         if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
             raise ValueError(f"provider release schema draft drift: {path}")
         schemas[schema_id] = schema
-    if len(schemas) != 14:
+    if len(schemas) != 16:
         raise ValueError("provider release schema inventory has drifted")
     return schemas
 

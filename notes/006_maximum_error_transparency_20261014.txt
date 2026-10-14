@@ -6,8 +6,8 @@ Status and authority
 
 This note records the user's intended product policy following the review of
 NMRPeak's failure propagation and its Magnet and SECS siblings. It defines the
-required direction for a thorough revision; it does not claim implementation,
-deployment, or a completed audit of every error surface.
+required direction and records local implementation below. It does not claim
+deployment or completed live qualification of every error surface.
 
 The user's instruction is: "max transparency, but no obviously sensitive
 material." This applies throughout the system, not only to model/interpreter
@@ -255,3 +255,14 @@ Deployment, Compose, image and volume commands preserve bounded redacted stderr,
 exit status, partial timeout evidence and cleanup causes. ACL failures identify
 the executable and affected path; launch failures and uncertain timed-out effects
 remain distinct. CLI rendering carries nested operating-system causes and notes.
+
+The shared API canonical and generated descriptions now permit relevant
+non-sensitive diagnostic excerpts and attributed explanations, with credentials,
+known confidential material and unrelated personal information excluded. API
+source commit 12a53e72 and immutable release 719055db7751605c0e5325ca23bcbe66cde631376d4b2b99523c8e4db75f0d01
+record this documentation-only change. NMRPeak consumes the authenticated new
+release, which also includes the API's two existing Upload-related schemas;
+it also carries existing API Problem, recovery and send-effect metadata updates.
+The nine consumed routes and runtime admission (owned by the unchanged generated
+failure decoder) remain unchanged. Historical releases and
+retained terminal commands remain immutable.

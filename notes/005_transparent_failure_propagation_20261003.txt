@@ -1,6 +1,10 @@
 NMRPeak transparent failure propagation refactor (2026-10-03)
 ===========================================================
 
+Diagnostic disclosure policy superseded by note 006 on 2026-10-14.
+The decisions and rollout evidence below are historical.
+
+
 Status: the production rollout through implementation commit 7ae3bff is deployed
 and qualified. Later hardening through c479dce is offline-qualified and its
 current live harness has passed against that deployment; the later provider
