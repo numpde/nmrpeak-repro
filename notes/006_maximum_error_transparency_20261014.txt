@@ -1,0 +1,209 @@
+Maximum error transparency: intended policy and revision scope (2026-10-14)
+=======================================================================
+
+Status and authority
+--------------------
+
+This note records the user's intended product policy following the review of
+NMRPeak's failure propagation and its Magnet and SECS siblings. It defines the
+required direction for a thorough revision; it does not claim implementation,
+deployment, or a completed audit of every error surface.
+
+The user's instruction is: "max transparency, but no obviously sensitive
+material." This applies throughout the system, not only to model/interpreter
+failures. It covers user messages, operator diagnostics, exceptions, protocols,
+logs, retained Attempt evidence, recovery, deployment commands, and clients.
+
+This policy supersedes the restrictive disclosure choices in note 005 where
+they discard useful explanations, offending values, endpoint messages, API
+detail, or diagnostic history merely because those facts are externally
+authored, unverified, or absent from a closed vocabulary. Note 003's generic
+preparation explanation is not the intended default either. Existing notes
+remain historical records of their decisions and evidence.
+
+Policy
+------
+
+Preserve and expose the most useful available explanation of a failure,
+including relevant evidence and the original component's reason. Remove
+obviously sensitive material. State who reported or established the facts,
+what remains uncertain, what effects occurred, and what can happen next.
+
+An unverified explanation can still be reported faithfully as an explanation
+from its producer. Independent verification is required to assert its claim
+as established fact; it is not required to tell the user what the interpreter,
+worker, endpoint, parser, or operating system reported. Attribution and an
+uncertainty statement should accompany useful detail instead of replacing it.
+
+For example, an illustrative failure could say:
+
+    Interpreter X reported: "Carbon-13 peaks are missing." This assessment
+    has not been independently verified. Generation did not start.
+
+This example is not a diagnosis of the incident below. A deterministic parser
+or runner rejection should instead identify its actual constraint and relevant
+field/value, count, limit, or other observed evidence.
+
+Disclosure and presentation
+---------------------------
+
+* Exclude credentials, private keys, passwords, bearer tokens, session cookies,
+  authorization headers, signed access capabilities, and credential-bearing
+  URL or connection-string components. Exclude other information known to be
+  sensitive in the actual context, such as explicitly confidential third-party
+  content or personal information unrelated to diagnosis.
+* Scientific input and output, an offending scalar, a field name, a model's
+  explanation, an endpoint reason, or a useful filesystem location are not
+  automatically secret. Show relevant excerpts and facts when needed to
+  understand the failure. Do not expand "sensitive" to mean all supplied data,
+  all external text, all implementation detail, or every exception message.
+* Preserve diagnostic information before limiting its display. Redact known
+  credentials before truncation, so a size limit cannot expose their prefixes.
+  A suspicious fragment may be withheld without discarding the surrounding
+  explanation. Redaction must not turn a specific cause into generic prose
+  when the useful non-sensitive part can be retained.
+* Treat messages as text, never executable instructions or markup. Escape for
+  the receiving surface, handle terminal controls, and bound output size.
+  External authorship and unsafe presentation are reasons to sanitize the
+  presentation, not reasons to erase the explanation.
+* Avoid indiscriminate payload dumps. A concise user message can quote the
+  offending value or producer explanation without copying the whole Job,
+  transcript, result, environment, or request headers. Authorized operator
+  evidence may carry more context where it materially supports diagnosis.
+* State redaction, truncation, or unavailable detail when it affects diagnosis.
+  Where detail must be omitted from one surface, retain useful non-sensitive
+  evidence in an accessible correlated surface. Do not tell users to consult
+  diagnostics that were never retained or have already been retired.
+* Unknown or unfamiliar error codes must not cause accompanying explanation
+  to disappear. Stable classifications serve machine consumers; they are not
+  an allowlist of everything a person is permitted to learn.
+
+No generic redactor can guarantee detection of every arbitrary secret. Keep
+credential ownership explicit at the boundary that knows the configured
+values, avoid copying credential-bearing containers, and retain useful facts
+from the failure. That limitation does not authorize blanket opacity.
+
+Truth, effects, and recovery
+---------------------------
+
+Keep the primary cause, its chain, and any cleanup failure available with their
+actual relationship. A secondary shutdown, logging, storage, or delivery error
+must not silently replace the original failure. Preserve phase and correlation
+through wrappers, protocol responses, terminal selection, and recovery.
+
+Explain separately whether preparation failed, execution started, the worker
+stopped, a result exists, and the API accepted the terminal report. A timeout
+or lost reply does not establish success or failure of the remote operation.
+Report known causes without claiming an uncertain outcome became certain.
+
+Retain specific failure evidence when it is observed. After restart, use that
+durable evidence to explain the interruption where it supports the statement.
+If only interruption is known, say so. Never reconstruct certainty from an
+uncorrelated log or guess that an interpreter candidate defect occurred in the
+submitted source. Recommend correction or retry only with an explained basis.
+
+Preserve exact terminal-command journaling, receipt binding, and delivery
+reconciliation. Once retained, a terminal command is immutable for replay.
+Improved diagnostics must not rewrite historical API rows or replace a pending
+command. Additional diagnostic evidence can have its own lifecycle and identity.
+
+Incident and comparison
+-----------------------
+
+The user reported Attempt
+execution_attempt:sha256:1a3ee22b643e35c61b2e1703ec68407f0c9c681160b6d06f1f217ef43f068822
+with the public message beginning "The interpreter route reported a problem
+with the submitted description" and saying the exact cause was not independently
+verified. NMRPeak's current policy maps model_reported_problem to this fixed
+message and discards the model explanation. The interpreter selects that
+outcome after an all-report endpoint route. This identifies the implemented
+classification; the underlying model claims for this exact Attempt were not
+retrieved. SSH access to ProArt timed out during the investigation.
+
+The source comparison used NMRPeak 7e25717, Magnet 8477890, and SECS 34f5915.
+These are checkout snapshots, not proof of the revisions running on ProArt.
+
+* NMRPeak provides useful parser paths, constraints, token counts, route facts,
+  and delivery certainty. However, input_issue_message.py excludes offending
+  values; the preparation policy replaces model reports; the OpenAI adapter
+  drops error.message/param and unfamiliar identifiers; ordinary provider retry
+  rendering omits verified API detail. Execution faults can be logged more
+  specifically than their eventual restart interruption report. Its private
+  latest-diagnostic summary is retired with the resolved obligation. The Docker
+  deployment wrapper retains only the last printable stderr line in its error.
+* Magnet's E02/G01 failure policies deliberately forward bounded interpreter
+  explanations and admitted model/worker diagnostics. G01 has correlated worker
+  failure responses and phase information. Magnet still has generic unexpected
+  failure paths and a sparse endpoint adapter; it is useful precedent, not a
+  complete implementation of this policy.
+* SECS publishes attributed interpreter explanations, carries reader rejection
+  and selection history, includes redacted endpoint reasons, and preserves
+  verified API Problem detail. Its Attempt store writes separate restricted
+  diagnostic/report evidence before terminal publication, preserving evidence
+  beyond clearing the active obligation. Unexpected exceptions still have
+  restricted message disclosure, so SECS also requires judgment rather than
+  wholesale copying.
+
+Relevant owners include NMRPeak's preparation_failure_policy.py, policy TOMLs,
+input_issue_message.py, input_interpreter.py, interpreter.py,
+openai_chat_interpreter.py, attempt_lifecycle.py, provider_process.py,
+provider_events.py, runner boundary, journal and inspection code, and deployment
+commands. Sibling precedents include Magnet's analysis_failure_policy bindings
+and worker failure responses, and SECS's provider/{outcomes,chat,problem,
+analysis_run,diagnostics,attempt_store}.py.
+
+Required revision across the system
+-----------------------------------
+
+1. Inventory the complete path from each failure producer to its user and
+   operator surfaces: configuration/startup; deployment/build commands; Job and
+   Upload reads; parsing and source access; interpretation; runner admission,
+   execution and results; API/endpoint transport; timeouts and cancellation;
+   cleanup; storage; terminal delivery; restart recovery; inspection; API and
+   GUI presentation. Identify each place that loses, replaces, or retires useful
+   evidence. Do not limit the work to the original model-report branch.
+2. Replace broad suppression rules with disclosure decisions for actual
+   sensitive material. Preserve producer explanations, useful values and
+   unfamiliar endpoint facts, with attribution, redaction, escaping and bounds.
+   Keep established machine classifications where they have real consumers.
+3. Carry known execution and result-validation causes through the runner and
+   provider boundary. Introduce protocol support where a correlated failure
+   report is needed; never claim a stopped worker or determinate outcome without
+   evidence. Preserve both the original cause and cleanup/stop uncertainty.
+4. Define retained Attempt diagnostics that remain useful after terminal
+   delivery and active-journal retirement. Reuse sibling precedent where it
+   fits. Specify access, storage bounds, retention, inspection, and migration
+   together; an event in rotating logs is not a durable diagnostic record.
+5. Reconcile shared API and client contracts with this policy. The current API
+   failure_message description forbids raw inputs/results and sensitive
+   internals; note 005 interpreted that as prohibiting even diagnostic scalar
+   excerpts and arbitrary model explanations. Review and revise that boundary
+   explicitly where it blocks relevant non-sensitive evidence. Keep secrets
+   excluded and messages rendered as literal text. Preserve exact pending and
+   historical terminal reports while applying the new policy to future reports.
+6. Rewrite the governing design, failure policies, diagnostic renderers, and
+   tests together. Tests that require generic replacement or forbid all input
+   excerpts encode the previous policy and must be reconsidered. Do not satisfy
+   the new requirement by merely editing the generic sentence or adding more
+   closed reason codes. Avoid a universal error framework; fix the boundaries
+   that own and consume the information.
+
+Acceptance evidence
+-------------------
+
+For representative failures at every stage, trace a distinctive useful cause
+from producer through retained evidence, API read/list, and displayed GUI text
+where those surfaces apply. Verify operator/CLI rendering for failures that do
+not create an Attempt. Include unknown endpoint errors, specific parser values,
+worker exceptions, result rejection, storage failure, timeout after handoff,
+primary plus cleanup failure, delivery ambiguity, restart, and log rotation.
+
+Exercise credentials embedded in otherwise useful diagnostics: the secret must
+disappear while the explanation survives. Check attribution of unverified
+claims, escaping, truncation, accessible retained detail, and truthful effects.
+Use connected runtime evidence for delivery/display claims. A passing unit test,
+source policy, or healthy container alone does not establish those outcomes.
+
+Completion means a user or authorized operator can determine what each
+component actually reported, what is known, what is uncertain, and what action
+is supported, without losing the explanation to an overbroad disclosure rule.
