@@ -78,6 +78,7 @@ def _parse_rule(kind: FailureKind, value: object) -> PreparationFailureRule:
         )
     if set(value) == reported and value["forward_failure_message"] is True:
         if kind not in {
+            FailureKind.MODEL_REPORTED_PROBLEM,
             FailureKind.DIRECT_SOURCE_ISSUE,
             FailureKind.DIRECT_RUNNER_REJECTED,
             FailureKind.CANDIDATE_ISSUE,

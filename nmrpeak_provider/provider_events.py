@@ -134,6 +134,7 @@ class InterpreterEndpointFailed(ProviderEvent):
     error_code: str | None = _event_field(omit_if_none=True, default=None)
     request_id: str | None = _event_field(omit_if_none=True, default=None)
 
+    explanation: str | None = _event_field(omit_if_none=True, default=None)
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InterpreterRoute(ProviderEvent):

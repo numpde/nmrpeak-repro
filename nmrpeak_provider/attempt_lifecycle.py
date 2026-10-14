@@ -796,6 +796,9 @@ def prepare_execution(
                 session=session,
                 execution_attempt_ref=record.execution_attempt_ref,
                 provider_attempt_key=record.provider_attempt_key,
+                record_diagnostic=lambda message: journal.record_diagnostic(
+                    record, stage="interpreter_endpoint", message=message
+                ),
             )
         except InputRejected as rejection:
             _LOG.warning(
@@ -820,7 +823,13 @@ def prepare_execution(
         except ReportedInputProblem as problem:
             return _retain_preparation_failure(
                 journal, record, lane.failure_policy,
-                ClassifiedPreparationFailure(FailureKind.MODEL_REPORTED_PROBLEM.value),
+                ClassifiedPreparationFailure(
+                    FailureKind.MODEL_REPORTED_PROBLEM.value,
+                    ProviderDiagnosticText(diagnostic_text(
+                        "The interpreter reported (not independently verified): "
+                        + diagnostic_text(problem.message, limit=900) + ". Generation did not start.", limit=1024,
+                    )),
+                ),
                 "model_report",
                 route=problem.attempted_configuration_ids,
             )
@@ -850,6 +859,9 @@ def prepare_execution(
                 route=rejection.attempted_configuration_ids,
             )
         except InterpreterUnavailable as unavailable:
+            journal.record_diagnostic(
+                record, stage="interpreter_route", message=exception_diagnostic(unavailable, limit=8192),
+            )
             held = replace(
                 record,
                 latest_diagnostic=LatestDiagnostic(

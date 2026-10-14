@@ -11,7 +11,7 @@ forward_failure_message = true
 [failures.model_reported_problem]
 submit_failure_to_api = true
 failure_code = "interpretation_failed"
-failure_message = "The interpreter route reported a problem with the submitted description, but the exact cause has not been independently verified. Generation did not start. Review the description before submitting a new Job."
+forward_failure_message = true
 
 [failures.candidate_issue]
 submit_failure_to_api = true

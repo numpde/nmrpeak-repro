@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
 import unicodedata
 
 import httpx
 
+from .diagnostic_text import diagnostic_text, exception_diagnostic
 from .canonical_json import canonical_json_bytes
 from .interpreter import (
     InterpreterCandidateConstructionRejected,
@@ -152,6 +154,7 @@ class InputInterpreter:
         session: RunnerSession,
         execution_attempt_ref: str,
         provider_attempt_key: str,
+        record_diagnostic: Callable[[str], None] | None = None,
     ) -> ValidatedRunnerRequest:
         """Interpret prose and return the runner capability that admitted it."""
 
@@ -168,6 +171,7 @@ class InputInterpreter:
                 session=session,
                 execution_attempt_ref=execution_attempt_ref,
                 provider_attempt_key=provider_attempt_key,
+                record_diagnostic=record_diagnostic,
             )
         )
 
@@ -179,6 +183,7 @@ class InputInterpreter:
         session: RunnerSession,
         execution_attempt_ref: str,
         provider_attempt_key: str,
+        record_diagnostic: Callable[[str], None] | None = None,
     ) -> ValidatedRunnerRequest:
         capability = _InterpretationCapability(lane)
 
@@ -206,9 +211,15 @@ class InputInterpreter:
             return outcome
 
         def report_endpoint_failure(event: InterpreterEndpointFailure) -> None:
+            event = replace(event, **{
+                name: diagnostic_text(value, secrets=tuple(spec.api_key for spec in self.endpoint_specs), limit=4096)
+                for name in ("explanation", "error_type", "error_code", "request_id")
+                if (value := getattr(event, name)) is not None
+            })
             _report_endpoint_failure(
                 event,
                 execution_attempt_ref=execution_attempt_ref,
+                record_diagnostic=record_diagnostic,
             )
 
         async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
@@ -219,6 +230,7 @@ class InputInterpreter:
                 submit_interpretation_description=_SUBMIT_DESCRIPTION,
                 submit_interpretation_value_schema=_value_schema_for(lane),
                 report_input_problem_description=_REPORT_DESCRIPTION,
+                report_endpoint_failure=report_endpoint_failure,
             )
             try:
                 result = await interpret(
@@ -241,7 +253,11 @@ class InputInterpreter:
                         attempted_configuration_ids=unavailable.attempted_configuration_ids,
                     )),
                 )
-                raise
+                exported = InterpreterUnavailable(unavailable.reason, unavailable.attempted_configuration_ids)
+                exported.add_note(exception_diagnostic(
+                    unavailable, secrets=tuple(spec.api_key for spec in self.endpoint_specs), limit=8192,
+                ))
+                raise exported from None
             finally:
                 await endpoints.join_response_releases()
         _LOG.info("%s", render_provider_event(InterpreterRoute(
@@ -302,8 +318,9 @@ def _report_endpoint_failure(
     event: InterpreterEndpointFailure,
     *,
     execution_attempt_ref: str,
+    record_diagnostic: Callable[[str], None] | None = None,
 ) -> None:
-    _LOG.warning("%s", render_provider_event(InterpreterEndpointFailed(
+    rendered = render_provider_event(InterpreterEndpointFailed(
         execution_attempt_ref=execution_attempt_ref,
         configuration_id=event.configuration_id,
         failure_kind=event.failure_kind,
@@ -313,7 +330,11 @@ def _report_endpoint_failure(
         error_type=event.error_type,
         error_code=event.error_code,
         request_id=event.request_id,
-    )))
+        explanation=event.explanation,
+    ))
+    if record_diagnostic is not None:
+        record_diagnostic(rendered)
+    _LOG.warning("%s", rendered)
 
 
 __all__ = [

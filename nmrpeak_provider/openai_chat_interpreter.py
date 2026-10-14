@@ -9,7 +9,8 @@ interpreter and its injected capability.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import InitVar, dataclass, field
+from collections.abc import Callable
+from dataclasses import InitVar, dataclass, field, replace
 import json
 from pathlib import Path
 import re
@@ -19,16 +20,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
 from nmrpeak_provider.http_response import best_effort_release_response
 from nmrpeak_provider.interpreter import (
     InterpreterEndpoint,
+    InterpreterEndpointFailure,
     InterpreterPrompt,
     InterpreterTool,
     InterpreterToolInvocation,
     InterpreterTransportError,
     InterpreterTurn,
-    REVIEWED_ENDPOINT_ERROR_CODES,
-    REVIEWED_ENDPOINT_ERROR_TYPES,
     require_interpreter_configuration_id,
 )
 from nmrpeak_provider.interpreter_policy import (
@@ -107,6 +108,8 @@ class _OpenAIChatCall:
         "_policy",
         "_spec",
         "_tools",
+        "_secrets",
+        "_report_endpoint_failure",
     )
 
     def __init__(
@@ -117,12 +120,16 @@ class _OpenAIChatCall:
         http_client: httpx.AsyncClient,
         pending_response_releases: set[asyncio.Task[None]],
         tools: tuple[dict[str, object], dict[str, object]],
+        secrets: tuple[str, ...],
+        report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None,
     ) -> None:
         self._http_client = http_client
         self._pending_response_releases = pending_response_releases
         self._policy = policy
         self._spec = spec
         self._tools = tools
+        self._secrets = secrets
+        self._report_endpoint_failure = report_endpoint_failure
 
     async def __call__(self, prompt: InterpreterPrompt) -> InterpreterTurn:
         """Return a normalized turn; classify expected failures without content.
@@ -155,13 +162,14 @@ class _OpenAIChatCall:
                         async with asyncio.timeout(
                             self._policy.request_timeout_seconds
                         ):
-                            status, response_body, request_id = await self._post_once(
+                            status, response_body, request_id, detail_problem = await self._post_once(
                                 request_body,
                                 deadline=deadline,
                             )
-                    except (httpx.TransportError, TimeoutError):
+                    except (httpx.TransportError, TimeoutError) as error:
                         if final_attempt:
                             raise
+                        self._record_retry({"explanation": exception_diagnostic(error, secrets=self._secrets)})
                     else:
                         if status == 200:
                             if response_body is None:
@@ -173,8 +181,12 @@ class _OpenAIChatCall:
                             raise InterpreterTransportError(
                                 f"http_{status}",
                                 http_status=status,
-                                **_reviewed_error_facts(response_body, request_id),
+                                **_endpoint_error_facts(response_body, request_id, secrets=self._secrets, detail_problem=detail_problem),
                             )
+
+                        self._record_retry(_endpoint_error_facts(
+                            response_body, request_id, secrets=self._secrets, detail_problem=detail_problem,
+                        ), http_status=status)
 
                     # Retrying here, rather than in generic interpretation,
                     # keeps endpoint fallback and protocol repair independent
@@ -182,19 +194,38 @@ class _OpenAIChatCall:
                     # all attempts remain inside the one advertised deadline.
                     await asyncio.sleep(self._policy.retry_delay_seconds)
         except (httpx.TransportError, TimeoutError) as error:
-            raise InterpreterTransportError("endpoint_unavailable") from error
+            raise InterpreterTransportError(
+                "endpoint_unavailable", explanation=exception_diagnostic(error, secrets=self._secrets)
+            ) from None
 
         try:
-            return _parse_completion(response_body)
+            turn = _parse_completion(response_body)
+            invocation = turn.invocation
+            if (invocation is not None and invocation.name == "report_input_problem"
+                    and type(invocation.arguments) is dict
+                    and type(invocation.arguments.get("message")) is str):
+                arguments = dict(invocation.arguments)
+                arguments["message"] = diagnostic_text(arguments["message"], secrets=self._secrets, limit=8192)
+                turn = replace(turn, invocation=replace(invocation, arguments=arguments))
+            return turn
         except (UnicodeError, ValueError, RecursionError) as error:
-            raise InterpreterTransportError("invalid_response_envelope") from error
+            raise InterpreterTransportError(
+                "invalid_response_envelope", explanation=exception_diagnostic(error, secrets=self._secrets)
+            ) from None
+
+    def _record_retry(self, facts: dict[str, str], *, http_status: int | None = None) -> None:
+        if self._report_endpoint_failure is not None:
+            self._report_endpoint_failure(InterpreterEndpointFailure(
+                configuration_id=self._spec.configuration_id, failure_kind="transport",
+                failure_reason="endpoint_retry", http_status=http_status, **facts,
+            ))
 
     async def _post_once(
         self,
         body: dict[str, object],
         *,
         deadline: float,
-    ) -> tuple[int, bytes | None, str | None]:
+    ) -> tuple[int, bytes | None, str | None, str | None]:
         request = self._http_client.build_request(
             "POST",
             self._spec.url,
@@ -205,6 +236,7 @@ class _OpenAIChatCall:
             timeout=None,
         )
         response: httpx.Response | None = None
+        detail_problem: str | None = None
         try:
             response = await self._http_client.send(request, stream=True)
             status = response.status_code
@@ -215,7 +247,8 @@ class _OpenAIChatCall:
                     response_body = await _read_bounded_response(
                         response, limit=_MAX_ERROR_RESPONSE_BYTES
                     )
-                except Exception:
+                except Exception as error:
+                    detail_problem = "Error body could not be read: " + exception_diagnostic(error, secrets=self._secrets, limit=2048)
                     response_body = None
                     # Iteration can mark the response closed before its stream
                     # close succeeds. Retry the stream directly under the
@@ -268,12 +301,13 @@ class _OpenAIChatCall:
         except asyncio.CancelledError:
             self._schedule_response_release(response, deadline=deadline)
             raise
-        except Exception:
+        except Exception as error:
+            detail_problem = (detail_problem or "") + " Response release failed: " + exception_diagnostic(error, secrets=self._secrets, limit=1024)
             # This path is reachable for statuses whose body we deliberately
             # ignore. Preserve that authoritative status while retrying the
             # raw stream release in the background.
             self._schedule_response_release(response, deadline=deadline)
-        return status, response_body, request_id
+        return status, response_body, request_id, detail_problem
 
     def _schedule_response_release(
         self,
@@ -335,6 +369,7 @@ def bind_openai_chat_endpoints(
     submit_interpretation_description: str,
     submit_interpretation_value_schema: dict[str, object],
     report_input_problem_description: str,
+    report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None = None,
 ) -> OpenAIChatEndpoints:
     """Snapshot one capability tool contract and bind it to every endpoint."""
 
@@ -345,7 +380,7 @@ def bind_openai_chat_endpoints(
     )
     pending_response_releases: set[asyncio.Task[None]] = set()
     endpoints = tuple(
-        _bind_endpoint(spec, policy, http_client, pending_response_releases, tools)
+        _bind_endpoint(spec, policy, http_client, pending_response_releases, tools, tuple(item.api_key for item in specs), report_endpoint_failure)
         for spec in specs
     )
     return OpenAIChatEndpoints(endpoints, pending_response_releases)
@@ -370,6 +405,8 @@ def _bind_endpoint(
     http_client: httpx.AsyncClient,
     pending_response_releases: set[asyncio.Task[None]],
     tools: tuple[dict[str, object], dict[str, object]],
+    secrets: tuple[str, ...],
+    report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None,
 ) -> InterpreterEndpoint:
     call = _OpenAIChatCall(
         spec,
@@ -377,6 +414,8 @@ def _bind_endpoint(
         http_client=http_client,
         pending_response_releases=pending_response_releases,
         tools=tools,
+        secrets=secrets,
+        report_endpoint_failure=report_endpoint_failure,
     )
     return InterpreterEndpoint(spec.configuration_id, call)
 
@@ -540,30 +579,37 @@ def _chat_completions_url(value: object) -> str:
         raise ValueError("invalid interpreter base URL") from error
 
 
-def _reviewed_error_facts(body: bytes | None, request_id: str | None) -> dict[str, str]:
-    """Project only closed error identifiers; remote prose stays transient."""
-
+def _endpoint_error_facts(
+    body: bytes | None, request_id: str | None, *, secrets: tuple[str, ...],
+    detail_problem: str | None,
+) -> dict[str, str]:
+    """Keep endpoint explanations without treating remote claims as diagnoses."""
     facts: dict[str, str] = {}
-    if request_id is not None and re.fullmatch(
-        r"req_[A-Za-z0-9_-]{1,120}", request_id, re.ASCII
-    ) is not None:
-        facts["request_id"] = request_id
+    if request_id is not None:
+        facts["request_id"] = diagnostic_text(request_id, secrets=secrets, limit=256)
+    details = [detail_problem] if detail_problem else []
     if body is None:
-        return facts
-    try:
-        document = json.loads(
-            body.decode("utf-8", errors="strict"),
-            object_pairs_hook=_object_without_duplicates,
-        )
-    except (UnicodeError, ValueError, RecursionError):
-        return facts
-    if type(document) is not dict or type(document.get("error")) is not dict:
-        return facts
-    error = document["error"]
-    if type(error.get("type")) is str and error["type"] in REVIEWED_ENDPOINT_ERROR_TYPES:
-        facts["error_type"] = error["type"]
-    if type(error.get("code")) is str and error["code"] in REVIEWED_ENDPOINT_ERROR_CODES:
-        facts["error_code"] = error["code"]
+        if not detail_problem:
+            details.append("Error body exceeded the diagnostic read limit.")
+    else:
+        try:
+            document = json.loads(body.decode("utf-8", errors="strict"), object_pairs_hook=_object_without_duplicates)
+        except (UnicodeError, ValueError, RecursionError) as error:
+            details.append("Endpoint error body is not valid JSON: " + exception_diagnostic(error, secrets=secrets, limit=1024))
+            details.append(diagnostic_text(body.decode("utf-8", errors="replace"), secrets=secrets, limit=2048))
+        else:
+            error = document.get("error") if type(document) is dict else None
+            if type(error) is dict:
+                for source, destination in (("type", "error_type"), ("code", "error_code")):
+                    if type(error.get(source)) is str:
+                        facts[destination] = diagnostic_text(error[source], secrets=secrets, limit=256)
+                for name in ("message", "param"):
+                    if type(error.get(name)) is str:
+                        details.append(name + ": " + error[name])
+            else:
+                details.append("Endpoint error response: " + body.decode("utf-8", errors="replace"))
+    if details:
+        facts["explanation"] = diagnostic_text("\n".join(details), secrets=secrets, limit=4096)
     return facts
 
 

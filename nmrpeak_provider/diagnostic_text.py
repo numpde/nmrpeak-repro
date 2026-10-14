@@ -71,7 +71,7 @@ def exception_diagnostic(error: BaseException, *, secrets: tuple[str, ...] = (),
         if isinstance(current, BaseExceptionGroup):
             for member in current.exceptions[:16]:
                 visit(member, "Member: ")
-        cause = current.__cause__ if current.__cause__ is not None else current.__context__
+        cause = current.__cause__ if current.__cause__ is not None else (None if current.__suppress_context__ else current.__context__)
         if cause is not None:
             visit(cause, "Caused by: " if current.__cause__ is not None else "Earlier failure: ")
 

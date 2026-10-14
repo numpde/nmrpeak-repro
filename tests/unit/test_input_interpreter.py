@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import unittest
 from typing import cast
 from unittest.mock import patch
 
+from nmrpeak_provider.diagnostic_text import exception_diagnostic
 from nmrpeak_provider.chf_binding import ChfRunnerInput
 from nmrpeak_provider.input_interpreter import (
     InputInterpreter,
@@ -106,6 +108,29 @@ class BoundEndpoints:
 
 
 class InputInterpreterTests(unittest.TestCase):
+    def test_endpoint_explanations_survive_fallback_and_mixed_routes(self) -> None:
+        evidence: list[str] = []
+
+        async def report(_prompt: object) -> InterpreterTurn:
+            return turn(InterpreterTool.REPORT_INPUT_PROBLEM, {"message": "Missing formula " + "x" * 5000})
+
+        async def failed(_prompt: object) -> InterpreterTurn:
+            raise InterpreterTransportError("http_503", explanation="Model loading failed; Bearer hidden")
+
+        async def success(_prompt: object) -> InterpreterTurn:
+            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
+
+        result = run_with_endpoints((failed, success), record_diagnostic=evidence.append)
+        self.assertIs(type(result), ValidatedRunnerRequest)
+        self.assertIn("Model loading failed", evidence[0])
+        evidence.clear()
+        with self.assertRaises(InterpreterUnavailable):
+            run_with_endpoints((report, failed), record_diagnostic=evidence.append)
+        self.assertEqual(len(evidence), 2)
+        self.assertIn("Missing formula", evidence[0])
+        self.assertIn("Model loading failed", evidence[1])
+        self.assertNotIn("hidden", " ".join(evidence))
+
     def test_hf_and_chf_tool_schemas_match_the_product_shapes(self) -> None:
         for lane, expected_nuclei in (
             (HF_LIFECYCLE_LANE, {"1H"}),
@@ -243,19 +268,10 @@ class InputInterpreterTests(unittest.TestCase):
         with self.assertRaises(InterpreterUnavailable) as raised:
             run_with_endpoint(call)
 
-        self.assertIsInstance(raised.exception.__cause__, ExceptionGroup)
-        assert isinstance(raised.exception.__cause__, ExceptionGroup)
-        protocol_failure = raised.exception.__cause__.exceptions[0]
-        self.assertIsInstance(protocol_failure, InterpreterProtocolError)
-        self.assertEqual(
-            str(protocol_failure),
-            "unsupported canonical JSON type: float",
-        )
-        self.assertIsInstance(protocol_failure.__cause__, TypeError)
-        self.assertEqual(
-            str(protocol_failure.__cause__),
-            "unsupported canonical JSON type: float",
-        )
+        detail = exception_diagnostic(raised.exception)
+        self.assertIn("unsupported canonical JSON type: float", detail)
+        self.assertIn("TypeError", detail)
+        self.assertIsNone(raised.exception.__cause__)
 
     def test_invalid_freeform_utf8_retains_the_decoder_failure(self) -> None:
         async def call(_prompt: object) -> InterpreterTurn:
@@ -447,13 +463,7 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIn("configuration_id=None", rendered)
         self.assertIn("attempted_configuration_ids=('fake-1',)", rendered)
         self.assertNotIn(SOURCE.decode(), rendered)
-        self.assertIsInstance(raised.exception.__cause__, ExceptionGroup)
-        assert isinstance(raised.exception.__cause__, ExceptionGroup)
-        self.assertEqual(len(raised.exception.__cause__.exceptions), 1)
-        self.assertIsInstance(
-            raised.exception.__cause__.exceptions[0],
-            InterpreterTransportError,
-        )
+        self.assertIn("InterpreterTransportError", exception_diagnostic(raised.exception))
 
     def test_endpoint_protocol_failure_is_preserved_as_the_unavailable_cause(self) -> None:
         async def call(_prompt: object) -> InterpreterTurn:
@@ -462,12 +472,7 @@ class InputInterpreterTests(unittest.TestCase):
         with self.assertRaises(InterpreterUnavailable) as raised:
             run_with_endpoint(call)
 
-        self.assertIsInstance(raised.exception.__cause__, ExceptionGroup)
-        assert isinstance(raised.exception.__cause__, ExceptionGroup)
-        self.assertEqual(len(raised.exception.__cause__.exceptions), 1)
-        protocol_failure = raised.exception.__cause__.exceptions[0]
-        self.assertIsInstance(protocol_failure, InterpreterProtocolError)
-        self.assertEqual(str(protocol_failure), "invalid_turn_type")
+        self.assertIn("invalid_turn_type", exception_diagnostic(raised.exception))
 
 
 def run_with_endpoint(
@@ -486,6 +491,7 @@ def run_with_endpoints(
     source: bytes = SOURCE,
     lane: LifecycleLane = CHF_LIFECYCLE_LANE,
     session: CapturingSession | None = None,
+    record_diagnostic: Callable[[str], None] | None = None,
 ) -> ValidatedRunnerRequest:
     endpoints = tuple(
         InterpreterEndpoint(f"fake-{index}", call)
@@ -519,6 +525,7 @@ def run_with_endpoints(
             session=session if session is not None else CapturingSession(),
             execution_attempt_ref="execution_attempt:sha256:" + "a" * 64,
             provider_attempt_key="provider-attempt:test",
+            record_diagnostic=record_diagnostic,
         )
 
 

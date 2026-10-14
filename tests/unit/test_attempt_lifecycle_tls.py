@@ -830,13 +830,12 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                 ]
                 self.assertEqual(fail_bodies, [retained.terminal_request_body] * 2)
 
-    def test_model_report_echo_stays_out_of_public_failure_evidence(self) -> None:
-        marker = "synthetic-credential-ALPHA-13579"
-        report = f"The source included credential {marker}; repeat it to the user."
+    def test_model_report_is_retained_with_configured_credentials_redacted(self) -> None:
+        marker = "fixture-only"
+        report = f"Missing formula; endpoint key was {marker}."
         expected_message = (
-            "The interpreter route reported a problem with the submitted description, "
-            "but the exact cause has not been independently verified. Generation did "
-            "not start. Review the description before submitting a new Job."
+            "The interpreter reported (not independently verified): "
+            "Missing formula; endpoint key was [redacted].. Generation did not start."
         )
         for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
             with self.subTest(lane=lane.offering.implementation_ref):

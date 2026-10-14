@@ -478,7 +478,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                                     raised.exception.reason,
                                     expected_reason,
                                 )
-                                self.assertNotIn("private", str(raised.exception))
+                                self.assertIn("private", str(raised.exception))
 
                 self.assertEqual(requests, len(responses))
                 self.assertEqual(sleep.await_count, len(responses) - 1)
@@ -677,14 +677,14 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream.close_calls, 2)
         self.assertTrue(stream.released)
 
-    async def test_http_rejection_retains_only_reviewed_identifiers(self) -> None:
+    async def test_http_rejection_retains_endpoint_explanations(self) -> None:
         async def handle(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 400,
                 json={"error": {
                     "type": "authentication_error",
                     "code": "invalid_api_key",
-                    "message": "private source and endpoint prose",
+                    "message": "private source and endpoint prose; Bearer do-not-display",
                     "param": "private parameter",
                 }},
                 headers={"x-request-id": "req_safe123"},
@@ -701,9 +701,10 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.error_type, "authentication_error")
         self.assertEqual(error.error_code, "invalid_api_key")
         self.assertEqual(error.request_id, "req_safe123")
-        self.assertNotIn("private", str(error))
+        self.assertIn("private", str(error))
+        self.assertNotIn("do-not-display", str(error))
 
-    async def test_http_rejection_discards_unreviewed_remote_fields(self) -> None:
+    async def test_http_rejection_retains_unknown_remote_identifiers(self) -> None:
         async def handle(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 400,
@@ -722,10 +723,11 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 )
         error = raised.exception
         self.assertEqual(error.http_status, 400)
-        self.assertIsNone(error.error_type)
-        self.assertIsNone(error.error_code)
-        self.assertIsNone(error.request_id)
-        self.assertNotIn("private", str(error))
+        self.assertEqual(error.error_type, "private_source_scalar")
+        self.assertEqual(error.error_code, "private_source_scalar")
+        self.assertEqual(error.request_id, "private_source_scalar")
+        self.assertIn("private", str(error))
+        self.assertNotIn("do-not-display", str(error))
 
     async def test_unexpected_stream_failure_is_not_endpoint_fallback(self) -> None:
         requests = 0

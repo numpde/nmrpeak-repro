@@ -1,8 +1,8 @@
 """Classify preparation failures before authorizing an exact API failure pair.
 
-Adapted from Magnet's analysis_contract failure classes. The report field can
-contain only provider-rendered diagnostics; model and runner prose stays at its
-own boundary and cannot be forwarded through this policy.
+The report field contains bounded, redacted provider diagnostics, including
+explicitly attributed model assessments. Publication does not turn a model's
+assessment into an independently verified fact.
 """
 
 from __future__ import annotations

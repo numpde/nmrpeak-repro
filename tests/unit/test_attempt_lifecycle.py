@@ -978,11 +978,10 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(terminal_body["failure_code"], "interpretation_failed")
         self.assertEqual(
             terminal_body["failure_message"],
-            "The interpreter route reported a problem with the submitted description, "
-            "but the exact cause has not been independently verified. Generation did "
-            "not start. Review the description before submitting a new Job.",
+            "The interpreter reported (not independently verified): "
+            "The molecular formula is missing. Submit a new Job with the complete molecular formula.. Generation did not start.",
         )
-        self.assertNotIn("The molecular formula is missing", str(terminal_body))
+        self.assertIn("The molecular formula is missing", str(terminal_body))
         self.assertEqual(outcome.record.latest_diagnostic.kind, "model_reported_problem")
         self.assertEqual(outcome.record.latest_diagnostic.producer, "interpreter")
         self.assertEqual(outcome.record.latest_diagnostic.endpoint_route, ())

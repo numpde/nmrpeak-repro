@@ -46,9 +46,10 @@ class PreparationFailurePolicyTests(unittest.TestCase):
                 self.assertIn("candidate", candidate.failure_message)
                 report = policy.resolve(ClassifiedPreparationFailure(
                     FailureKind.MODEL_REPORTED_PROBLEM.value,
+                    ProviderDiagnosticText("The interpreter reported (not independently verified): missing formula."),
                 ))
                 self.assertEqual(report.failure_code, "interpretation_failed")
-                self.assertIn("exact cause has not been independently verified", report.failure_message)
+                self.assertIn("not independently verified", report.failure_message)
                 runner = policy.resolve(ClassifiedPreparationFailure(
                     FailureKind.DIRECT_RUNNER_REJECTED.value,
                     ProviderDiagnosticText("The model accepts at most 511 input tokens."),
@@ -85,12 +86,6 @@ class PreparationFailurePolicyTests(unittest.TestCase):
 
         raw = (Path(__file__).parents[2] / "nmrpeak_provider" / "policies" /
                "hf_preparation_failures.toml").read_bytes()
-        unsafe = raw.replace(
-            b'failure_message = "The interpreter route reported a problem with the submitted description, but the exact cause has not been independently verified. Generation did not start. Review the description before submitting a new Job."',
-            b"forward_failure_message = true",
-        )
-        with self.assertRaisesRegex(ValueError, "unreviewed forwarding"):
-            parse_preparation_failure_policy(unsafe)
         ambiguous = raw.replace(
             b"forward_failure_message = true",
             b'forward_failure_message = true\nfailure_message = "another authority"',

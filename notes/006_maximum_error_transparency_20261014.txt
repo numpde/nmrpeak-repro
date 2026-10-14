@@ -228,3 +228,12 @@ Attempt reference to inspect its full history and current obligation, if any:
 An empty diagnostics list means no retained history exists for that selection.
 Older inspection documents remain accepted. Runtime producers are wired in
 subsequent slices; the storage interface alone does not establish coverage.
+
+Model reports now publish the redacted explanation with explicit attribution and
+uncertainty. Each failed endpoint and intermediate HTTP retry is recorded in
+Attempt diagnostics, including failures before successful fallback. Endpoint
+messages, parameters, unfamiliar identifiers and transport causes remain useful;
+configured interpreter keys are redacted before diagnostic bounds. Public reports
+reserve space for the statement that generation did not start. Aggregate route
+exceptions export sanitized cause evidence rather than raw credential-bearing
+exception chains. Existing pending terminal commands remain exact replay data.

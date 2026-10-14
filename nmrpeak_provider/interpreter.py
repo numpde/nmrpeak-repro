@@ -41,15 +41,6 @@ _CONFIGURATION_ID = re.compile(
 _PROMPT_DIRECTORY = Path(__file__).with_name("prompts")
 _SYSTEM_PROMPT_PATH = _PROMPT_DIRECTORY / "interpreter.md"
 _CORRECTION_PROMPT_PATH = _PROMPT_DIRECTORY / "protocol_correction.md"
-REVIEWED_ENDPOINT_ERROR_TYPES = frozenset({
-    "invalid_request_error", "authentication_error", "permission_error",
-    "rate_limit_error", "server_error", "api_error",
-})
-REVIEWED_ENDPOINT_ERROR_CODES = frozenset({
-    "invalid_api_key", "insufficient_quota", "model_not_found",
-    "context_length_exceeded", "rate_limit_exceeded",
-})
-
 PromptMessage = dict[str, object]
 InterpreterPrompt = list[PromptMessage]
 
@@ -66,6 +57,7 @@ class InterpreterEndpointFailure:
     error_type: str | None = None
     error_code: str | None = None
     request_id: str | None = None
+    explanation: str | None = None
 
 
 class InterpreterProtocolError(ValueError):
@@ -94,7 +86,7 @@ class CandidateConstructionExhausted(RuntimeError):
 
 
 class InterpreterTransportError(RuntimeError):
-    """One endpoint failed with a content-free operational classification."""
+    """One endpoint failed with a classification and redacted explanation."""
 
     def __init__(
         self,
@@ -104,24 +96,20 @@ class InterpreterTransportError(RuntimeError):
         error_type: str | None = None,
         error_code: str | None = None,
         request_id: str | None = None,
+        explanation: str | None = None,
     ) -> None:
         self.reason = _require_failure_reason(reason)
         if http_status is not None and (type(http_status) is not int or not 100 <= http_status <= 599):
             raise TypeError("http_status must be an HTTP status")
-        if error_type is not None and error_type not in REVIEWED_ENDPOINT_ERROR_TYPES:
-            raise TypeError("error_type must be a reviewed endpoint category")
-        if error_code is not None and error_code not in REVIEWED_ENDPOINT_ERROR_CODES:
-            raise TypeError("error_code must be a reviewed endpoint code")
-        if request_id is not None and (
-            type(request_id) is not str
-            or re.fullmatch(r"req_[A-Za-z0-9_-]{1,120}", request_id, re.ASCII) is None
-        ):
-            raise TypeError("request_id must be a bounded endpoint request ID")
+        for value in (error_type, error_code, request_id, explanation):
+            if value is not None and (type(value) is not str or len(value.encode("utf-8")) > 4096):
+                raise TypeError("Endpoint diagnostic fields require bounded text")
         self.http_status = http_status
         self.error_type = error_type
         self.error_code = error_code
         self.request_id = request_id
-        super().__init__(self.reason)
+        self.explanation = explanation
+        super().__init__(self.reason + (": " + explanation if explanation else ""))
 
 
 class InterpreterUnavailableReason(StrEnum):
@@ -368,6 +356,7 @@ async def interpret(
                             error_type=error.error_type,
                             error_code=error.error_code,
                             request_id=error.request_id,
+                            explanation=error.explanation,
                         )
                         break
                     if type(assistant) is not InterpreterTurn:
@@ -397,6 +386,7 @@ async def interpret(
                             endpoint.configuration_id,
                             failure_kind="report",
                             failure_reason="reported_input_problem",
+                            explanation=report.message,
                         )
                         break
                     except InterpretationCandidateRejected as rejection:
@@ -412,6 +402,7 @@ async def interpret(
                                 endpoint.configuration_id,
                                 failure_kind="admission",
                                 failure_reason="runner_input_rejected",
+                                explanation=rejection.message,
                                 failure_state=(
                                     "repair_exhausted"
                                     if repair_exhausted
@@ -441,6 +432,7 @@ async def interpret(
                             _report_endpoint_failure(
                                 report_endpoint_failure,
                                 endpoint.configuration_id,
+                                explanation=error.reason,
                                 failure_kind=(
                                     "construction" if constructor_rejection
                                     else "protocol"
@@ -535,8 +527,9 @@ def _report_endpoint_failure(
     error_type: str | None = None,
     error_code: str | None = None,
     request_id: str | None = None,
+    explanation: str | None = None,
 ) -> None:
-    """Project validated endpoint identity and closed facts for its destination."""
+    """Pass endpoint identity and producer evidence to its owning destination."""
 
     report(
         InterpreterEndpointFailure(
@@ -548,6 +541,7 @@ def _report_endpoint_failure(
             error_type=error_type,
             error_code=error_code,
             request_id=request_id,
+            explanation=explanation,
         )
     )
 
@@ -655,5 +649,5 @@ def _dispatch(
 def _validate_reported_problem(message: str) -> None:
     """Apply the public failure contract before accepting a model report."""
 
-    if not is_failure_message(message):
+    if not message.strip() or len(message.encode("utf-8", errors="replace")) > 8192:
         raise InterpreterProtocolError("invalid_reported_input_problem")
