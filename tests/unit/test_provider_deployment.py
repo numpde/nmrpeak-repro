@@ -843,7 +843,7 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.assertIn("provider/logs DEPLOYMENT=production", rendered)
         self.assertIs(raised.exception.__cause__, compose_failure)
 
-    def test_docker_rejection_keeps_one_bounded_printable_diagnostic(self) -> None:
+    def test_docker_rejection_keeps_all_bounded_printable_diagnostic_lines(self) -> None:
         diagnostic = b"progress\n\x1b[31mcontainer provider is unhealthy\x1b[0m\n"
         with patch.object(
             subprocess,
@@ -858,8 +858,28 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.assertEqual(
             str(raised.exception),
             "The Docker provider deployment operation exited with status 1: "
-            "container provider is unhealthy",
+            "progress container provider is unhealthy",
         )
+
+    def test_acl_rejection_preserves_exit_and_redacted_stderr(self) -> None:
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+            (), 7, b"", b"ACL entry rejected\nPermission denied; Bearer hidden")), self.assertRaises(DeploymentOperationRejected) as raised:
+            provider_deployment._run_acl_command(Path("/usr/bin/setfacl"), "--", "/tmp/input")
+        message = str(raised.exception)
+        self.assertIn("setfacl", message)
+        self.assertIn("exit=7", message)
+        self.assertIn("ACL entry rejected", message)
+        self.assertIn("Permission denied", message)
+        self.assertNotIn("hidden", message)
+
+    def test_docker_timeout_preserves_partial_stderr_and_effect_uncertainty(self) -> None:
+        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired(
+            ("docker", "compose", "up"), 30, stderr=b"Image unpack failed; api_key=hidden")), self.assertRaises(DeploymentOperationRejected) as raised:
+            provider_deployment._docker_command(Path("/usr/bin/docker"), ("compose", "up"), timeout=30)
+        message = str(raised.exception)
+        self.assertIn("effects are unknown", message)
+        self.assertIn("Image unpack failed", message)
+        self.assertNotIn("hidden", message)
 
     def test_cli_names_missing_and_forbidden_operation_options(self) -> None:
         cases = (
@@ -893,7 +913,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                     provider_deployment.main(arguments)
                 self.assertIn(expected, stderr.getvalue())
 
-    def test_deployment_renderer_preserves_owned_cause_without_raw_os_error(self) -> None:
+    def test_deployment_renderer_preserves_redacted_os_cause(self) -> None:
         cause = DeploymentOperationRejected(
             "The Docker provider deployment operation exited with status 1: "
             "container provider is unhealthy"
@@ -902,7 +922,7 @@ class ProviderDeploymentTests(unittest.TestCase):
             "Cannot confirm provider deployment 'localhost' is ready"
         )
         failure.__cause__ = cause
-        cause.__cause__ = OSError("secret-bearing raw daemon detail")
+        cause.__cause__ = OSError("Daemon socket permission denied; Bearer actual-daemon-secret")
 
         stderr = StringIO()
         with (
@@ -920,8 +940,9 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.assertEqual(status, 2)
         rendered = stderr.getvalue()
         self.assertIn("Provider deployment startup failed for 'localhost'", rendered)
-        self.assertIn("Cause: The Docker provider deployment operation", rendered)
-        self.assertNotIn("secret-bearing raw daemon detail", rendered)
+        self.assertIn("DeploymentOperationRejected: The Docker provider deployment operation", rendered)
+        self.assertIn("Daemon socket permission denied", rendered)
+        self.assertNotIn("actual-daemon-secret", rendered)
 
     def test_localhost_render_selects_the_exact_overlay(self) -> None:
         rendered = canonical_json_bytes(compose_document())
@@ -1511,6 +1532,30 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.assertNotIn("credential", " ".join(arguments))
         self.assertNotIn("checkpoint", " ".join(arguments))
         self.assertTrue(holder.stdin.closed)
+
+    def test_identity_lock_cleanup_preserves_primary_and_secondary_causes(self) -> None:
+        class Holder:
+            stdin = BytesIO()
+            stdout = BytesIO(b"READY\n")
+
+            def poll(self):
+                return None
+
+        primary = OSError("Journal retirement write failed")
+        cleanup = OSError("Supervisor removal failed; Bearer hidden")
+        with TemporaryDirectory() as temporary, patch.object(
+            subprocess, "Popen", return_value=Holder()), patch.object(
+            provider_deployment.select, "select", return_value=([Holder.stdout], [], [])), patch.object(
+            provider_deployment, "_stop_identity_lock_holder", side_effect=cleanup), self.assertRaises(DeploymentOperationRejected) as raised:
+            with provider_deployment._run_held_provider_identity_lock(
+                Path("/usr/bin/docker"), "lock-volume", "provider:nmrpeak",
+                LocalImage("sha256:" + "1" * 64, "sha256:" + "2" * 64), Path(temporary) / "holder.cid"):
+                raise primary
+        self.assertIs(raised.exception.__cause__, primary)
+        rendered = provider_deployment._render_deployment_failure("journal-retire", "production", raised.exception)
+        self.assertIn("Journal retirement write failed", rendered)
+        self.assertIn("Supervisor removal failed", rendered)
+        self.assertNotIn("hidden", rendered)
 
     def test_wedged_identity_lock_holder_removes_container_then_reaps(self) -> None:
         class WedgedHolder:

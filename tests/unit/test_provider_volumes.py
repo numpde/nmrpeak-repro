@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +23,22 @@ AUTHORITY_ID = "sha256:" + "d" * 64
 
 
 class ProviderVolumesTests(unittest.TestCase):
+    def test_daemon_rejection_preserves_reason_without_credentials(self) -> None:
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+            (), 9, b"", b"Volume is attached; password=hidden")), self.assertRaises(ProviderVolumeOperationRejected) as raised:
+            provider_volumes._docker(Path("/usr/bin/docker"), "volume", "rm", "owned-volume")
+        self.assertIn("Volume is attached", str(raised.exception))
+        self.assertIn("exit=9", str(raised.exception))
+        self.assertNotIn("hidden", str(raised.exception))
+
+    def test_timeout_preserves_partial_reason_and_unknown_effects(self) -> None:
+        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired(
+            "docker", 300, stderr=b"Removal stalled; Bearer hidden")), self.assertRaises(ProviderVolumeOperationRejected) as raised:
+            provider_volumes._docker(Path("/usr/bin/docker"), "volume", "rm", "owned-volume")
+        self.assertIn("Removal stalled", str(raised.exception))
+        self.assertIn("effects may be unknown", str(raised.exception))
+        self.assertNotIn("hidden", str(raised.exception))
+
     def test_exact_volumes_are_created_initialized_and_reused(self) -> None:
         engine = FakeEngine()
         with TemporaryDirectory() as temporary, patch.object(

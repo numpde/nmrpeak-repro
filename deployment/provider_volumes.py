@@ -15,6 +15,8 @@ import stat
 import subprocess
 import sys
 
+from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
+
 from repository_checks.checkpoint import (
     DOCKER_CONTEXT,
     IMPORTER_IMAGE,
@@ -505,7 +507,8 @@ def _docker(docker: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ProviderVolumeOperationRejected(
-            "Docker provider volume operation did not complete"
+            "Docker provider volume operation did not complete; effects may be unknown: " + exception_diagnostic(error)
+            + (" Partial stderr: " + diagnostic_text((error.stderr or b"").decode("utf-8", errors="replace")) if isinstance(error, subprocess.TimeoutExpired) else "")
         ) from error
     if (
         result.returncode != 0
@@ -513,7 +516,8 @@ def _docker(docker: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]
         or len(result.stderr) > _OUTPUT_LIMIT
     ):
         raise ProviderVolumeOperationRejected(
-            "Docker provider volume operation was rejected"
+            f"Docker provider volume operation was rejected; exit={result.returncode}, stdout_bytes={len(result.stdout)}, stderr_bytes={len(result.stderr)}: "
+            + diagnostic_text(result.stderr.decode("utf-8", errors="replace"))
         )
     return result
 

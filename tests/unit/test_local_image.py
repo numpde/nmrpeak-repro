@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from deployment.local_image import (
     LocalImageRejected,
@@ -25,6 +27,21 @@ SPEC = LocalImageSpec(
 
 
 class LocalImageTests(unittest.TestCase):
+    def test_inspection_rejection_preserves_daemon_reason_without_credentials(self) -> None:
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+            (), 1, b"", b"Image does not exist; Bearer hidden")), self.assertRaises(LocalImageRejected) as raised:
+            resolve_local_image(Path("/usr/bin/docker"), SPEC)
+        self.assertIn("Image does not exist", str(raised.exception))
+        self.assertIn("exit=1", str(raised.exception))
+        self.assertNotIn("hidden", str(raised.exception))
+
+    def test_inspection_timeout_preserves_partial_reason(self) -> None:
+        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired(
+            "docker", 30, stderr=b"Daemon socket blocked; password=hidden")), self.assertRaises(LocalImageRejected) as raised:
+            resolve_local_image(Path("/usr/bin/docker"), SPEC)
+        self.assertIn("Daemon socket blocked", str(raised.exception))
+        self.assertNotIn("hidden", str(raised.exception))
+
     def test_resolves_exact_runtime_and_label_identity(self) -> None:
         with fake_docker(image_document()) as docker:
             image = resolve_local_image(docker, SPEC)

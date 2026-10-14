@@ -250,3 +250,8 @@ a partial result write never attempts a second frame. Failure-report delivery
 errors remain secondary to the original exception. The provider retires the
 session on a matching failure without asserting process exit, and unexpected
 preparation errors are retained before propagating to process supervision.
+
+Deployment, Compose, image and volume commands preserve bounded redacted stderr,
+exit status, partial timeout evidence and cleanup causes. ACL failures identify
+the executable and affected path; launch failures and uncertain timed-out effects
+remain distinct. CLI rendering carries nested operating-system causes and notes.

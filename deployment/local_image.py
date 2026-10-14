@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import subprocess
 
+from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
+
 
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 _MAX_INSPECT_BYTES = 1_048_576
@@ -55,10 +57,11 @@ def resolve_local_image(docker: Path, spec: LocalImageSpec) -> LocalImage:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise LocalImageRejected(
-            f"Docker could not inspect the required local image: {tag}"
+            f"Docker could not inspect the required local image: {tag}; " + exception_diagnostic(error)
+            + (" Partial stderr: " + diagnostic_text((error.stderr or b"").decode("utf-8", errors="replace")) if isinstance(error, subprocess.TimeoutExpired) else "")
         ) from error
     if result.returncode != 0 or not result.stdout or len(result.stdout) > _MAX_INSPECT_BYTES:
-        raise LocalImageRejected(f"Required local image is unavailable: {tag}")
+        raise LocalImageRejected(f"Required local image is unavailable: {tag}; exit={result.returncode}, stdout_bytes={len(result.stdout)}: " + diagnostic_text(result.stderr.decode("utf-8", errors="replace")))
     try:
         documents = json.loads(result.stdout)
     except (UnicodeError, json.JSONDecodeError) as error:

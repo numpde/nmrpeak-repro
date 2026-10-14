@@ -34,6 +34,7 @@ from deployment.provider_volumes import (
     provider_journal_volume_name,
     remove_provider_journal_volume,
 )
+from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
 from nmrpeak_provider.inspection_document import validate_inspection_document
 from nmrpeak_provider.archive_document import validate_archive_document
 from nmrpeak_provider.attempt_inventory import (
@@ -100,7 +101,6 @@ _DOCKER = Path("/usr/bin/docker")
 _SETFACL = Path("/usr/bin/setfacl")
 _GETFACL = Path("/usr/bin/getfacl")
 _MAX_FILE_BYTES = 262_144
-_MAX_DOCKER_DIAGNOSTIC_CHARS = 512
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _PRIVATE_DIRECTORY_ACL = ("user::rwx", "group::---", "other::---")
 _PROVIDER_DIRECTORY_ACL = (
@@ -1332,7 +1332,8 @@ def _run_held_provider_identity_lock(
         ready = process.stdout.readline(64) if readable else b""
         if ready != b"READY\n" or process.poll() is not None:
             raise DeploymentOperationRejected(
-                "Provider identity-lock holder did not acquire the engine-global lock"
+                f"Provider identity-lock holder did not acquire the engine-global lock; exit={process.poll()}, readiness="
+                + diagnostic_text(repr(ready), limit=256)
             )
         yield
         if process.poll() is not None:
@@ -1348,6 +1349,7 @@ def _run_held_provider_identity_lock(
             cleanup_error = error
     if cleanup_error is not None:
         if primary_error is not None:
+            primary_error.add_note("Identity-lock cleanup also failed: " + exception_diagnostic(cleanup_error))
             raise DeploymentOperationRejected(
                 "Provider identity-lock holder cleanup failed after the operation failed"
             ) from primary_error
@@ -1378,6 +1380,7 @@ def _stop_identity_lock_holder(
         except BaseException as error:
             client_error = error
         if container_error is not None and client_error is not None:
+            container_error.add_note("Docker client reap also failed: " + exception_diagnostic(client_error))
             raise DeploymentOperationRejected(
                 "Provider identity-lock holder container cleanup and client reap failed"
             ) from container_error
@@ -2102,12 +2105,14 @@ def _docker_command(
     except subprocess.TimeoutExpired as error:
         raise DeploymentOperationRejected(
             f"The Docker provider deployment operation did not finish within {timeout} "
-            "seconds; its effects are unknown"
+            "seconds; its effects are unknown. Partial stderr: "
+            + (_bounded_docker_diagnostic(error.stderr or b"") or "none")
         ) from error
     if len(result.stdout) > 1_048_576 or len(result.stderr) > 1_048_576:
         raise DeploymentOperationRejected(
             "The Docker provider deployment operation produced more than 1048576 bytes "
-            "of output, so its result was not accepted"
+            f"of output (stdout={len(result.stdout)}, stderr={len(result.stderr)}), so its result was not accepted: "
+            + (_bounded_docker_diagnostic(result.stderr) or "no stderr")
         )
     if result.returncode != 0:
         diagnostic = _bounded_docker_diagnostic(result.stderr)
@@ -2120,22 +2125,9 @@ def _docker_command(
 
 
 def _bounded_docker_diagnostic(raw: bytes) -> str | None:
-    """Return Docker's final printable line without terminal control bytes."""
-
-    text = raw.decode("utf-8", errors="replace")
-    lines = []
-    for line in text.splitlines():
-        line = _ANSI_ESCAPE.sub("", line)
-        printable = "".join(character for character in line if character.isprintable())
-        collapsed = " ".join(printable.split())
-        if collapsed:
-            lines.append(collapsed)
-    if not lines:
-        return None
-    diagnostic = lines[-1]
-    if len(diagnostic) > _MAX_DOCKER_DIAGNOSTIC_CHARS:
-        return diagnostic[: _MAX_DOCKER_DIAGNOSTIC_CHARS - 3] + "..."
-    return diagnostic
+    """Retain bounded stderr after credential and terminal-control removal."""
+    text = diagnostic_text(_ANSI_ESCAPE.sub("", raw.decode("utf-8", errors="replace")), limit=4096)
+    return text or None
 
 
 def _json_output(raw: bytes, operation: str) -> object:
@@ -2474,11 +2466,16 @@ def _run_acl_command(executable: Path, *arguments: str) -> bytes:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise DeploymentOperationRejected(
-            "Provider input access operation did not complete"
+            f"Provider input access operation {executable.name} for {arguments[-1]} "
+            + ("timed out; effects are unknown: " if isinstance(error, subprocess.TimeoutExpired) else "could not start: ")
+            + exception_diagnostic(error)
+            + (" Partial stderr: " + (_bounded_docker_diagnostic(error.stderr or b"") or "none") if isinstance(error, subprocess.TimeoutExpired) else "")
         ) from error
     if result.returncode != 0 or len(result.stdout) > 65_536 or result.stderr:
         raise DeploymentOperationRejected(
-            "Provider input access operation was rejected"
+            f"Provider input access operation {executable.name} for {arguments[-1]} was rejected; exit={result.returncode}, "
+            f"stdout_bytes={len(result.stdout)}, stderr_bytes={len(result.stderr)}: "
+            + (_bounded_docker_diagnostic(result.stderr) or "no stderr")
         )
     return result.stdout
 
@@ -2735,11 +2732,13 @@ def _render_compose(
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise DeploymentOperationRejected(
-            "Docker Compose could not normalize the deployment topology"
+            "Docker Compose could not normalize the deployment topology: " + exception_diagnostic(error)
+            + (" Partial stderr: " + (_bounded_docker_diagnostic(error.stderr or b"") or "none") if isinstance(error, subprocess.TimeoutExpired) else "")
         ) from error
     if result.returncode != 0 or not result.stdout or len(result.stdout) > 1_048_576:
         raise DeploymentOperationRejected(
-            "Docker Compose rejected the deployment topology"
+            f"Docker Compose rejected the deployment topology; exit={result.returncode}, stdout_bytes={len(result.stdout)}: "
+            + (_bounded_docker_diagnostic(result.stderr) or "no stderr")
         )
     try:
         document = json.loads(result.stdout)
@@ -2762,7 +2761,8 @@ def _require_clean_checkout(repository: Path) -> None:
     )
     if result.returncode != 0:
         raise DeploymentOperationRejected(
-            "Git could not inspect the deployment checkout"
+            f"Git could not inspect the deployment checkout; exit={result.returncode}: "
+            + (_bounded_docker_diagnostic(result.stderr) or "no stderr")
         )
     if result.stdout:
         raise DeploymentOperationRejected(
@@ -3066,25 +3066,9 @@ def _render_deployment_failure(
     deployment: str,
     error: Exception,
 ) -> str:
-    """Render one operator headline plus a safe owned causal layer."""
-
-    lines = [
-        f"{_OPERATION_FAILURE_HEADLINES[operation]} for {deployment!r}: {error}"
-    ]
-    cause = error.__cause__
-    if isinstance(
-        cause,
-        (
-            CheckpointOperationRejected,
-            DeploymentOperationRejected,
-            LocalImageRejected,
-            ProviderVolumeOperationRejected,
-        ),
-    ) and str(cause) != str(error):
-        lines.append(f"Cause: {cause}")
-    for note in getattr(error, "__notes__", ()):
-        lines.append(f"Additional failure: {note}")
-    return "\n".join(lines)
+    """Render operator context with sanitized causes and cleanup evidence."""
+    return (f"{_OPERATION_FAILURE_HEADLINES[operation]} for {deployment!r}: "
+            + exception_diagnostic(error, limit=8192))
 
 
 if __name__ == "__main__":
