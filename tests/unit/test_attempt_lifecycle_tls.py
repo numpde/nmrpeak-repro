@@ -81,7 +81,14 @@ from tests.model_behavior.test_run_interpreter import _fixture_variant
 _PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 _CREDENTIAL_REF = "credential:provider:nmrpeak-test"
 _FROZEN_GENERATION_ID = "sha256:" + "4" * 64
-_UNUSED_INTERPRETER = object()
+class _UnusedInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
+    def validate_freeform_input(self, **values: object) -> object:
+        raise AssertionError("Structured input must not enter interpretation")
+
+
+_UNUSED_INTERPRETER = _UnusedInterpreter()
 _CHF_RUNNER_FACTS = ProviderResultFacts(
     identity=CHF_RESULT_IDENTITY,
     runner_contract_id=CHF_RUNNER_CONTRACT_ID,
@@ -97,11 +104,14 @@ _HF_RUNNER_FACTS = ProviderResultFacts(
 
 
 class _CandidateIssueInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
     def validate_freeform_input(self, **_values: object) -> object:
         raise CandidateConstructionExhausted(
             InputIssue(
                 InputRejectionReason.UNSUPPORTED_MULTIPLICITY,
                 ("model_input", "spectra", "1H", "peaks", 0, "multiplicity"),
+                observed='"xy"',
             ),
             ("primary", "fallback"),
         )
@@ -113,6 +123,10 @@ class _NoRunnerValidation:
 
 
 class _ObserveReportedProblem:
+    @property
+    def diagnostic_secrets(self) -> tuple[str, ...]:
+        return self.delegate.diagnostic_secrets
+
     def __init__(self, delegate: InputInterpreter) -> None:
         self.delegate = delegate
         self.exception_text: tuple[str, str] | None = None
@@ -342,7 +356,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                             "/model_input/spectra/1H/peaks/0/multiplicity",
                             repair[0]["content"],
                         )
-                        self.assertNotIn("xy", json.dumps(repair))
+                        self.assertIn("xy", json.dumps(repair))
                         validations = [
                             frame for frame in channel.received_frames
                             if type(frame) is ValidateFrame
@@ -409,14 +423,14 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
         )
         source_message = (
             "Input rejected at /model_input/spectra/1H/peaks/0/multiplicity: "
-            "the proton multiplicity label is unsupported by this model. "
+            'the proton multiplicity label is unsupported by this model; observed "xy". '
             "Generation did not start. Correct the submitted Job and try again."
         )
         candidate_message = (
             "Interpretation failed: the interpreter's candidate at "
             "/model_input/spectra/1H/peaks/0/multiplicity was rejected after all "
             "correction routes: the proton multiplicity label is unsupported by "
-            "this model. Generation did not start. Review the submitted "
+            'this model; observed "xy". Generation did not start. Review the submitted '
             "description; the candidate's defect has not been proven to occur "
             "in the source."
         )
@@ -562,7 +576,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
             "Interpretation failed: the interpreter's candidate at "
             "/model_input/spectra/1H/peaks/0/multiplicity was rejected after all "
             "correction routes: the proton multiplicity label is unsupported by "
-            "this model. Generation did not start. Review the submitted "
+            'this model; observed "xy". Generation did not start. Review the submitted '
             "description; the candidate's defect has not been proven to occur "
             "in the source."
         )
@@ -646,7 +660,7 @@ class AttemptLifecycleTlsTests(unittest.TestCase):
                                 repair = request["messages"][-2:]
                                 self.assertEqual([item["role"] for item in repair], ["tool", "user"])
                                 self.assertIn(diagnostic.path, repair[0]["content"])
-                                self.assertNotIn("xy", json.dumps(repair))
+                                self.assertIn("xy", json.dumps(repair))
                             state.lose_next_failure_response()
                             uncertain = deliver_terminal(
                                 api=api, journal=journal, record=retained,

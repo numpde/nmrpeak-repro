@@ -198,6 +198,8 @@ class UnusedSession:
 
 
 class RejectingInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
     def validate_freeform_input(self, **_values: object) -> object:
         raise InputRejected(InputRejectionReason.INVALID_STRUCTURE)
 
@@ -206,11 +208,15 @@ REJECTING_INTERPRETER = RejectingInterpreter()
 
 
 class UnusedInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
     def validate_freeform_input(self, **_values: object) -> object:
         raise AssertionError("Structured input must not enter interpretation")
 
 
 class UnavailableInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
     def validate_freeform_input(self, **_values: object) -> object:
         raise InterpreterUnavailable(
             InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED,
@@ -219,6 +225,8 @@ class UnavailableInterpreter:
 
 
 class ReportingInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
     def validate_freeform_input(self, **_values: object) -> object:
         raise ReportedInputProblem(
             ModelGeneratedText(
@@ -229,6 +237,8 @@ class ReportingInterpreter:
 
 
 class CandidateIssueInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
     def validate_freeform_input(self, **_values: object) -> object:
         raise CandidateConstructionExhausted(
             InputIssue(
@@ -240,6 +250,8 @@ class CandidateIssueInterpreter:
 
 
 class RejectedInterpreter:
+    diagnostic_secrets: tuple[str, ...] = ()
+
     def validate_freeform_input(self, **_values: object) -> object:
         raise InterpretationRejected(
             runner_rejection_diagnostic(

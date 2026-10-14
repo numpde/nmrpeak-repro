@@ -722,7 +722,7 @@ def prepare_execution(
     model_input = None
     if structured and direct_rejection is None:
         try:
-            model_input = parse_job_input(canonical_input, lane.offering)
+            model_input = parse_job_input(canonical_input, lane.offering, diagnostic_secrets=interpreter.diagnostic_secrets)
         except InputRejected as rejection:
             direct_rejection = rejection
 

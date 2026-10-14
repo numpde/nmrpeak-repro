@@ -29,6 +29,7 @@ from tests.fakes.provider_server import ServerA, serve_server_a
 from tests.fakes.tls_certificates import write_test_certificates
 from tests.unit.test_attempt_lifecycle_tls import (
     _FROZEN_GENERATION_ID,
+    _UNUSED_INTERPRETER,
     _NoRunnerValidation,
     _api,
     _generation,
@@ -61,7 +62,7 @@ def _crash_at_boundary(mode: str, root_name: str, port: int) -> None:
                 api=api,
                 journal=journal,
                 session=_NoRunnerValidation(),
-                interpreter=object(),
+                interpreter=_UNUSED_INTERPRETER,
                 record=record,
                 canonical_input=b"{}",
             )
@@ -119,7 +120,7 @@ class TerminalProcessCrashTests(unittest.TestCase):
                                 lane=CHF_LIFECYCLE_LANE,
                                 api=api, journal=journal,
                                 session=_NoRunnerValidation(),
-                                interpreter=object(),
+                                interpreter=_UNUSED_INTERPRETER,
                                 record=started.record,
                                 canonical_input=admitted.canonical_input,
                             )

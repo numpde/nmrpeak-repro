@@ -211,15 +211,33 @@ class ProductInputTests(unittest.TestCase):
             issue.pointer,
             "/model_input/spectra/1H/peaks/0/multiplicity",
         )
-        self.assertNotIn("secret-looking-token", repr(issue))
+        self.assertIn("secret-looking-token", repr(issue))
 
-    def test_unknown_field_never_becomes_issue_path_or_repr(self) -> None:
+    def test_scalar_evidence_redacts_credentials_before_bounds(self) -> None:
+        secret = 'configured-"diagnostic\\key'
+        value = document()
+        value["model_input"]["formula"] = "x" * 310 + secret + " Bearer hidden"
+        with self.assertRaises(InputRejected) as raised:
+            parse_job_input(encoded(value), HF, diagnostic_secrets=(secret,))
+        message = render_source_issue(raised.exception.issue, structured=True)
+        self.assertIn("invalid syntax", message)
+        self.assertIn("[truncated]", message)
+        self.assertNotIn("configured-", message)
+        self.assertNotIn("hidden", message)
+
+    def test_duplicate_name_is_retained_without_its_value(self) -> None:
+        with self.assertRaises(InputRejected) as raised:
+            parse_job_input(b'{"ordinary-field":1,"ordinary-field":2}', HF)
+        self.assertIn("ordinary-field", raised.exception.issue.observed)
+        self.assertNotIn(":1", raised.exception.issue.observed)
+
+    def test_unknown_field_is_evidence_without_becoming_issue_path(self) -> None:
         value = document()
         value["secret-looking-field"] = "secret-looking-value"
         with self.assertRaises(InputRejected) as raised:
             parse_job_input(encoded(value), HF)
         self.assertEqual(raised.exception.issue.pointer, "")
-        self.assertNotIn("secret-looking-field", repr(raised.exception.issue))
+        self.assertIn("secret-looking-field", repr(raised.exception.issue))
         self.assertNotIn("secret-looking-value", repr(raised.exception.issue))
 
     def test_only_the_product_owned_offering_objects_select_a_lane(self) -> None:

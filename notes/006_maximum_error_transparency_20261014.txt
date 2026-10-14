@@ -237,3 +237,9 @@ configured interpreter keys are redacted before diagnostic bounds. Public report
 reserve space for the statement that generation did not start. Aggregate route
 exceptions export sanitized cause evidence rather than raw credential-bearing
 exception chains. Existing pending terminal commands remain exact replay data.
+
+Parser diagnostics now include bounded rejected scalar excerpts, duplicate and
+unexpected field names, and JSON syntax reasons. Unknown-field values are not
+dumped. Candidate evidence remains explicitly attributed to the candidate.
+Configured interpreter keys, including their JSON-escaped representations, are
+removed before excerpts are bounded for both direct and interpreted input.

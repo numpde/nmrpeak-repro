@@ -146,6 +146,11 @@ class InputInterpreter:
     endpoint_specs: tuple[OpenAIChatEndpointSpec, ...]
     policy: InterpreterPolicy
 
+    @property
+    def diagnostic_secrets(self) -> tuple[str, ...]:
+        """Supply configured keys to diagnostic projections before truncation."""
+        return tuple(spec.api_key for spec in self.endpoint_specs)
+
     def validate_freeform_input(
         self,
         *,
@@ -185,7 +190,7 @@ class InputInterpreter:
         provider_attempt_key: str,
         record_diagnostic: Callable[[str], None] | None = None,
     ) -> ValidatedRunnerRequest:
-        capability = _InterpretationCapability(lane)
+        capability = _InterpretationCapability(lane, self.diagnostic_secrets)
 
         async def admit_interpretation(
             model_input: object,
@@ -212,7 +217,7 @@ class InputInterpreter:
 
         def report_endpoint_failure(event: InterpreterEndpointFailure) -> None:
             event = replace(event, **{
-                name: diagnostic_text(value, secrets=tuple(spec.api_key for spec in self.endpoint_specs), limit=4096)
+                name: diagnostic_text(value, secrets=self.diagnostic_secrets, limit=4096)
                 for name in ("explanation", "error_type", "error_code", "request_id")
                 if (value := getattr(event, name)) is not None
             })
@@ -255,7 +260,7 @@ class InputInterpreter:
                 )
                 exported = InterpreterUnavailable(unavailable.reason, unavailable.attempted_configuration_ids)
                 exported.add_note(exception_diagnostic(
-                    unavailable, secrets=tuple(spec.api_key for spec in self.endpoint_specs), limit=8192,
+                    unavailable, secrets=self.diagnostic_secrets, limit=8192,
                 ))
                 raise exported from None
             finally:
@@ -272,6 +277,7 @@ class InputInterpreter:
 @dataclass(frozen=True, slots=True)
 class _InterpretationCapability:
     lane: LifecycleLane
+    diagnostic_secrets: tuple[str, ...] = ()
 
     @property
     def interpreter_prompt_path(self) -> Path:
@@ -283,7 +289,7 @@ class _InterpretationCapability:
         except (TypeError, ValueError, UnicodeError) as error:
             raise InterpreterProtocolError(str(error)) from error
         try:
-            return parse_job_input(encoded, self.lane.offering)
+            return parse_job_input(encoded, self.lane.offering, diagnostic_secrets=self.diagnostic_secrets)
         except InputRejected as error:
             raise InterpreterCandidateConstructionRejected(
                 render_candidate_correction(error.issue),

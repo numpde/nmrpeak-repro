@@ -1,5 +1,6 @@
 """Keep useful diagnostic text while removing credentials before display bounds."""
 
+import json
 import re
 import traceback
 
@@ -33,7 +34,11 @@ def diagnostic_text(value: str, *, secrets: tuple[str, ...] = (), limit: int = 4
     if type(value) is not str or type(limit) is not int or limit < 32:
         raise TypeError("Diagnostic text requires text and a byte limit of at least 32")
     if secrets:
-        pattern = "|".join(re.escape(secret) for secret in sorted(set(secrets), key=len, reverse=True) if secret)
+        representations = {
+            representation for secret in secrets if secret
+            for representation in (secret, json.dumps(secret, ensure_ascii=False)[1:-1], json.dumps(secret)[1:-1])
+        }
+        pattern = "|".join(re.escape(secret) for secret in sorted(representations, key=len, reverse=True))
         if pattern:
             value = re.sub(pattern, "[redacted]", value)
     value = _PRIVATE_KEY.sub("[redacted private key]", value)

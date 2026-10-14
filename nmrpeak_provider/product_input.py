@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, DecimalException
 from enum import StrEnum
 import json
 import re
 from typing import Never
 
+from .diagnostic_text import diagnostic_text
 from .product import AnalysisOffering, NMRPEAK_PRODUCT
 
 
@@ -209,7 +210,7 @@ InputPath = tuple[str | int, ...]
 
 @dataclass(frozen=True, slots=True)
 class InputIssue:
-    """A product-owned location and constraint, without rejected source text."""
+    """A product-owned constraint with a bounded diagnostic excerpt."""
 
     reason: InputRejectionReason
     path: InputPath = ()
@@ -217,8 +218,11 @@ class InputIssue:
     received_type: str | None = None
     line: int | None = None
     column: int | None = None
+    observed: str | None = None
 
     def __post_init__(self) -> None:
+        if self.observed is not None and type(self.observed) is not str:
+            raise ValueError("input issue evidence must be text")
         if type(self.reason) is not InputRejectionReason:
             raise ValueError("input issue reason must be product-owned")
         if type(self.path) is not tuple or len(self.path) > 16 or any(
@@ -323,6 +327,20 @@ class ChfModelInput(NmrpeakModelInput):
 
 
 def parse_job_input(
+    raw: bytes, offering: AnalysisOffering, *, diagnostic_secrets: tuple[str, ...] = (),
+) -> HfModelInput | ChfModelInput:
+    """Validate Job bytes; redact diagnostic excerpts before bounding them."""
+    try:
+        return _parse_job_input(raw, offering)
+    except InputRejected as error:
+        issue = error.issue
+        if issue.observed is not None:
+            issue = replace(issue, observed=diagnostic_text(issue.observed, secrets=diagnostic_secrets, limit=320))
+        error.issue = issue
+        raise
+
+
+def _parse_job_input(
     raw: bytes,
     offering: AnalysisOffering,
 ) -> HfModelInput | ChfModelInput:
@@ -342,7 +360,7 @@ def parse_job_input(
     request = _object_with_fields(document, {"schema_id", "model_input"}, ())
     if request["schema_id"] != INPUT_SCHEMA_ID:
         _reject(InputRejectionReason.INVALID_STRUCTURE, ("schema_id",),
-                expected="the NMRPeak request schema identifier")
+                expected="the NMRPeak request schema identifier", observed=_scalar_evidence(request["schema_id"]))
     model_path = ("model_input",)
     model_input = _object_with_fields(
         request["model_input"], {"formula", "spectra"}, model_path
@@ -357,6 +375,7 @@ def parse_job_input(
         _reject(
             InputRejectionReason.WRONG_SPECTRA, spectra_path,
             expected="1H and 13C spectra" if requires_carbon else "1H spectrum",
+            observed="spectrum names " + json.dumps(sorted(spectra)),
         )
 
     proton_peaks = _parse_proton_spectrum(
@@ -383,12 +402,13 @@ def _decode_document(raw: bytes) -> object:
             parse_constant=_reject_json_number,
         )
     except _DuplicateField as error:
-        raise InputRejected(InputRejectionReason.DUPLICATE_FIELD) from error
+        raise InputRejected(InputIssue(InputRejectionReason.DUPLICATE_FIELD, observed="duplicate field " + json.dumps(error.key))) from error
     except UnicodeDecodeError as error:
         raise InputRejected(InputRejectionReason.INVALID_UTF8) from error
     except json.JSONDecodeError as error:
         raise InputRejected(InputIssue(
             InputRejectionReason.INVALID_JSON,
+            observed=error.msg,
             line=error.lineno,
             column=error.colno,
         )) from error
@@ -400,7 +420,7 @@ def _object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, obj
     value: dict[str, object] = {}
     for key, item in pairs:
         if key in value:
-            raise _DuplicateField
+            raise _DuplicateField(key)
         value[key] = item
     return value
 
@@ -410,7 +430,9 @@ def _reject_json_number(_value: str) -> Never:
 
 
 class _DuplicateField(ValueError):
-    pass
+    def __init__(self, key: str) -> None:
+        self.key = key
+        super().__init__("Duplicate JSON field")
 
 
 class _InvalidJsonNumber(ValueError):
@@ -429,7 +451,7 @@ def _object(value: object, path: InputPath) -> dict[str, object]:
     if type(value) is not dict:
         _reject(
             InputRejectionReason.INVALID_STRUCTURE, path,
-            expected="JSON object", received_type=_json_type(value),
+            expected="JSON object", received_type=_json_type(value), observed=_scalar_evidence(value),
         )
     return value
 
@@ -450,6 +472,7 @@ def _object_with_fields(
         _reject(
             InputRejectionReason.INVALID_STRUCTURE, path,
             expected="; ".join(parts),
+            observed="unexpected fields " + json.dumps(sorted(extra)) if extra else None,
         )
     return object_value
 
@@ -458,7 +481,7 @@ def _array(value: object, path: InputPath) -> list[object]:
     if type(value) is not list:
         _reject(
             InputRejectionReason.INVALID_STRUCTURE, path,
-            expected="JSON array", received_type=_json_type(value),
+            expected="JSON array", received_type=_json_type(value), observed=_scalar_evidence(value),
         )
     return value
 
@@ -466,7 +489,7 @@ def _array(value: object, path: InputPath) -> list[object]:
 def _parse_formula(value: object, path: InputPath) -> str:
     if type(value) is not str or _FORMULA.fullmatch(value) is None:
         _reject(InputRejectionReason.INVALID_FORMULA, path,
-                expected="a valid molecular formula")
+                expected="a valid molecular formula", observed=_scalar_evidence(value))
     return value
 
 
@@ -504,7 +527,7 @@ def _parse_proton_peak(value: object, path: InputPath) -> ProtonPeak:
         or int(integral) > 50
     ):
         _reject(InputRejectionReason.INVALID_STRUCTURE, path + ("integral",),
-                expected="a whole-number integral from 1 to 50")
+                expected="a whole-number integral from 1 to 50", observed=_scalar_evidence(integral))
     multiplicity = peak["multiplicity"]
     if type(multiplicity) is not str or multiplicity not in SUPPORTED_MULTIPLICITIES:
         _reject(
@@ -512,6 +535,7 @@ def _parse_proton_peak(value: object, path: InputPath) -> ProtonPeak:
             path + ("multiplicity",),
             expected="a supported proton multiplicity label",
             received_type=_json_type(multiplicity),
+            observed=_scalar_evidence(multiplicity),
         )
 
     couplings_path = path + ("j_hz",)
@@ -553,7 +577,7 @@ def _parse_coupling(value: object, path: InputPath) -> Decimal:
     coupling = _decimal(value, path)
     if coupling < 0:
         _reject(InputRejectionReason.COUPLING_MUST_BE_NONNEGATIVE, path,
-                expected="a nonnegative coupling")
+                expected="a nonnegative coupling", observed=_scalar_evidence(value))
     return coupling
 
 
@@ -563,18 +587,26 @@ def _decimal(
 ) -> Decimal:
     if type(value) is not str:
         _reject(InputRejectionReason.INVALID_STRUCTURE, path,
-                expected="decimal text", received_type=_json_type(value))
+                expected="decimal text", received_type=_json_type(value), observed=_scalar_evidence(value))
     try:
         parsed = Decimal(value)
     except DecimalException as error:
         raise InputRejected(InputIssue(
             InputRejectionReason.INVALID_STRUCTURE, path,
-            expected="decimal text",
+            expected="decimal text", observed=_scalar_evidence(value),
         )) from error
     if not parsed.is_finite():
         _reject(InputRejectionReason.INVALID_STRUCTURE, path,
-                expected="finite decimal text")
+                expected="finite decimal text", observed=_scalar_evidence(value))
     return parsed
+
+
+def _scalar_evidence(value: object) -> str:
+    if type(value) in {str, int, float, bool, type(None)}:
+        return json.dumps(value, ensure_ascii=False)
+    if type(value) in {list, dict}:
+        return f"{_json_type(value)} with {len(value)} entries"
+    return _json_type(value)
 
 
 def _reject(
@@ -583,7 +615,8 @@ def _reject(
     *,
     expected: str | None = None,
     received_type: str | None = None,
+    observed: str | None = None,
 ) -> Never:
     raise InputRejected(InputIssue(
-        reason, path, expected=expected, received_type=received_type
+        reason, path, expected=expected, received_type=received_type, observed=observed
     ))

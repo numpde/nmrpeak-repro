@@ -167,7 +167,7 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(requests), 2)
                     repair = requests[1][1]["messages"]
                     self.assertEqual(repair[3]["reasoning_content"], "Private fixture reasoning.")
-                    self.assertNotIn("unsupported-private-label", json.dumps(repair[4:]))
+                    self.assertIn("unsupported-private-label", json.dumps(repair[4:]))
                     self.assertEqual(failures, [])
 
     async def test_protocol_repair_then_fallback_starts_fresh(self):

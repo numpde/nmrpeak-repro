@@ -1,9 +1,10 @@
-"""Render product-owned input issues without reflecting submitted values."""
+"""Render product-owned input issues with relevant redacted evidence."""
 
 from __future__ import annotations
 
 import re
 
+from .diagnostic_text import diagnostic_text
 from .failure_message import is_failure_message
 from .product_input import MAX_JOB_INPUT_BYTES, InputIssue, InputRejectionReason
 from .runner_protocol import (
@@ -17,6 +18,11 @@ _SAFE_EXPECTED = re.compile(r"[A-Za-z0-9 ,;:_/\-]+", re.ASCII)
 
 
 def _constraint(issue: InputIssue) -> str:
+    detail = _constraint_description(issue)
+    return detail + ("; observed " + diagnostic_text(issue.observed, limit=320) if issue.observed else "")
+
+
+def _constraint_description(issue: InputIssue) -> str:
     reason = issue.reason
     if reason is InputRejectionReason.INVALID_UTF8:
         return "the input is not valid UTF-8 text"
@@ -98,7 +104,7 @@ def render_source_issue(issue: InputIssue, *, structured: bool) -> str:
 
 
 def render_candidate_correction(issue: InputIssue) -> str:
-    """Give the assistant its rejected field/constraint without source text."""
+    """Give the assistant its rejected field, constraint and redacted excerpt."""
 
     message = (
         f"The interpreted candidate{_location(issue)} was rejected: "
