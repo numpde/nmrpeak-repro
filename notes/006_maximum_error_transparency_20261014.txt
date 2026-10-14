@@ -114,9 +114,10 @@ The user reported Attempt
 execution_attempt:sha256:1a3ee22b643e35c61b2e1703ec68407f0c9c681160b6d06f1f217ef43f068822
 with the public message beginning "The interpreter route reported a problem
 with the submitted description" and saying the exact cause was not independently
-verified. NMRPeak's current policy maps model_reported_problem to this fixed
-message and discards the model explanation. The interpreter selects that
-outcome after an all-report endpoint route. This identifies the implemented
+verified. At the initial source review, NMRPeak's policy mapped
+model_reported_problem to this fixed message and discarded the model explanation.
+The interpreter selected that outcome after an all-report endpoint route.
+This identified the implemented
 classification; the underlying model claims for this exact Attempt were not
 retrieved. SSH access to ProArt timed out during the investigation.
 
@@ -271,3 +272,41 @@ HTTP stream cleanup no longer silently discards release exceptions. The endpoint
 owner records and logs the redacted cause with cleanup uncertainty. If diagnostic
 retention also fails, that secondary explanation is logged without replacing the
 primary HTTP status or cancellation outcome.
+
+
+Validation record (2026-10-14)
+------------------------------
+
+Local runtime tree 49595e31 (before this documentation-only evidence update):
+* make test passed: 574 unit, 9 contract, 5 integration, 6 model-behavior fixture,
+  and 37 repository tests (631 total).
+* The maintained provider image build passed. Image input identity:
+  sha256:b7f485ab5085d893f70f5c1a19116c38da47ce643e265401773034d048ed3759
+  Built image:
+  sha256:8e516bd143b77edb7bd59e07dccdbb267ee5cc4bcc86dd0d2c36fc6668931021
+* API provider/contracts/check and public/openapi/check passed. Independent
+  audits confirmed the new immutable release's hashes and provenance and the
+  refreshed NMRPeak projection; upstream-contracts/check passed.
+* GUI repository checks passed: 168 JavaScript checks, 9 runtime Compose shape checks and
+  88 Python policy checks. The signed NMRPeak failure rehearsal then passed
+  setup and verification using GUI fixture commit f72a869f and the exact
+  provider image above, including
+  four HF/CHF model-report/candidate outcomes, real signed API FAIL delivery,
+  exact replay, API read/list, and both panel and column browser displays.
+  Ordinary scalar evidence and hostile markup survived as literal text, while
+  the fixture credentials were redacted. Temporary journal cleanup passed.
+
+The connected rehearsal exposed repeat-redaction punctuation loss and fixture
+cleanup that assumed an empty journal after retirement. Both were corrected,
+audited and rerun successfully. TLS tests separately cover retained terminal
+bytes across response loss, reopening, reconciliation and retirement. Worker
+protocol tests cover producer causes, wrong phase/correlation, old protocol
+rejection, result-encoding failure, partial writes, secondary reporting failure,
+and credential redaction. These are local and disposable-stack proofs, not a
+claim of live model or production qualification. The GUI checkout's unrelated
+pre-existing edits were preserved.
+
+The reviewed NMRPeak, API and GUI commits were pushed after explicit user
+authorization. No production deployment or historical terminal-message rewrite
+was performed. The original ProArt Attempt's model claims remain unrecovered;
+these changes preserve useful explanations for future Attempts.
