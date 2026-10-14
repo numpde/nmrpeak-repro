@@ -836,7 +836,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                 "nmrpeak_provider.attempt_lifecycle", level="WARNING"
             ) as logs:
                 api = CapturingApi(ProviderRequestUnavailable(
-                    delivery, cause=RuntimeError("private transport detail")
+                    delivery, cause=RuntimeError("upstream reset; Bearer transport-secret")
                 ))
                 _report_interpreter_condition(
                     api, active, InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED
@@ -847,7 +847,8 @@ class AttemptLifecycleTests(unittest.TestCase):
             self.assertIn(f"outcome_type='{outcome_type}'", rendered)
             self.assertIn("evidence_type='ProviderRequestUnavailable'", rendered)
             self.assertIn(f"delivery='{rendered_delivery}'", rendered)
-            self.assertNotIn("private transport detail", rendered)
+            self.assertIn("upstream reset", rendered)
+            self.assertNotIn("transport-secret", rendered)
 
     def test_provider_evidence_projection_covers_every_admitted_variant(self) -> None:
         cases = (

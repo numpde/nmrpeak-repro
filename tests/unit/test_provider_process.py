@@ -426,17 +426,31 @@ class ProviderProcessTests(unittest.TestCase):
         self.assertIn("unconfirmed", _remote_evidence_message(_remote_failure_evidence(possible)))
         self.assertIn("did not commit", _remote_evidence_message(_remote_failure_evidence(rejected)))
 
-    def test_transport_retry_message_omits_exception_owned_request_text(self) -> None:
+    def test_transport_retry_preserves_explanation_and_redacts_credentials(self) -> None:
         from nmrpeak_provider.provider_process import _remote_evidence_message
 
         evidence = ProviderRequestUnavailable(
             RequestDelivery.POSSIBLE,
-            cause=ConnectionResetError("private URL and credential"),
+            cause=ConnectionResetError("Upstream closed idle session; Bearer secret-token"),
         )
         message = _remote_evidence_message(evidence)
         self.assertIn("connection was reset", message)
         self.assertIn("possible", message)
-        self.assertNotIn("private", message)
+        self.assertIn("Upstream closed idle session", message)
+        self.assertNotIn("secret-token", message)
+
+    def test_verified_api_detail_is_visible_in_retry_diagnostics(self) -> None:
+        from nmrpeak_provider.provider_process import _remote_evidence_message
+        from nmrpeak_provider.provider_problems import ProviderProblem
+
+        problem = ProviderProblem(
+            status=400, problem_type="test", title="Bad request", instance="test",
+            transport_request_id="header", body_request_id="body", code="invalid",
+            detail="Description exceeds 4096 bytes; api_key=secret-value",
+        )
+        message = _remote_evidence_message(problem)
+        self.assertIn("Description exceeds 4096 bytes", message)
+        self.assertNotIn("secret-value", message)
 
     _unused_interpreter = object()
 

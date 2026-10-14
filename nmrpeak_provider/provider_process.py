@@ -9,6 +9,8 @@ from threading import Event, Thread
 import time
 from typing import TYPE_CHECKING, Callable
 
+from .diagnostic_text import diagnostic_text, exception_diagnostic
+
 from .attempt_inventory import (
     AttemptInventoryRejected,
     AttemptInventoryReadFailed,
@@ -710,6 +712,7 @@ def _remote_evidence_message(evidence: object) -> str:
             f"the API returned HTTP {evidence.status} ({evidence.title}{code}; "
             f"transport request {evidence.transport_request_id}; "
             f"body request {evidence.body_request_id})"
+            + ("; " + diagnostic_text(evidence.detail) if evidence.detail else "")
         )
     if type(evidence) is ProviderProblemRejected:
         if evidence.diagnostic is not None:
@@ -723,16 +726,16 @@ def _remote_evidence_message(evidence: object) -> str:
         return f"the HTTP 200 success response failed validation ({evidence.reason.value})"
     if type(evidence) is ProviderResponseRejected:
         status = "without a valid status" if evidence.status is None else f"with HTTP {evidence.status}"
-        return f"the API response {status} failed validation ({evidence.reason.value})"
+        return f"the API response {status} failed validation ({evidence.reason.value})" + _cause_message(evidence.cause)
     if type(evidence) is ProviderTlsRejected:
-        return "TLS verification failed before the request was sent"
+        return "TLS verification failed before the request was sent" + _cause_message(evidence.cause)
     if type(evidence) is ProviderRequestUnavailable:
         if evidence.status is not None:
-            return f"HTTP {evidence.status} ended without a complete API response"
+            return f"HTTP {evidence.status} ended without a complete API response" + _cause_message(evidence.cause)
         delivery = evidence.delivery.value.replace("_", " ")
         if evidence.cause is None:
             return f"request delivery was {delivery}"
-        return f"request delivery was {delivery}; " + network_failure_reason(evidence.cause)
+        return f"request delivery was {delivery}; " + network_failure_reason(evidence.cause) + _cause_message(evidence.cause)
     if type(evidence) is AttemptJournalAdmissionRejected:
         if str(evidence) == "Attempt journal record slots are exhausted":
             return "Attempt journal record slots are exhausted"
@@ -740,8 +743,12 @@ def _remote_evidence_message(evidence: object) -> str:
             return "Attempt journal recovery reserve cannot admit another record"
         return "Attempt journal admission was rejected without a reviewed cause"
     if isinstance(evidence, BaseException):
-        return f"{type(evidence).__name__}: no reviewed public diagnostic"
+        return exception_diagnostic(evidence)
     raise AssertionError("Remote provider evidence has no operator description")
+
+
+def _cause_message(cause: BaseException | None) -> str:
+    return "; " + exception_diagnostic(cause) if cause is not None else ""
 
 
 def _initial_retry_delay(feed_interval_seconds: float) -> float:

@@ -198,6 +198,8 @@ class AttemptConditionUnconfirmed(ProviderEvent):
     problem_title: str | None = _event_field(omit_if_none=True, default=None)
     transport_request_id: str | None = _event_field(omit_if_none=True, default=None)
     body_request_id: str | None = _event_field(omit_if_none=True, default=None)
+    problem_detail: str | None = _event_field(omit_if_none=True, default=None)
+    cause_message: str | None = _event_field(omit_if_none=True, default=None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -215,6 +217,8 @@ class ExecutionObservationLost(ProviderEvent):
     problem_title: str | None = _event_field(omit_if_none=True, default=None)
     transport_request_id: str | None = _event_field(omit_if_none=True, default=None)
     body_request_id: str | None = _event_field(omit_if_none=True, default=None)
+    problem_detail: str | None = _event_field(omit_if_none=True, default=None)
+    cause_message: str | None = _event_field(omit_if_none=True, default=None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

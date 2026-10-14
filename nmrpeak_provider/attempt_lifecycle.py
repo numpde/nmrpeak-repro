@@ -12,6 +12,8 @@ import time
 from threading import Event, Thread
 from typing import TYPE_CHECKING
 
+from .diagnostic_text import diagnostic_text, exception_diagnostic
+
 from .attempt_identity import derive_provider_attempt_key
 from .attempt_journal import (
     ActiveAttempt,
@@ -1005,11 +1007,14 @@ def _provider_evidence_facts(evidence) -> dict[str, object]:
     problem_title = None
     transport_request_id = None
     body_request_id = None
+    problem_detail = None
+    cause_message = None
     if type(evidence) is ProviderProblem:
         status, code = evidence.status, evidence.code
         problem_type, problem_title = evidence.problem_type, evidence.title
         transport_request_id = evidence.transport_request_id
         body_request_id = evidence.body_request_id
+        problem_detail = diagnostic_text(evidence.detail) if evidence.detail else None
     elif type(evidence) is ProviderProblemRejected:
         status, reason = evidence.status, evidence.reason.value
         if evidence.diagnostic is not None:
@@ -1029,6 +1034,8 @@ def _provider_evidence_facts(evidence) -> dict[str, object]:
         reason = evidence.reason.value
     else:
         raise AssertionError("unhandled provider evidence")
+    if type(evidence) in {ProviderRequestUnavailable, ProviderResponseRejected, ProviderTlsRejected} and evidence.cause is not None:
+        cause_message = exception_diagnostic(evidence.cause)
     return dict(
         http_status=status,
         reason=reason,
@@ -1038,6 +1045,8 @@ def _provider_evidence_facts(evidence) -> dict[str, object]:
         problem_title=problem_title,
         transport_request_id=transport_request_id,
         body_request_id=body_request_id,
+        problem_detail=problem_detail,
+        cause_message=cause_message,
     )
 
 
