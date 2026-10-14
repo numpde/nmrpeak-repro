@@ -1318,6 +1318,9 @@ class AttemptLifecycleTests(unittest.TestCase):
             def retire(self, record) -> None:
                 raise OSError("private retirement detail")
 
+            def record_diagnostic(self, record, stage, message):
+                self.store.record_diagnostic(record, stage, message)
+
         with journal_directory() as root:
             with AttemptJournalStore(root, maximum_records=1) as store:
                 pending = pending_from_active(active)
@@ -1344,7 +1347,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertIn("stage='execution_state_retention'", rendered)
         self.assertIn("failure_kind='journal_retention_failed'", rendered)
         self.assertIn("cleanup_state='confirmed'", rendered)
-        self.assertNotIn("private retirement detail", rendered)
+        self.assertIn("private retirement detail", rendered)
 
     def test_observer_cancels_blocked_generation_on_cutoff_or_lost_read(self) -> None:
         cases = (
@@ -1464,7 +1467,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertIn(f"stage='{stage}'", rendered)
                 self.assertIn(f"failure_kind='{failure_kind}'", rendered)
                 self.assertIn("cleanup_state='confirmed'", rendered)
-                self.assertNotIn("private", rendered)
+                self.assertIn("private", rendered)
 
     def test_generation_start_failure_is_correlated_and_cancels_the_runner(self) -> None:
         active = active_attempt(valid_chf_input())
@@ -1513,7 +1516,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertIn("stage='generation_start'", rendered)
         self.assertIn("failure_kind='generation_start_failed'", rendered)
         self.assertIn("cleanup_state='confirmed'", rendered)
-        self.assertNotIn("private thread start detail", rendered)
+        self.assertIn("private thread start detail", rendered)
 
     def test_generation_observation_exceptions_keep_their_actual_stage(self) -> None:
         active = active_attempt(valid_chf_input())
@@ -1550,7 +1553,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertIn("stage='attempt_observation'", rendered)
         self.assertIn("failure_kind='ongoing_observation_failed'", rendered)
         self.assertIn("cleanup_state='confirmed'", rendered)
-        self.assertNotIn("private polling observation detail", rendered)
+        self.assertIn("private polling observation detail", rendered)
 
     def test_cancellation_failure_preserves_the_trigger_before_fatal_exit(self) -> None:
         active = active_attempt(valid_chf_input())
@@ -1608,7 +1611,7 @@ class AttemptLifecycleTests(unittest.TestCase):
                 self.assertIn("provider_event='execution_process_failed'", rendered)
                 self.assertIn(f"failure_kind='{failure_kind}'", rendered)
                 self.assertIn("cleanup_state='unconfirmed'", rendered)
-                self.assertNotIn("private runner shutdown detail", rendered)
+                self.assertIn("private runner shutdown detail", rendered)
 
     def test_non_stopping_worker_is_reported_as_process_fatal(self) -> None:
         active = active_attempt(valid_chf_input())
@@ -1700,7 +1703,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         rendered = "\n".join(logs.output)
         self.assertIn("failure_kind='generation_failed'", rendered)
         self.assertIn("cleanup_state='confirmed'", rendered)
-        self.assertNotIn("private worker failure detail", rendered)
+        self.assertIn("private worker failure detail", rendered)
 
     def test_generated_candidates_become_one_durable_completion(self) -> None:
         entered = entered_attempt(valid_chf_input())
@@ -1840,7 +1843,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertIn("stage='completion_retention'", rendered)
         self.assertIn("failure_kind='journal_retention_failed'", rendered)
         self.assertIn("cleanup_state='confirmed'", rendered)
-        self.assertNotIn("private journal retention detail", rendered)
+        self.assertIn("private journal retention detail", rendered)
 
     def test_command_bound_terminal_receipts_retire_complete_and_fail(self) -> None:
         for operation in (TerminalOperation.COMPLETE, TerminalOperation.FAIL):

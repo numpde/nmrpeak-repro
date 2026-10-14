@@ -1,6 +1,7 @@
 """Keep useful diagnostic text while removing credentials before display bounds."""
 
 import re
+import traceback
 
 
 _PRIVATE_KEY = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|$)", re.S)
@@ -64,6 +65,8 @@ def exception_diagnostic(error: BaseException, *, secrets: tuple[str, ...] = (),
         except Exception:
             message = "[exception message unavailable]"
         parts.append(f"{relationship}{type(current).__name__}: {message}")
+        frames = list(traceback.walk_tb(current.__traceback__))[-8:]
+        parts.extend(f"At {frame.f_code.co_filename}:{line} in {frame.f_code.co_name}" for frame, line in frames)
         parts.extend("Note: " + note for note in getattr(current, "__notes__", ()) if type(note) is str)
         if isinstance(current, BaseExceptionGroup):
             for member in current.exceptions[:16]:

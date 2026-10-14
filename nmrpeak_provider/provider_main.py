@@ -12,6 +12,7 @@ from threading import Event
 from .attempt_journal_store import AttemptJournalStore
 from .frozen_generation import FrozenGeneration, load_frozen_generation
 from .process_logging import configure_process_logging
+from .diagnostic_text import exception_diagnostic
 from .provider_api import ProviderApiClient
 from .provider_config import (
     CHF_SOCKET_PATH,
@@ -179,13 +180,14 @@ def _cleanup_provider_resources(journal, hf_session, chf_session, primary_error)
                     "attached_to_primary" if primary_error is not None
                     else "process_fatal"
                 ),
+                cause_message=exception_diagnostic(error),
             )))
-            _LOG.exception("Provider %s cleanup failed", resource)
             cleanup_errors.append(error)
     if cleanup_errors:
         if primary_error is not None:
             primary_error.add_note(
-                "Provider cleanup could not confirm every local resource closure."
+                "Provider cleanup could not confirm every local resource closure: "
+                + "; ".join(exception_diagnostic(error) for error in cleanup_errors)
             )
         else:
             raise cleanup_errors[0]
@@ -234,8 +236,8 @@ def main() -> int:
     configure_process_logging()
     try:
         run_provider()
-    except Exception:
-        _LOG.exception("Provider process stopped unexpectedly")
+    except Exception as error:
+        _LOG.error("Provider process stopped unexpectedly: %s", exception_diagnostic(error))
         print(
             "The provider is not ready; inspect the failure above and the runner "
             "status before restarting.",

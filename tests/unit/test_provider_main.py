@@ -183,10 +183,8 @@ with patch('nmrpeak_provider.provider_main.run_provider', run):
         self.assertIn("error_type='OSError'", rendered)
         self.assertIn("error_type='RuntimeError'", rendered)
         self.assertIn("failure_effect='attached_to_primary'", rendered)
-        self.assertIn(
-            "Provider cleanup could not confirm every local resource closure.",
-            primary.__notes__,
-        )
+        self.assertTrue(any("Provider cleanup could not confirm every local resource closure" in note for note in primary.__notes__))
+        self.assertIn("private journal detail", " ".join(primary.__notes__))
 
         events.clear()
         with self.assertLogs(

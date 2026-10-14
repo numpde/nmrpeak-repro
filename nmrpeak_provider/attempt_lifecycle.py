@@ -929,6 +929,7 @@ def _report_progress_condition(api, record, phase, context, condition) -> None:
 def _log_execution_process_failure(
     record: ActiveAttempt,
     *,
+    journal: AttemptJournalStore,
     stage: str,
     failure_kind: str,
     error: BaseException,
@@ -943,7 +944,17 @@ def _log_execution_process_failure(
         result_state="unknown",
         recovery="restart_reconciliation",
         cleanup_state=cleanup_state,
+        cause_message=exception_diagnostic(error),
     )))
+    try:
+        journal.record_diagnostic(
+            record, stage,
+            f"{failure_kind}; result unknown; cleanup {cleanup_state}. " + exception_diagnostic(error),
+        )
+    except Exception as retention_error:
+        message = "Diagnostic retention is unconfirmed: " + exception_diagnostic(retention_error)
+        error.add_note(message)
+        _LOG.error("Attempt %s: %s", record.execution_attempt_ref, message)
 
 
 def _cancel_session_after_failure(
@@ -958,7 +969,7 @@ def _cancel_session_after_failure(
         session.cancel()
     except BaseException as cleanup_error:
         error.add_note(
-            f"{note} Cleanup failure type: {bounded_exception_type(cleanup_error)}."
+            f"{note} {exception_diagnostic(cleanup_error)}"
         )
         return "unconfirmed"
     return "confirmed"
@@ -1116,6 +1127,7 @@ def execute_prepared(
         )
         _log_execution_process_failure(
             record,
+            journal=journal,
             stage="running_progress",
             failure_kind="running_progress_failed",
             error=error,
@@ -1136,6 +1148,7 @@ def execute_prepared(
             )
             _log_execution_process_failure(
                 record,
+                journal=journal,
                 stage="generation_shutdown",
                 failure_kind="running_progress_unconfirmed",
                 error=error,
@@ -1151,13 +1164,15 @@ def execute_prepared(
         cleanup_state = "confirmed"
         try:
             session.cancel()
-        except RunnerSessionRetired:
+        except BaseException as cleanup_error:
             cleanup_state = "unconfirmed"
             error.add_note(
-                "The validated NMRPeak session also failed to stop before generation."
+                "The validated NMRPeak session also failed to stop before generation: "
+                + exception_diagnostic(cleanup_error)
             )
         _log_execution_process_failure(
             record,
+            journal=journal,
             stage="execution_entry_retention",
             failure_kind="journal_retention_failed",
             error=error,
@@ -1175,6 +1190,7 @@ def execute_prepared(
         )
         _log_execution_process_failure(
             entered,
+            journal=journal,
             stage="attempt_observation",
             failure_kind="initial_observation_failed",
             error=error,
@@ -1191,6 +1207,7 @@ def execute_prepared(
             )
             _log_execution_process_failure(
                 entered,
+                journal=journal,
                 stage="generation_shutdown",
                 failure_kind="pre_generation_stop_unconfirmed",
                 error=error,
@@ -1202,6 +1219,7 @@ def execute_prepared(
         except BaseException as error:
             _log_execution_process_failure(
                 entered,
+                journal=journal,
                 stage="execution_state_retention",
                 failure_kind="journal_retention_failed",
                 error=error,
@@ -1295,10 +1313,11 @@ def execute_prepared(
             try:
                 _cancel_and_join_generation(session, worker, observation)
                 cleanup_state = "confirmed"
-            except ExecutionShutdownFailed:
+            except BaseException as cleanup_error:
                 cleanup_state = "unconfirmed"
                 error.add_note(
-                    "The NMRPeak generation worker also failed to stop after the error."
+                    "The NMRPeak generation worker also failed to stop after the error: "
+                    + exception_diagnostic(cleanup_error)
                 )
         elif type(error) not in {ExecutionShutdownFailed, RunnerSessionRetired}:
             cleanup_state = _cancel_session_after_failure(
@@ -1313,6 +1332,7 @@ def execute_prepared(
             failure_kind = "runner_session_retired"
         _log_execution_process_failure(
             entered,
+            journal=journal,
             stage=failure_stage,
             failure_kind=failure_kind,
             error=error,
@@ -1357,6 +1377,7 @@ def select_completion(
         )
         _log_execution_process_failure(
             record,
+            journal=journal,
             stage="result_validation",
             failure_kind=failure_kind,
             error=error,
@@ -1378,6 +1399,7 @@ def select_completion(
         )
         _log_execution_process_failure(
             record,
+            journal=journal,
             stage="completion_preparation",
             failure_kind="completion_preparation_failed",
             error=error,
@@ -1394,6 +1416,7 @@ def select_completion(
         )
         _log_execution_process_failure(
             record,
+            journal=journal,
             stage="completion_retention",
             failure_kind="journal_retention_failed",
             error=error,
@@ -1550,6 +1573,18 @@ def _reconcile_terminal(api, journal, record):
     return _terminal_held(held)
 
 
+def _interruption_explanation(journal: AttemptJournalStore, record: ActiveAttempt) -> str:
+    history = journal.diagnostics(record.execution_attempt_ref)
+    if not history:
+        return _INTERRUPTED_FAILURE_MESSAGE
+    event = history[0]["events"][-1]
+    prefix = _INTERRUPTED_FAILURE_MESSAGE + " Its execution outcome is uncertain. "
+    return prefix + diagnostic_text(
+        f"Earlier diagnostic from {event['stage']}: {event['message']}",
+        limit=1024 - len(prefix),
+    )
+
+
 def reconcile_record(
     *,
     runtime: GenerationRuntime,
@@ -1610,7 +1645,7 @@ def reconcile_record(
         prepared = prepare_execution_attempt_fail(
             execution_attempt_ref=decision.record.execution_attempt_ref,
             failure_code=decision.failure_code,
-            failure_message=_INTERRUPTED_FAILURE_MESSAGE,
+            failure_message=_interruption_explanation(journal, decision.record),
         )
         terminal = retain_terminal_command(decision.record, prepared)
         journal.replace(decision.record, terminal)
@@ -1791,6 +1826,10 @@ def _retain_preparation_failure(
         ),
     )
     terminal = retain_terminal_command(diagnosed, prepared)
+    journal.record_diagnostic(
+        record, "preparation",
+        f"{producer}; {failure.kind}; route={route}. {publication.failure_message}",
+    )
     journal.replace(record, terminal)
     _LOG.info("%s", render_provider_event(PreparationFailureRetained(
         job_ref=record.job_ref,

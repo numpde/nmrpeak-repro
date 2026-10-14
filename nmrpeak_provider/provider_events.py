@@ -277,6 +277,7 @@ class ExecutionProcessFailed(ProviderEvent):
     result_state: Literal["unknown"]
     recovery: Literal["restart_reconciliation"]
     cleanup_state: Literal["confirmed", "unconfirmed"]
+    cause_message: str | None = _event_field(omit_if_none=True, default=None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -289,6 +290,7 @@ class ProviderCleanupFailed(ProviderEvent):
     operation: Literal["close", "retire"]
     error_type: str
     failure_effect: Literal["attached_to_primary", "process_fatal"]
+    cause_message: str | None = _event_field(omit_if_none=True, default=None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
