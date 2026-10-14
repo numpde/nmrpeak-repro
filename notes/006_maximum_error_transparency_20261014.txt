@@ -207,3 +207,24 @@ source policy, or healthy container alone does not establish those outcomes.
 Completion means a user or authorized operator can determine what each
 component actually reported, what is known, what is uncertain, and what action
 is supported, without losing the explanation to an overbroad disclosure rule.
+
+Implementation record
+---------------------
+
+The first slices restore sanitized verified API detail and transport causes,
+and introduce separate private Attempt diagnostic histories. Each history keeps
+up to 32 events within 256 KiB, with an explicit omitted-event count. Evidence
+survives active-obligation retirement and remains until explicit journal-volume
+retirement; admission's recovery reserve still protects outstanding commands.
+No terminal command bytes or v1/v2 obligation schemas change for this storage.
+
+Stopped-provider inspection v3 includes at most one full diagnostic history so
+retained evidence cannot overflow the deployment reader's output limit. Its
+diagnostics_omitted field counts other retained histories. Select an exact
+Attempt reference to inspect its full history and current obligation, if any:
+
+    make provider/deployment/journal/inspect DEPLOYMENT=<name> ATTEMPT_REF=<ref>
+
+An empty diagnostics list means no retained history exists for that selection.
+Older inspection documents remain accepted. Runtime producers are wired in
+subsequent slices; the storage interface alone does not establish coverage.

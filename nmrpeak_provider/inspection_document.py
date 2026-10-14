@@ -7,6 +7,7 @@ from ._nmr_api_failure_contract import CONFLICT_RECOVERY, EVIDENCE
 from ._nmr_api_failures import _text as admitted_evidence_text
 from .attempt_journal import LatestDiagnostic
 from .failure_message import is_failure_message
+from .attempt_diagnostic import validate_diagnostics
 
 
 def _fields(value, expected):
@@ -26,9 +27,12 @@ def _identity(value, pattern):
 
 def validate_inspection_document(document):
     """Reject unknown fields, payloads, inconsistent identities and recovery claims."""
-    _fields(document, "schema_id current_automation observed_at stage_counts records")
+    if type(document) is not dict:
+        raise ValueError("Invalid inspection envelope")
+    extra = " diagnostics diagnostics_omitted" if document.get("schema_id") == "nmrpeak.journal_inspection.v3" else ""
+    _fields(document, "schema_id current_automation observed_at stage_counts records" + extra)
     schema = document["schema_id"]
-    if type(schema) is not str or schema not in {"nmrpeak.journal_inspection.v1", "nmrpeak.journal_inspection.v2"} or document["current_automation"] != "stopped":
+    if type(schema) is not str or schema not in {"nmrpeak.journal_inspection.v1", "nmrpeak.journal_inspection.v2", "nmrpeak.journal_inspection.v3"} or document["current_automation"] != "stopped":
         raise ValueError("Invalid inspection envelope")
     _text(document["observed_at"], 64)
     observed = datetime.fromisoformat(document["observed_at"])
@@ -46,6 +50,17 @@ def validate_inspection_document(document):
     identities = [record["provider_attempt_key"] for record in records]
     if len(identities) != len(set(identities)):
         raise ValueError("Duplicate inspection obligation")
+    if extra:
+        diagnostics = document["diagnostics"]
+        if type(diagnostics) is not list or len(diagnostics) > 1:
+            raise ValueError("Invalid retained diagnostic collection")
+        if type(document["diagnostics_omitted"]) is not int or document["diagnostics_omitted"] < 0:
+            raise ValueError("Invalid omitted diagnostic count")
+        for evidence in diagnostics:
+            validate_diagnostics(evidence)
+        identities = [evidence["execution_attempt_ref"] for evidence in diagnostics]
+        if len(identities) != len(set(identities)):
+            raise ValueError("Duplicate retained Attempt diagnostics")
 
 
 def _validate_record(record, *, version):

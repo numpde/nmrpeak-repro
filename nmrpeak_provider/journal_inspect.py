@@ -73,23 +73,28 @@ def _diagnostic_facts(diagnostic):
     }
 
 
-def inspect_journal(root: Path) -> bytes:
+def inspect_journal(root: Path, execution_attempt_ref: str | None = None) -> bytes:
     """Read validated records without mutation; caller owns stopped deployment exclusion."""
     with AttemptJournalStore(root, maximum_records=JOURNAL_MAXIMUM_RECORDS, read_only=True) as journal:
         records = [_record_facts(record) | {"record_digest": "sha256:" + sha256(journal.record_bytes(record)).hexdigest()}
-                   for record in journal.records()]
-    document = {"schema_id": "nmrpeak.journal_inspection.v2",
+                   for record in journal.records()
+                   if execution_attempt_ref is None or getattr(record, "execution_attempt_ref", None) == execution_attempt_ref]
+        diagnostics = journal.diagnostics(execution_attempt_ref)
+        omitted = journal.diagnostic_count() - len(diagnostics)
+    document = {"schema_id": "nmrpeak.journal_inspection.v3",
         "current_automation": "stopped", "observed_at": datetime.now(UTC).isoformat(),
-        "stage_counts": dict(Counter(record["phase"] for record in records)), "records": records}
+        "stage_counts": dict(Counter(record["phase"] for record in records)), "records": records,
+        "diagnostics": diagnostics, "diagnostics_omitted": omitted}
     validate_inspection_document(document)
     return canonical_json_bytes(document)
 
 
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect a stopped provider's retained obligations without sending requests.")
-    parser.parse_args(arguments)
+    parser.add_argument("--execution-attempt-ref", help="Show one Attempt's full retained diagnostic history")
+    options = parser.parse_args(arguments)
     try:
-        print(inspect_journal(JOURNAL_PATH).decode("utf-8"))
+        print(inspect_journal(JOURNAL_PATH, options.execution_attempt_ref).decode("utf-8"))
     except (AttemptJournalStateRejected, OSError, ValueError, TypeError) as error:
         parser.exit(2, f"Cannot inspect provider journal: {error}\n")
     return 0

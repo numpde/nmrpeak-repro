@@ -714,6 +714,7 @@ def inspect_provider_journal(
     deployment: str,
     *,
     docker: Path = _DOCKER,
+    execution_attempt_ref: str | None = None,
 ) -> bytes:
     """Inspect retained work offline while deployment and provider locks are held."""
     root = repository.resolve(strict=True)
@@ -739,8 +740,9 @@ def inspect_provider_journal(
         lock = inspect_provider_identity_lock_volume(docker, selection.provider_ref)
         image = _resolve_provider_image(docker, root)
         with _held_provider_identity_lock(docker, lock, selection.provider_ref, image):
+            arguments = ("--execution-attempt-ref", execution_attempt_ref) if execution_attempt_ref else ()
             output = _run_journal_reader(
-                docker, journal, image, "nmrpeak_provider.journal_inspect"
+                docker, journal, image, "nmrpeak_provider.journal_inspect", *arguments
             )
         try:
             if not output.endswith(b"\n"):
@@ -1522,6 +1524,7 @@ def _admitted_journal_volume(
 
 def _run_journal_reader(
     docker: Path, journal_volume: str, provider_image: LocalImage, module: str,
+    *arguments: str,
 ) -> bytes:
     result = _docker_command(
         docker,
@@ -1554,6 +1557,7 @@ def _run_journal_reader(
             provider_image.image_id,
             "-m",
             module,
+            *arguments,
         ),
         timeout=300,
     )
@@ -2915,7 +2919,8 @@ def main(arguments: list[str] | None = None) -> int:
                 f"{options.deployment} {options.frozen_generation}"
             )
         elif options.operation == "journal-inspect":
-            print(inspect_provider_journal(repository, options.deployment).decode("utf-8"), end="")
+            print(inspect_provider_journal(repository, options.deployment,
+                  execution_attempt_ref=options.execution_attempt_ref).decode("utf-8"), end="")
         elif options.operation == "journal-archive-closed":
             print(archive_provider_journal(repository, options.deployment,
                   execution_attempt_ref=options.execution_attempt_ref, record_digest=options.record_digest,
@@ -2996,7 +3001,7 @@ _OPERATION_OPTION_POLICY = {
         frozenset({"frozen_generation", "confirm"}),
     ),
     "init": (frozenset(), frozenset()),
-    "journal-inspect": (frozenset(), frozenset()),
+    "journal-inspect": (frozenset(), frozenset({"execution_attempt_ref"})),
     "journal-archive-closed": (frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation"}),
         frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation", "localhost_ca_certificate"})),
     "journal-retire": (frozenset({"confirm"}), frozenset({"confirm"})),

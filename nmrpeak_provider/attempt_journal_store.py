@@ -12,18 +12,24 @@ from threading import Lock
 
 from .attempt_journal import (
     MAX_JOURNAL_RECORD_BYTES,
+    ActiveAttempt,
     AttemptJournalRecord,
     StartPending,
+    TerminalPending,
     journal_record_bytes,
     journal_record_name,
     parse_journal_record,
 )
+from .attempt_diagnostic import MAX_DIAGNOSTIC_BYTES, append_diagnostic, require_diagnostic_owner, validate_diagnostics
+from .canonical_json import canonical_json_bytes, parse_canonical_json_bytes
 
 
 _RECORD_NAME = re.compile(r"[0-9a-f]{64}\.json")
 _STAGING_NAME = re.compile(r"\.([0-9a-f]{64}\.json)\.pending")
 _ARCHIVE_NAME = re.compile(r"[0-9a-f]{64}\.archive\.json")
 _ARCHIVE_STAGING = re.compile(r"\.[0-9a-f]{64}\.archive\.pending")
+_DIAGNOSTIC_NAME = re.compile(r"[0-9a-f]{64}\.diagnostic\.json")
+_DIAGNOSTIC_STAGING = re.compile(r"\.[0-9a-f]{64}\.diagnostic\.json\.pending")
 _DIRECTORY_MODE = 0o700
 _RECORD_MODE = 0o600
 
@@ -100,6 +106,46 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             name = journal_record_name(expected)
             self._require_current(name, expected)
             return self._read_bytes(name)
+
+    def diagnostics(self, execution_attempt_ref: str | None = None) -> list[dict]:
+        """Read retained history even after the matching obligation is retired."""
+        with self._lock:
+            self._require_usable()
+            names = sorted(name for name in os.listdir(self._directory_fd) if _DIAGNOSTIC_NAME.fullmatch(name))
+            if execution_attempt_ref is not None:
+                if re.fullmatch(r"execution_attempt:sha256:[0-9a-f]{64}", execution_attempt_ref) is None:
+                    raise ValueError("Diagnostic selection requires an exact Attempt reference")
+                selected = execution_attempt_ref.removeprefix("execution_attempt:sha256:") + ".diagnostic.json"
+                names = [selected] if selected in names else []
+            return [self._read_diagnostic(name) for name in names[:1]]
+
+    def diagnostic_count(self) -> int:
+        with self._lock:
+            self._require_usable()
+            return sum(bool(_DIAGNOSTIC_NAME.fullmatch(name)) for name in os.listdir(self._directory_fd))
+
+    def record_diagnostic(self, expected: AttemptJournalRecord, stage: str, message: str) -> None:
+        if type(expected) not in {ActiveAttempt, TerminalPending}:
+            raise TypeError("Attempt diagnostic evidence requires a bound Attempt")
+        with self._lock:
+            self._require_usable()
+            self._require_writable()
+            self._require_current(journal_record_name(expected), expected)
+            name = expected.execution_attempt_ref.removeprefix("execution_attempt:sha256:") + ".diagnostic.json"
+            previous = self._read_diagnostic(name) if name in os.listdir(self._directory_fd) else None
+            raw = canonical_json_bytes(append_diagnostic(expected, previous, stage, message))
+            self._require_recovery_space(self._record_names(), prospective_records=0, additional_bytes=len(raw))
+            self._replace_record(name, raw)
+
+    def _read_diagnostic(self, name: str) -> dict:
+        try:
+            document = parse_canonical_json_bytes(self._read_bytes(name, maximum=MAX_DIAGNOSTIC_BYTES))
+            validate_diagnostics(document)
+            if document["execution_attempt_ref"].removeprefix("execution_attempt:sha256:") + ".diagnostic.json" != name:
+                raise ValueError("Attempt diagnostic filename differs from its identity")
+            return document
+        except (ValueError, TypeError) as error:
+            raise AttemptJournalStateRejected("Attempt diagnostic evidence is invalid") from error
 
     def archived_records(self) -> tuple[AttemptJournalRecord, ...]:
         """Retain archived generation provenance without admitting replay obligations."""
@@ -281,6 +327,12 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         record_names: list[str] = []
         staging_names: list[str] = []
         for name in os.listdir(self._directory_fd):
+            if _DIAGNOSTIC_NAME.fullmatch(name):
+                self._read_diagnostic(name)
+                continue
+            if _DIAGNOSTIC_STAGING.fullmatch(name):
+                staging_names.append(name)
+                continue
             if _ARCHIVE_NAME.fullmatch(name):
                 continue
             if _ARCHIVE_STAGING.fullmatch(name):
@@ -303,8 +355,20 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             raise AttemptJournalStateRejected(
                 "Attempt journal contains more records than configured slots"
             )
+        owners = {}
         for name in record_names:
-            self._read_record(name)
+            record = self._read_record(name)
+            if type(record) in {ActiveAttempt, TerminalPending}:
+                owners[record.execution_attempt_ref] = record
+        for name in os.listdir(self._directory_fd):
+            if _DIAGNOSTIC_NAME.fullmatch(name):
+                document = self._read_diagnostic(name)
+                owner = owners.get(document["execution_attempt_ref"])
+                if owner is not None:
+                    try:
+                        require_diagnostic_owner(document, owner)
+                    except ValueError as error:
+                        raise AttemptJournalStateRejected("Attempt diagnostic ownership differs from its live obligation") from error
         for name in staging_names:
             descriptor = self._open_record(name)
             os.close(descriptor)
@@ -317,10 +381,10 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
     def _record_names(self) -> set[str]:
         names: set[str] = set()
         for name in os.listdir(self._directory_fd):
-            if _ARCHIVE_NAME.fullmatch(name) or _ARCHIVE_STAGING.fullmatch(name):
+            if _ARCHIVE_NAME.fullmatch(name) or _ARCHIVE_STAGING.fullmatch(name) or _DIAGNOSTIC_NAME.fullmatch(name):
                 continue
             if _RECORD_NAME.fullmatch(name) is None:
-                if _STAGING_NAME.fullmatch(name) is not None:
+                if _STAGING_NAME.fullmatch(name) is not None or _DIAGNOSTIC_STAGING.fullmatch(name):
                     if self._read_only:
                         continue
                     raise AttemptJournalStateRejected(
@@ -448,6 +512,7 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         record_names: set[str],
         *,
         prospective_records: int,
+        additional_bytes: int = 0,
     ) -> None:
         """Keep future record growth plus one serialized replacement writable."""
 
@@ -470,6 +535,7 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
             + temporary_replacement
             + prospective_records * MAX_JOURNAL_RECORD_BYTES
             + self._filesystem_reserve_bytes
+            + additional_bytes
         )
         filesystem = os.fstatvfs(self._directory_fd)
         available = filesystem.f_bavail * filesystem.f_frsize

@@ -95,7 +95,8 @@ help:
 		'      Load the reviewed checkpoints and start signed API activity using the supplied private CA.' \
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
 		'      Report the owned provider and runner container state.' \
-		'  make provider/deployment/journal/inspect DEPLOYMENT=<name>' \
+		'  make provider/deployment/journal/inspect DEPLOYMENT=<name> [ATTEMPT_REF=<ref>]' \
+		'      Includes one retained diagnostic history; select ATTEMPT_REF to inspect another.' \
 		'  make provider/deployment/journal/archive-closed DEPLOYMENT=<name> ATTEMPT_REF=<ref> RECORD_DIGEST=<sha256> FROZEN_GENERATION=<sha256> REASON=<text>' \
 		'      Archive reviewed held work only after API-confirmed closure; see notes/002_closed_attempt_archival.txt.' \
 		'      Inspect retained work in a stopped deployment without publishing or changing it.' \
@@ -108,7 +109,7 @@ help:
 		'  make provider/deployment/generation/remove DEPLOYMENT=<name> FROZEN_GENERATION=<id> CONFIRM=<id>' \
 		'      Remove one unreferenced frozen generation after exact confirmation.' \
 		'  make provider/deployment/journal/retire DEPLOYMENT=<name> CONFIRM=<full-journal-volume-name>' \
-		'      Delete the entire stopped journal, including retained commands and archives, after exact volume confirmation.' \
+		'      Delete the entire stopped journal, including retained commands, diagnostics, and archives, after exact volume confirmation.' \
 		'  make provider/identity-lock/remove PROVIDER_REF=<provider-ref> CONFIRM=<full-journal-volume-name>' \
 		'      Remove one unused provider identity lock after exact confirmation.' \
 		'  There is no blanket cleanup target.'
@@ -363,10 +364,13 @@ provider/deployment/generation/remove:
 		--confirm "$$CONFIRM_INPUT"
 
 provider/deployment/journal/inspect: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/journal/inspect: private export ATTEMPT_REF_INPUT := $(value ATTEMPT_REF)
 provider/deployment/journal/inspect:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m deployment.provider_deployment journal-inspect "$$DEPLOYMENT_INPUT"
+	@set -- journal-inspect "$$DEPLOYMENT_INPUT"; \
+		if test -n "$$ATTEMPT_REF_INPUT"; then set -- "$$@" --execution-attempt-ref "$$ATTEMPT_REF_INPUT"; fi; \
+		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment "$$@"
 
 .PHONY: provider/deployment/journal/archive-closed
 provider/deployment/journal/archive-closed: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)

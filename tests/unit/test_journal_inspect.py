@@ -38,7 +38,7 @@ class JournalInspectionTests(unittest.TestCase):
                 with patch("nmrpeak_provider.provider_api.ProviderApiClient.send", side_effect=AssertionError("Inspection cannot send")):
                     raw = inspect_journal(root)
                 doc = json.loads(raw)
-                self.assertEqual(doc["schema_id"], "nmrpeak.journal_inspection.v2")
+                self.assertEqual(doc["schema_id"], "nmrpeak.journal_inspection.v3")
                 self.assertEqual(doc["current_automation"], "stopped")
                 self.assertEqual(doc["stage_counts"], {phase: 1})
                 item, = doc["records"]
@@ -82,6 +82,8 @@ class JournalInspectionTests(unittest.TestCase):
             self._write(root, terminal_pending(TerminalOperation.FAIL))
             document = json.loads(inspect_journal(root))
         document["schema_id"] = "nmrpeak.journal_inspection.v1"
+        del document["diagnostics"]
+        del document["diagnostics_omitted"]
         record, = document["records"]
         del record["latest_diagnostic"]
         del record["retained_failure"]
