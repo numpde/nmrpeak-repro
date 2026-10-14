@@ -17,7 +17,7 @@ from .canonical_json import (
 from .failure_message import is_failure_message
 
 
-RUNNER_PROTOCOL_VERSION = 3
+RUNNER_PROTOCOL_VERSION = 4
 MAXIMUM_TOKENIZED_INPUT_LENGTH = 511
 MAXIMUM_REPORTED_TOKEN_COUNT = (1 << 63) - 1
 RUNNER_SOCKET_PATH = "/run/nmrpeak/session.sock"
@@ -216,6 +216,24 @@ class RejectedFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class FailedFrame:
+    """A correlated worker failure; it does not prove process termination."""
+
+    correlation: AttemptCorrelation
+    phase: str
+    diagnostic: str
+
+    def __post_init__(self) -> None:
+        _require_correlation(self.correlation)
+        if type(self.phase) is not str or self.phase not in {"validate", "generate"}:
+            raise RunnerProtocolError("Runner failure phase must be validate or generate")
+        if (type(self.diagnostic) is not str or not self.diagnostic
+                or not self.diagnostic.isprintable()
+                or len(self.diagnostic.encode("utf-8", errors="replace")) > 4096):
+            raise RunnerProtocolError("Runner failure diagnostic must be printable text within 4096 bytes")
+
+
+@dataclass(frozen=True, slots=True)
 class ResultFrame:
     """Untrusted candidate data returned for provider-owned result validation."""
 
@@ -243,6 +261,7 @@ RunnerFrame: TypeAlias = (
     | GenerateFrame
     | RejectedFrame
     | ResultFrame
+    | FailedFrame
     | RetireFrame
 )
 
@@ -338,6 +357,9 @@ def _decode_runner_payload(
         return GenerateFrame(_parse_correlated(document, {"v", "type"}))
     if frame_type == "REJECTED":
         return _parse_rejected(document)
+    if frame_type == "FAILED":
+        correlation = _parse_correlated(document, {"v", "type", "phase", "diagnostic"})
+        return FailedFrame(correlation, document["phase"], document["diagnostic"])
     if frame_type == "RESULT":
         return _parse_result(document)
     if frame_type == "RETIRE":
@@ -389,6 +411,8 @@ def _frame_document(
         if frame.token_count is not None:
             document["token_count"] = frame.token_count
         return document
+    if type(frame) is FailedFrame:
+        return {**_correlated_document("FAILED", frame.correlation), "phase": frame.phase, "diagnostic": frame.diagnostic}
     if type(frame) is ResultFrame:
         return {
             **_correlated_document("RESULT", frame.correlation),

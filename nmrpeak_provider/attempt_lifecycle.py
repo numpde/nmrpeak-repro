@@ -713,6 +713,35 @@ def prepare_execution(
     if "sha256:" + sha256(canonical_input).hexdigest() != record.input_fingerprint:
         raise ValueError("NMRPeak preparation input does not match the Attempt journal")
 
+    try:
+        return _prepare_active_attempt(
+            lane=lane, api=api, journal=journal, session=session, interpreter=interpreter,
+            record=record, canonical_input=canonical_input,
+        )
+    except BaseException as error:
+        message = "Preparation failed before generation started: " + exception_diagnostic(
+            error, secrets=interpreter.diagnostic_secrets, limit=8192,
+        )
+        _LOG.error("Attempt %s: %s", record.execution_attempt_ref, message)
+        try:
+            journal.record_diagnostic(record, stage="preparation", message=message)
+        except BaseException as retention_error:
+            error.add_note("Preparation diagnostic retention is unconfirmed: " + exception_diagnostic(retention_error))
+        raise
+
+
+def _prepare_active_attempt(
+    *,
+    lane: LifecycleLane,
+    api: ProviderApiClient,
+    journal: AttemptJournalStore,
+    session: RunnerSession,
+    interpreter: InputInterpreter,
+    record: ActiveAttempt,
+    canonical_input: bytes,
+) -> PreExecutionOutcome:
+    """Prepare an already bound pre-execution Attempt."""
+
     direct_rejection: InputRejected | None = None
     try:
         structured = _is_structured_source(canonical_input)

@@ -1,15 +1,41 @@
 import json
 import unittest
 
+from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE
 from nmrpeak_provider.attempt_journal_store import AttemptJournalStore
-from nmrpeak_provider.attempt_lifecycle import _log_execution_process_failure, _cancel_session_after_failure, reconcile_record, execute_prepared, PreparedForExecution, ObservationPolicy
+from nmrpeak_provider.attempt_lifecycle import _log_execution_process_failure, _cancel_session_after_failure, reconcile_record, execute_prepared, PreparedForExecution, ObservationPolicy, prepare_execution
 from tests.unit.test_attempt_lifecycle import (
     journal_directory, active_attempt, entered_attempt, valid_chf_input, pending_from_active,
-    CapturingApi, success_response, attempt_snapshot, generation_runtime, progress_receipt,
+    CapturingApi, success_response, attempt_snapshot, generation_runtime, progress_receipt, UnusedInterpreter,
 )
 
 
 class ExecutionDiagnosticsTests(unittest.TestCase):
+    def test_preparation_worker_failure_survives_reopen(self):
+        active = active_attempt(valid_chf_input())
+        primary = RuntimeError("Runner vocabulary was not readable; Bearer hidden")
+
+        class Session:
+            def validate(self, **values):
+                raise primary
+
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as store:
+                pending = pending_from_active(active)
+                store.admit(pending)
+                store.replace(pending, active)
+                with self.assertRaises(RuntimeError) as raised:
+                    prepare_execution(lane=CHF_LIFECYCLE_LANE,
+                        api=CapturingApi(success_response(progress_receipt())), journal=store,
+                        session=Session(), interpreter=UnusedInterpreter(), record=active,
+                        canonical_input=valid_chf_input())
+                self.assertIs(raised.exception, primary)
+            with AttemptJournalStore(root, maximum_records=1) as store:
+                evidence = store.diagnostics(active.execution_attempt_ref)[0]["events"][-1]["message"]
+                self.assertIn("vocabulary was not readable", evidence)
+                self.assertIn("before generation started", evidence)
+                self.assertNotIn("hidden", evidence)
+
     def test_primary_cleanup_and_restart_explanation_survive(self):
         active = entered_attempt(valid_chf_input())
         primary = RuntimeError("Tensor workspace allocation failed; api_key=actual-secret")

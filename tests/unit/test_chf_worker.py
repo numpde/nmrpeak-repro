@@ -213,7 +213,7 @@ class ChfWorkerTests(unittest.TestCase):
             RecordingRuntime(validation_failure=validation_failure)
         ) as harness:
             session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
-            with self.assertRaises(RunnerSessionRetired):
+            with self.assertRaisesRegex(RunnerSessionRetired, "validation failed"):
                 validate(session)
         self.assertIs(harness.failure, validation_failure)
 
@@ -224,7 +224,7 @@ class ChfWorkerTests(unittest.TestCase):
             session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
             validated = validate(session)
             assert isinstance(validated, ValidatedRunnerRequest)
-            with self.assertRaises(RunnerSessionRetired):
+            with self.assertRaisesRegex(RunnerSessionRetired, "generation failed"):
                 session.generate(validated)
         self.assertIs(harness.failure, generation_failure)
 

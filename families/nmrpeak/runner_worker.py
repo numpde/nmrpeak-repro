@@ -7,9 +7,12 @@ import time
 
 from typing import Generic, Protocol, TypeVar
 
+from nmrpeak_provider.diagnostic_text import exception_diagnostic
 from nmrpeak_provider.canonical_json import JsonValue
 from nmrpeak_provider.runner_protocol import (
     GenerateFrame,
+    FailedFrame,
+    AttemptCorrelation,
     ReadyFrame,
     RejectedFrame,
     ResultFrame,
@@ -87,6 +90,9 @@ def serve_loaded_nmrpeak_runtime(
                     )
                 )
                 continue
+            except BaseException as error:
+                _report_failure(connection, codec, command.correlation, "validate", error)
+                raise
             pending = command
             connection.sendall(codec.encode(ValidatedFrame(command.correlation)))
             continue
@@ -97,10 +103,14 @@ def serve_loaded_nmrpeak_runtime(
                 )
             _LOG.info("Model generation began; attempt=%s", command.correlation.attempt_ref)
             started_at = time.monotonic()
-            candidates = runtime.generate(pending.model_input)
-            connection.sendall(
-                codec.encode(ResultFrame(command.correlation, candidates))
-            )
+            try:
+                candidates = runtime.generate(pending.model_input)
+                response = codec.encode(ResultFrame(command.correlation, candidates))
+            except BaseException as error:
+                _report_failure(connection, codec, command.correlation, "generate", error)
+                raise
+            # A partial write cannot be followed by another trustworthy frame.
+            connection.sendall(response)
             _LOG.info(
                 'Model result sent to provider; attempt=%s elapsed_seconds=%.3f',
                 command.correlation.attempt_ref,
@@ -118,3 +128,14 @@ def serve_loaded_nmrpeak_runtime(
         raise RunnerProtocolError(
             "Cannot serve NMRPeak worker: provider sent a response-only frame"
         )
+
+
+def _report_failure(
+    connection: WorkerConnection, codec: RunnerFrameCodec[ModelInput],
+    correlation: AttemptCorrelation, phase: str, error: BaseException,
+) -> None:
+    try:
+        connection.sendall(codec.encode(FailedFrame(correlation, phase, exception_diagnostic(error))))
+    except BaseException as reporting_error:
+        error.add_note("Worker failure report delivery is unconfirmed: " + exception_diagnostic(reporting_error))
+    _LOG.error("Runner %s failed; attempt=%s; %s", phase, correlation.attempt_ref, exception_diagnostic(error))

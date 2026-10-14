@@ -13,6 +13,7 @@ from threading import Lock
 import time
 from typing import Generic, Protocol, TypeVar
 
+from .diagnostic_text import diagnostic_text, exception_diagnostic
 from .canonical_json import JsonValue
 from .runner_protocol import (
     AttemptCorrelation,
@@ -21,6 +22,7 @@ from .runner_protocol import (
     ReadyFrame,
     RejectedFrame,
     ResultFrame,
+    FailedFrame,
     RetireFrame,
     RunnerFrameCodec,
     RunnerModelInput,
@@ -57,7 +59,7 @@ class RunnerValidationDrift(RuntimeError):
 
     def __init__(self, reason: RunnerRejectionReason) -> None:
         self.reason = reason
-        super().__init__(f"NMRPeak runner validation drift: {reason.value}")
+        super().__init__(f"NMRPeak runner validation drift: {reason.value}; {runner_rejection_diagnostic(reason)}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +289,11 @@ class RunnerSession(Generic[ModelInput]):
             self._deadlines.validate_seconds,
             f"validate {self._codec.lane_name} runner input",
         )
+        if type(response) is FailedFrame and response.correlation == correlation and response.phase == "validate":
+            self._retire_with_error(
+                "Runner reported validation failure: " + diagnostic_text(response.diagnostic)
+                + ". Provider session retired; runner process exit is unconfirmed."
+            )
         if type(response) is ValidatedFrame and response.correlation == correlation:
             request = ValidatedRunnerRequest(self, correlation)
             with self._lock:
@@ -313,7 +320,7 @@ class RunnerSession(Generic[ModelInput]):
                 error = RunnerValidationDrift(response.reason)
                 close_error = _close_channel(self._channel)
                 if close_error is not None:
-                    error.add_note("The rejected runner channel also failed to close.")
+                    error.add_note("The rejected runner channel also failed to close: " + exception_diagnostic(close_error))
                 raise error
             return RunnerInputRejected(
                 response.diagnostic, response.token_count, response.reason
@@ -345,6 +352,11 @@ class RunnerSession(Generic[ModelInput]):
             self._deadlines.generate_seconds,
             f"generate {self._codec.lane_name} candidates",
         )
+        if type(response) is FailedFrame and response.correlation == request._correlation and response.phase == "generate":
+            self._retire_with_error(
+                "Runner reported generation failure: " + diagnostic_text(response.diagnostic)
+                + ". Provider session retired; runner process exit is unconfirmed."
+            )
         if type(response) is ResultFrame and response.correlation == request._correlation:
             with self._lock:
                 if self._state is not _SessionState.GENERATING:
@@ -458,7 +470,7 @@ class RunnerSession(Generic[ModelInput]):
         error = RunnerSessionRetired(message)
         close_error = _close_channel(self._channel)
         if close_error is not None:
-            error.add_note("The retired runner channel also failed to close.")
+            error.add_note("The retired runner channel also failed to close: " + exception_diagnostic(close_error))
         if cause is None:
             raise error
         raise error from cause

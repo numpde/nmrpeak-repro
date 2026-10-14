@@ -25,6 +25,7 @@ from nmrpeak_provider.product_result import (
     HF_RESULT_IDENTITY,
     NMRPEAK_SOURCE_CLOSURE_REF,
 )
+from nmrpeak_provider.diagnostic_text import exception_diagnostic
 from nmrpeak_provider.runner_protocol import ReadyFrame
 
 
@@ -88,4 +89,8 @@ def main(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except Exception as error:
+        _LOG.error("Runner failed: %s", exception_diagnostic(error))
+        raise SystemExit(1) from None

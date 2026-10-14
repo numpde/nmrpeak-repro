@@ -21,6 +21,7 @@ from nmrpeak_provider.runner_protocol import (
     AttemptCorrelation,
     RunnerProtocolError,
     GenerateFrame,
+    FailedFrame,
     ReadyFrame,
     RejectedFrame,
     RunnerRejectionReason,
@@ -81,6 +82,8 @@ class RunnerProtocolTests(unittest.TestCase):
             ValidateFrame(CORRELATION, MODEL_INPUT),
             ValidatedFrame(CORRELATION),
             GenerateFrame(CORRELATION),
+            FailedFrame(CORRELATION, "validate", "Tokenizer could not load its vocabulary"),
+            FailedFrame(CORRELATION, "generate", "Tensor allocation failed"),
             RejectedFrame(
                 CORRELATION,
                 RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED,
@@ -131,13 +134,13 @@ class RunnerProtocolTests(unittest.TestCase):
 
     def test_canonical_json_exact_fields_and_correlation_are_mandatory(self) -> None:
         noncanonical = (
-            b'{"v":3, "type":"RETIRE","boot_generation":"'
+            b'{"v":4, "type":"RETIRE","boot_generation":"'
             + BOOT.encode("ascii")
             + b'"}'
         )
         unknown_field = canonical_json_bytes(
             {
-                "v": 3,
+                "v": 4,
                 "type": "RETIRE",
                 "boot_generation": BOOT,
                 "extra": None,
@@ -145,7 +148,7 @@ class RunnerProtocolTests(unittest.TestCase):
         )
         wrong_correlation = canonical_json_bytes(
             {
-                "v": 3,
+                "v": 4,
                 "type": "VALIDATED",
                 "boot_generation": BOOT,
                 "correlation_id": "request:not-hex",
@@ -178,7 +181,7 @@ class RunnerProtocolTests(unittest.TestCase):
             512,
         )
         document = {
-            "v": 3,
+            "v": 4,
             "type": "REJECTED",
             "boot_generation": CORRELATION.boot_generation,
             "correlation_id": CORRELATION.correlation_id,

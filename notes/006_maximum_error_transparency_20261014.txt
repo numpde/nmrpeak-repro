@@ -243,3 +243,10 @@ unexpected field names, and JSON syntax reasons. Unknown-field values are not
 dumped. Candidate evidence remains explicitly attributed to the candidate.
 Configured interpreter keys, including their JSON-escaped representations, are
 removed before excerpts are bounded for both direct and interpreted input.
+
+Runner protocol v4 adds correlated validation/generation FAILED responses with
+bounded, redacted causal diagnostics. Workers encode results before sending;
+a partial result write never attempts a second frame. Failure-report delivery
+errors remain secondary to the original exception. The provider retires the
+session on a matching failure without asserting process exit, and unexpected
+preparation errors are retained before propagating to process supervision.
