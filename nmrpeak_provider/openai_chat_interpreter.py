@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import InitVar, dataclass, field, replace
 import json
+import logging
 from pathlib import Path
 import re
 import tomllib
@@ -44,6 +45,7 @@ from nmrpeak_provider.local_input import (
 )
 
 
+_LOG = logging.getLogger(__name__)
 _MAX_CONFIG_DIRECTORY_ENTRIES = 32
 _MAX_MODEL_BYTES = 256
 _MAX_RESPONSE_BYTES = 256 * 1024
@@ -318,12 +320,30 @@ class _OpenAIChatCall:
         """Release an acquired response without delaying caller cancellation."""
 
         release = asyncio.create_task(
-            best_effort_release_response(response, deadline=deadline),
+            self._release_response(response, deadline=deadline),
             name="interpreter-response-release",
         )
         self._pending_response_releases.add(release)
         release.add_done_callback(self._pending_response_releases.discard)
         return release
+
+
+    async def _release_response(self, response: httpx.Response, *, deadline: float) -> None:
+        error = await best_effort_release_response(response, deadline=deadline)
+        if error is None:
+            return
+        explanation = exception_diagnostic(error, secrets=self._secrets)
+        try:
+            if self._report_endpoint_failure is not None:
+                self._report_endpoint_failure(InterpreterEndpointFailure(
+                    configuration_id=self._spec.configuration_id, failure_kind="cleanup",
+                    failure_reason="response_release_failed", failure_state="cleanup_unconfirmed",
+                    explanation=explanation,
+                ))
+        except Exception as retention_error:
+            error.add_note("Cleanup diagnostic retention is unconfirmed: " + exception_diagnostic(retention_error, secrets=self._secrets))
+        _LOG.warning("Endpoint %s response cleanup is unconfirmed: %s",
+                     self._spec.configuration_id, exception_diagnostic(error, secrets=self._secrets))
 
 
 async def _read_bounded_response(

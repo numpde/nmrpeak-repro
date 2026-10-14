@@ -11,8 +11,8 @@ async def best_effort_release_response(
     response: httpx.Response,
     *,
     deadline: float,
-) -> None:
-    """Try to release a stream without replacing the primary operation outcome.
+) -> Exception | None:
+    """Return a release failure for reporting without replacing the primary outcome.
 
     ``Response.aclose()`` marks a response closed before awaiting its stream.
     If that await is interrupted, retrying the response method can therefore
@@ -24,6 +24,6 @@ async def best_effort_release_response(
     try:
         async with asyncio.timeout_at(deadline):
             await response.stream.aclose()
-    except Exception:
-        # The primary delivery or cancellation outcome remains authoritative.
-        pass
+    except Exception as error:
+        return error
+    return None

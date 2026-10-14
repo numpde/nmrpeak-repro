@@ -677,6 +677,40 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream.close_calls, 2)
         self.assertTrue(stream.released)
 
+    async def test_cleanup_failure_is_visible_without_replacing_http_status(self) -> None:
+        class Stream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'{"error":{"message":"Invalid model selection"}}'
+
+            async def aclose(self):
+                raise RuntimeError("Stream descriptor close failed; key was secret")
+
+        async def handle(_request):
+            return httpx.Response(400, stream=Stream())
+
+        evidence = []
+        with self.assertLogs("nmrpeak_provider.openai_chat_interpreter", level="WARNING") as logs:
+            async with _loaded_endpoints(handle, report_endpoint_failure=evidence.append) as owner:
+                with self.assertRaises(InterpreterTransportError) as raised:
+                    await owner.endpoints[0].call([])
+        self.assertEqual(raised.exception.reason, "http_400")
+        self.assertTrue(evidence)
+        self.assertEqual(evidence[0].failure_reason, "response_release_failed")
+        self.assertIn("Stream descriptor close failed", evidence[0].explanation)
+        self.assertNotIn("secret", evidence[0].explanation)
+        self.assertIn("cleanup is unconfirmed", " ".join(logs.output))
+
+        def rejected_recorder(event):
+            raise OSError("Diagnostic filesystem is full")
+
+        with self.assertLogs("nmrpeak_provider.openai_chat_interpreter", level="WARNING") as logs:
+            async with _loaded_endpoints(handle, report_endpoint_failure=rejected_recorder) as owner:
+                with self.assertRaises(InterpreterTransportError) as raised:
+                    await owner.endpoints[0].call([])
+        self.assertEqual(raised.exception.reason, "http_400")
+        self.assertIn("Diagnostic filesystem is full", " ".join(logs.output))
+        self.assertNotIn("key was secret", " ".join(logs.output))
+
     async def test_http_rejection_retains_endpoint_explanations(self) -> None:
         async def handle(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(
@@ -920,6 +954,7 @@ def _load_and_bind_endpoints(
     http_client: httpx.AsyncClient,
     request_timeout_seconds: float,
     turn_timeout_seconds: float,
+    report_endpoint_failure=None,
 ) -> OpenAIChatEndpoints:
     policy = OpenAIChatCallPolicy(
         request_timeout_seconds=request_timeout_seconds,
@@ -933,6 +968,7 @@ def _load_and_bind_endpoints(
         submit_interpretation_description="Submit the fixture value.",
         submit_interpretation_value_schema=_TEST_VALUE_SCHEMA,
         report_input_problem_description="Report a fixture source problem.",
+        report_endpoint_failure=report_endpoint_failure,
     )
 
 
@@ -942,6 +978,7 @@ async def _loaded_endpoints(
     *,
     request_timeout: float = 4,
     turn_timeout: float = 10,
+    report_endpoint_failure=None,
 ) -> AsyncIterator[OpenAIChatEndpoints]:
     with tempfile.TemporaryDirectory() as temporary_directory:
         directory = Path(temporary_directory)
@@ -954,6 +991,7 @@ async def _loaded_endpoints(
                 http_client=client,
                 request_timeout_seconds=request_timeout,
                 turn_timeout_seconds=turn_timeout,
+                report_endpoint_failure=report_endpoint_failure,
             )
             try:
                 yield endpoint_owner

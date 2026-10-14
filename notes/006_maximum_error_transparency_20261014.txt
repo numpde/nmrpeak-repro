@@ -266,3 +266,8 @@ it also carries existing API Problem, recovery and send-effect metadata updates.
 The nine consumed routes and runtime admission (owned by the unchanged generated
 failure decoder) remain unchanged. Historical releases and
 retained terminal commands remain immutable.
+
+HTTP stream cleanup no longer silently discards release exceptions. The endpoint
+owner records and logs the redacted cause with cleanup uncertainty. If diagnostic
+retention also fails, that secondary explanation is logged without replacing the
+primary HTTP status or cancellation outcome.
