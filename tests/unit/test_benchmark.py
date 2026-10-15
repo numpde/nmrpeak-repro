@@ -104,6 +104,35 @@ class BenchmarkTests(unittest.TestCase):
             counts.append(len(hf.proton_peaks))
         self.assertEqual(counts, sorted(set(counts)))
 
+    def test_nonzero_docker_client_exit_requires_cleanup_before_the_next_lane(self):
+        run = {"id": "hf-cpu", "device": "cpu", "image_id": "sha256:" + "a" * 64, "lane": "hf"}
+        options = SimpleNamespace(threads=8, warmups=0, repetitions=1, cases=[], timeout=1)
+        checkpoint = {"volume": "reviewed", "sha256": "sha256:" + "b" * 64}
+        for cleanup_failure in (None, RuntimeError("daemon unavailable")):
+            calls = []
+            def cleanup_action(name):
+                calls.append("cleanup")
+                if cleanup_failure is not None:
+                    raise cleanup_failure
+            with self.subTest(cleanup_failure=cleanup_failure), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                (directory / "logs").mkdir()
+                with patch.object(host, "activity", side_effect=lambda _: calls.append("activity") or {}) as activity, \
+                     patch.object(host.subprocess, "run", return_value=SimpleNamespace(returncode=1)), \
+                     patch.object(host, "remove_interrupted_container", side_effect=cleanup_action) as cleanup:
+                    if cleanup_failure is None:
+                        host.execute_run(run, checkpoint, Path("/tmp/harness"), options, directory, [])
+                        self.assertEqual(activity.call_count, 2)
+                        self.assertEqual(calls, ["activity", "cleanup", "activity"])
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "daemon unavailable"):
+                            host.execute_run(run, checkpoint, Path("/tmp/harness"), options, directory, [])
+                        self.assertEqual(activity.call_count, 1)
+                        self.assertEqual(calls, ["activity", "cleanup"])
+                        self.assertIn("daemon unavailable", run["cleanup_error"])
+                    self.assertEqual(run["exit_code"], 1)
+                    cleanup.assert_called_once()
+
     def fixture(self, directory, *, missing_output=False, malformed=False):
         manifest = {"source_revision": "a" * 40, "status": "complete", "repetitions": 1,
                     "cases": ["small"], "runs": []}

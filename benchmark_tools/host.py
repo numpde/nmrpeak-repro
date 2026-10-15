@@ -190,6 +190,13 @@ def execute_run(run, checkpoint_info, harness, options, directory, gpu_devices):
             except Exception as cleanup_error:
                 error.add_note(f"Benchmark container cleanup failed: {cleanup_error}")
             raise
+    if run["exit_code"] != 0:
+        # An attach/client failure does not establish that daemon-side work stopped.
+        try:
+            remove_interrupted_container(name)
+        except Exception as cleanup_error:
+            run["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+            raise
     run["activity_after"] = activity(gpu_devices)
 
 
