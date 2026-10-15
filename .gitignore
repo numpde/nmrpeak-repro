@@ -1,6 +1,7 @@
 # Local checkpoint acquisition and generated model data.
 /weights/
 /output/
+/benchmark/
 *.pt
 *.pth
 *.ckpt

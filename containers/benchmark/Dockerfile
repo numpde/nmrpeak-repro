@@ -1,0 +1,101 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+FROM ghcr.io/astral-sh/uv@sha256:440fd6477af86a2f1b38080c539f1672cd22acb1b1a47e321dba5158ab08864d AS uv
+FROM docker.io/library/python:3.11.14-slim-bookworm@sha256:83f339c1be6340ae1096010fdccf6552ac932d8f410d45d206014916bdf37e48
+
+RUN groupadd --gid 65532 nmrpeak \
+    && useradd --uid 65532 --gid 65532 --home-dir /nonexistent \
+        --shell /usr/sbin/nologin --no-create-home nmrpeak
+
+# NMRPeak imports RDKit's drawing module before reaching the tokenizer.
+# Pin its complete native library closure absent from the slim base.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libbsd0=0.11.7-2 \
+        libexpat1=2.5.0-1+deb12u2 \
+        libmd0=1.0.4-2 \
+        libx11-6=2:1.8.4-2+deb12u2 \
+        libx11-data=2:1.8.4-2+deb12u2 \
+        libxau6=1:1.0.9-1 \
+        libxcb1=1.15-1 \
+        libxdmcp6=1:1.1.2-3 \
+        libxext6=2:1.3.4-1+b1 \
+        libxrender1=1:0.9.10-1.1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY containers/benchmark/requirements.lock /tmp/requirements.lock
+RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv,ro \
+    --mount=type=cache,id=nmrpeak-benchmark-cu128-uv,target=/root/.cache/uv,sharing=locked \
+    export UV_CONCURRENT_DOWNLOADS=2 UV_LINK_MODE=copy; \
+    uv pip install --system --no-deps --require-hashes --only-binary=:all: \
+        --no-python-downloads -r /tmp/requirements.lock \
+    && uv pip check --system \
+    && rm /tmp/requirements.lock
+
+WORKDIR /opt/nmrpeak
+COPY --chown=0:0 nmrpeak-upstream/LICENSE nmrpeak-upstream/requirements.txt ./
+COPY --chown=0:0 nmrpeak-upstream/dict/ dict/
+COPY --chown=0:0 nmrpeak-upstream/nmrpeak/ nmrpeak/
+COPY --chown=0:0 unicore-upstream/LICENSE /opt/unicore/LICENSE
+COPY --chown=0:0 unicore-upstream/unicore/ /opt/unicore/unicore/
+COPY --chown=0:0 families/nmrpeak/bart-base/config.json bart-base/config.json
+COPY --chown=0:0 families/nmrpeak/checkpoint_file.py \
+    families/nmrpeak/runner_runtime.py \
+    /opt/nmrpeak/families/nmrpeak/
+COPY --chown=0:0 nmrpeak_provider/__init__.py \
+    nmrpeak_provider/canonical_json.py \
+    nmrpeak_provider/diagnostic_text.py \
+    nmrpeak_provider/failure_message.py \
+    nmrpeak_provider/hf_binding.py \
+    nmrpeak_provider/nmrpeak_binding.py \
+    nmrpeak_provider/product.py \
+    nmrpeak_provider/product_decode.py \
+    nmrpeak_provider/product_input.py \
+    nmrpeak_provider/product_result.py \
+    nmrpeak_provider/runner_protocol.py \
+    nmrpeak_provider/
+COPY --chown=0:0 models/nmrpeak_hf_v1/runner/runtime.py models/nmrpeak_hf_v1/runner/
+
+COPY --chown=0:0 models/nmrpeak_chf_v1/runner/runtime.py models/nmrpeak_chf_v1/runner/
+COPY --chown=0:0 nmrpeak_provider/chf_binding.py nmrpeak_provider/
+COPY --chown=0:0 benchmark_tools/ benchmark_tools/
+
+COPY repository_checks/nmrpeak_source.py /tmp/nmrpeak_source.py
+COPY families/nmrpeak/source-closure.paths \
+    families/nmrpeak/source-closure.sha256 \
+    families/nmrpeak/unicore-closure.paths \
+    families/nmrpeak/unicore-closure.sha256 \
+    /tmp/image-inputs/families/nmrpeak/
+COPY families/nmrpeak/bart-base/config.json \
+    families/nmrpeak/bart-base/source.json \
+    /tmp/image-inputs/families/nmrpeak/bart-base/
+RUN python -B /tmp/nmrpeak_source.py \
+        --materialized /opt/nmrpeak \
+        --declaration /tmp/image-inputs/families/nmrpeak/source-closure.paths \
+        --manifest /tmp/image-inputs/families/nmrpeak/source-closure.sha256 \
+    && python -B /tmp/nmrpeak_source.py \
+        --materialized /opt/unicore \
+        --declaration /tmp/image-inputs/families/nmrpeak/unicore-closure.paths \
+        --manifest /tmp/image-inputs/families/nmrpeak/unicore-closure.sha256 \
+    && PYTHONPATH=/tmp python -B -c \
+        'from pathlib import Path; from nmrpeak_source import verify_bart_config; verify_bart_config(Path("/tmp/image-inputs"))' \
+    && PYTHONPATH=/opt/nmrpeak:/opt/unicore python -B -c \
+        'import nmrpeak; import unicore; from nmrpeak.data import TokenizedNmrDataset; from nmrpeak.models.spec_trans_mol import SpecTransMolModel' \
+    && PYTHONPATH=/opt/nmrpeak:/opt/unicore python -B -m benchmark_tools.worker --help >/dev/null \
+    && rm -r /tmp/image-inputs /tmp/nmrpeak_source.py \
+    && test -z "$(find /opt/nmrpeak /opt/unicore -xdev ! -type d ! -type f -print -quit)" \
+    && find /opt/nmrpeak /opt/unicore -xdev -type d -exec chmod 0555 {} + \
+    && find /opt/nmrpeak /opt/unicore -xdev -type f -exec chmod 0444 {} +
+
+ARG SOURCE_REVISION
+ARG IMAGE_INPUT_ID
+RUN printf '%s\n' "$SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$' \
+    && printf '%s\n' "$IMAGE_INPUT_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
+LABEL org.opencontainers.image.revision="$SOURCE_REVISION"
+LABEL io.numpde.nmrpeak.image.input-id="$IMAGE_INPUT_ID"
+LABEL io.numpde.nmrpeak.role="benchmark"
+ENV HF_HUB_OFFLINE=1 HOME=/tmp MPLCONFIGDIR=/tmp/matplotlib \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/nmrpeak:/opt/unicore \
+    PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false TORCH_HOME=/tmp/torch \
+    TRANSFORMERS_OFFLINE=1 WANDB_DISABLED=true WANDB_MODE=offline XDG_CACHE_HOME=/tmp/cache
+USER 65532:65532
+ENTRYPOINT ["python", "-m", "benchmark_tools.worker"]

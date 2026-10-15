@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+benchmark-cu128 = [
+    "torch @ https://download.pytorch.org/whl/cu128/torch-2.10.0%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=1d01ffaebf64715c0f507a39463149cb19e596ff702bd4bcf862601f2881dabc",
+]
 cpu-x86_64 = [
     "torch @ https://download.pytorch.org/whl/cpu/torch-2.3.0%2Bcpu-cp311-cp311-linux_x86_64.whl#sha256=97a38b25ee0e3d020691e7846efbca62a3d8a57645c027dcb5ba0adfec36fe55",
 ]

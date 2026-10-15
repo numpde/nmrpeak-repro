@@ -18,6 +18,27 @@ override NMRPEAK_TEST_COMPOSE := env \
 override NMRPEAK_TEST_NON_ROOT_GUARD = if [[ "$(NMRPEAK_TEST_UID)" == 0 || "$(NMRPEAK_TEST_GID)" == 0 || "$(NMRPEAK_TEST_UID)" == 65532 ]]; then printf '%s\n' 'Containerized tests require a non-root invoking user distinct from provider UID 65532.' >&2; exit 2; fi
 .DEFAULT_GOAL := help
 
+export BENCHMARK_DEVICES = $(or $(DEVICES),all)
+export BENCHMARK_MODELS = $(or $(MODELS),hf chf)
+export BENCHMARK_CASES = $(CASES)
+export BENCHMARK_REPETITIONS = $(or $(REPETITIONS),20)
+export BENCHMARK_WARMUPS = $(or $(WARMUPS),3)
+export BENCHMARK_THREADS = $(or $(THREADS),8)
+export BENCHMARK_TIMEOUT = $(or $(TIMEOUT),7200)
+
+.PHONY: benchmark benchmark/image/build benchmark/devices benchmark/lock
+benchmark:
+	@$(PYTHON) -m benchmark_tools.host run
+
+benchmark/image/build:
+	@$(PYTHON) -m benchmark_tools.host build
+
+benchmark/devices:
+	@$(PYTHON) -m benchmark_tools.host devices
+
+benchmark/lock:
+	@$(PYTHON) -m benchmark_tools.host lock
+
 .PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
@@ -25,6 +46,11 @@ help:
 		'NMR API provider' \
 		'' \
 		'Verify this checkout:' \
+		'  make benchmark/image/build' \
+		'  make benchmark [DEVICES="all|cpu|GPU-<uuid> ..."] [MODELS="hf chf"] [CASES="small medium long"]' \
+		'      Compare the current CPU stack and matched CPU/GPU stack; save benchmark/<UTC>-<sha>/.' \
+		'  make benchmark/devices' \
+		'      List GPU identities; see docs/benchmark.md for measurements and resource use.' \
 		'  make test' \
 		'      Run the complete default lane in the pinned, networkless test container.' \
 		'      One read-only source snapshot excludes credentials, deployment state, weights, and ignored files.' \

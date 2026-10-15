@@ -1,0 +1,656 @@
+{
+  "source_policy": "Synthetic workload fixtures in runner wire format; not reference spectra or scientific accuracy ground truth. Sizes describe relative input lengths in this corpus.",
+  "cases": [
+    {
+      "id": "small",
+      "inputs": {
+        "hf": {
+          "h_nmr_peaks": [
+            {
+              "category": "s",
+              "centroid": "1",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.13",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.26",
+              "j_values": "_",
+              "nH": 1
+            }
+          ],
+          "molecular_formula": "C2H6O"
+        },
+        "chf": {
+          "h_nmr_peaks": [
+            {
+              "category": "s",
+              "centroid": "1",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.13",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.26",
+              "j_values": "_",
+              "nH": 1
+            }
+          ],
+          "molecular_formula": "C2H6O",
+          "c_nmr_peaks": [
+            {
+              "delta (ppm)": "15"
+            },
+            {
+              "delta (ppm)": "20.1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "medium",
+      "inputs": {
+        "hf": {
+          "h_nmr_peaks": [
+            {
+              "category": "s",
+              "centroid": "1",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.13",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.26",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.39",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.52",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.65",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.78",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.91",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.04",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.17",
+              "j_values": "_",
+              "nH": 1
+            }
+          ],
+          "molecular_formula": "C10H14O2"
+        },
+        "chf": {
+          "h_nmr_peaks": [
+            {
+              "category": "s",
+              "centroid": "1",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.13",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.26",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.39",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.52",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.65",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.78",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.91",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.04",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.17",
+              "j_values": "_",
+              "nH": 1
+            }
+          ],
+          "molecular_formula": "C10H14O2",
+          "c_nmr_peaks": [
+            {
+              "delta (ppm)": "15"
+            },
+            {
+              "delta (ppm)": "20.1"
+            },
+            {
+              "delta (ppm)": "25.2"
+            },
+            {
+              "delta (ppm)": "30.3"
+            },
+            {
+              "delta (ppm)": "35.4"
+            },
+            {
+              "delta (ppm)": "40.5"
+            },
+            {
+              "delta (ppm)": "45.6"
+            },
+            {
+              "delta (ppm)": "50.7"
+            },
+            {
+              "delta (ppm)": "55.8"
+            },
+            {
+              "delta (ppm)": "60.9"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "long",
+      "inputs": {
+        "hf": {
+          "h_nmr_peaks": [
+            {
+              "category": "s",
+              "centroid": "1",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.13",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.26",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.39",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.52",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.65",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.78",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.91",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.04",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.17",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.3",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.43",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.56",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.69",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.82",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.95",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.08",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.21",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.34",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.47",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.6",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.73",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.86",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.99",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.12",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.25",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.38",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.51",
+              "j_values": "_",
+              "nH": 1
+            }
+          ],
+          "molecular_formula": "C24H40O6"
+        },
+        "chf": {
+          "h_nmr_peaks": [
+            {
+              "category": "s",
+              "centroid": "1",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.13",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.26",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.39",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.52",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.65",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.78",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "1.91",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.04",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.17",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.3",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.43",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.56",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.69",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.82",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "2.95",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.08",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.21",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.34",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.47",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.6",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.73",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.86",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "3.99",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.12",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.25",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.38",
+              "j_values": "_",
+              "nH": 1
+            },
+            {
+              "category": "s",
+              "centroid": "4.51",
+              "j_values": "_",
+              "nH": 1
+            }
+          ],
+          "molecular_formula": "C24H40O6",
+          "c_nmr_peaks": [
+            {
+              "delta (ppm)": "15"
+            },
+            {
+              "delta (ppm)": "20.1"
+            },
+            {
+              "delta (ppm)": "25.2"
+            },
+            {
+              "delta (ppm)": "30.3"
+            },
+            {
+              "delta (ppm)": "35.4"
+            },
+            {
+              "delta (ppm)": "40.5"
+            },
+            {
+              "delta (ppm)": "45.6"
+            },
+            {
+              "delta (ppm)": "50.7"
+            },
+            {
+              "delta (ppm)": "55.8"
+            },
+            {
+              "delta (ppm)": "60.9"
+            },
+            {
+              "delta (ppm)": "66"
+            },
+            {
+              "delta (ppm)": "71.1"
+            },
+            {
+              "delta (ppm)": "76.2"
+            },
+            {
+              "delta (ppm)": "81.3"
+            },
+            {
+              "delta (ppm)": "86.4"
+            },
+            {
+              "delta (ppm)": "91.5"
+            },
+            {
+              "delta (ppm)": "96.6"
+            },
+            {
+              "delta (ppm)": "101.7"
+            },
+            {
+              "delta (ppm)": "106.8"
+            },
+            {
+              "delta (ppm)": "111.9"
+            },
+            {
+              "delta (ppm)": "117"
+            },
+            {
+              "delta (ppm)": "122.1"
+            },
+            {
+              "delta (ppm)": "127.2"
+            },
+            {
+              "delta (ppm)": "132.3"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

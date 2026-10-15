@@ -119,6 +119,8 @@ def _require_complete_provider_inputs(
 
 
 def _image_root(runner: str) -> Path:
+    if runner == "benchmark":
+        return Path("containers/benchmark")
     if runner == "provider":
         return Path("containers/provider")
     if runner == "nmrpeak_chf_v1":
@@ -151,7 +153,7 @@ def _read_selected_paths(raw: bytes, runner_root: Path, runner: str) -> tuple[Pa
                 f"{runner} image inputs must select pinned source through its closure manifest: {line}"
             )
         paths.append(Path(line))
-    dockerfile_name = "Dockerfile" if runner == "provider" else "Dockerfile.runner"
+    dockerfile_name = "Dockerfile" if runner in {"provider", "benchmark"} else "Dockerfile.runner"
     required = {runner_root / dockerfile_name, runner_root / f"{dockerfile_name}.dockerignore"}
     if not required.issubset(paths):
         raise ImageInputRejected(
