@@ -91,11 +91,16 @@ class LoadedNmrpeakStack:
         dictionary: object,
         model: object,
         decode_policy: DecodePolicy,
+        *,
+        device: str = "cpu",
     ) -> None:
         self._tokenizer = tokenizer
         self._dictionary = dictionary
         self._model = model
         self._decode_policy = decode_policy
+        if device not in {"cpu", "cuda"}:
+            raise ValueError(f"Cannot select NMRPeak device {device!r}; choose cpu or cuda")
+        self._device = device
 
     def tokenize(self, document: dict[str, object]) -> tuple[str, ...]:
         tokens = self._tokenizer.tokenize_item(document)
@@ -118,16 +123,15 @@ class LoadedNmrpeakStack:
                 torch.tensor([self._dictionary.eos()]),
             )
         )
-        sample = {
-            "spec": {
-                "src_tokens": data_utils.collate_tokens(
-                    [source],
-                    self._dictionary.pad(),
-                    left_pad=False,
-                    pad_to_multiple=8,
-                )
-            }
-        }
+        source = data_utils.collate_tokens(
+            [source],
+            self._dictionary.pad(),
+            left_pad=False,
+            pad_to_multiple=8,
+        )
+        if self._device == "cuda":
+            source = source.to("cuda:0")
+        sample = {"spec": {"src_tokens": source}}
         generated, _scores, _targets = self._model.generate_(
             sample,
             max_len=self._decode_policy.maximum_generated_tokens,
@@ -146,8 +150,12 @@ def load_nmrpeak_runtime(
     materialize: Callable[[object], dict[str, object]],
     dictionary_path: Path = DICTIONARY_PATH,
     bart_config_path: Path = BART_CONFIG_PATH,
+    device: str = "cpu",
 ) -> NmrpeakRuntime:
-    """Deserialize one verified checkpoint into the fixed CPU model stack."""
+    """Load a verified checkpoint on the explicitly selected execution device."""
+
+    if device not in {"cpu", "cuda"}:
+        raise ValueError(f"Cannot load NMRPeak on {device!r}; choose cpu or cuda")
 
     import torch
     from nmrpeak.data import TokenizedNmrDataset
@@ -174,12 +182,17 @@ def load_nmrpeak_runtime(
         weights_only=False,
     )
     model.load_state_dict(checkpoint_state["model"], strict=True)
-    model.cpu()
+    if device == "cpu":
+        model.cpu()
+    else:
+        if not torch.cuda.is_available():
+            raise RuntimeError("Cannot load NMRPeak on CUDA; PyTorch reports no available GPU")
+        model.to("cuda:0")
     model.eval()
-    if any(parameter.device.type != "cpu" for parameter in model.parameters()) or any(
-        buffer.device.type != "cpu" for buffer in model.buffers()
+    if any(parameter.device.type != device for parameter in model.parameters()) or any(
+        buffer.device.type != device for buffer in model.buffers()
     ):
-        raise RuntimeError("loaded NMRPeak model is outside the fixed CPU device")
+        raise RuntimeError(f"Loaded NMRPeak model has tensors outside the selected {device} device")
     tokenizer = TokenizedNmrDataset(
         (),
         use_cnmr=tokenizer_mode.use_cnmr,
@@ -192,6 +205,6 @@ def load_nmrpeak_runtime(
         use_spec_end_token=True,
     )
     return NmrpeakRuntime(
-        LoadedNmrpeakStack(tokenizer, spec_dictionary, model, decode_policy),
+        LoadedNmrpeakStack(tokenizer, spec_dictionary, model, decode_policy, device=device),
         materialize,
     )

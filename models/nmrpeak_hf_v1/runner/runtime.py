@@ -49,4 +49,5 @@ def load_nmrpeak_hf_runtime(
         materialize=materialize_hf_nmrpeak_document,
         dictionary_path=dictionary_path,
         bart_config_path=bart_config_path,
+        device="cpu",
     )

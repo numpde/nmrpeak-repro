@@ -24,6 +24,55 @@ from nmrpeak_provider.runner_protocol import (
 
 
 class NmrpeakRunnerRuntimeTests(unittest.TestCase):
+    def test_cuda_generation_places_encoder_input_on_the_model_device(self) -> None:
+        torch = RecordingTensorOperations()
+        source = SimpleNamespace(to=lambda device: ("source", device))
+        data = ModuleType("unicore.data")
+        data.data_utils = SimpleNamespace(collate_tokens=lambda *args, **kwargs: source)
+        model = RecordingModel()
+        stack = LoadedNmrpeakStack(
+            object(), RecordingDictionary(), model, HF_DECODE_POLICY, device="cuda"
+        )
+        with patch.dict(sys.modules, {"torch": torch, "unicore.data": data}):
+            stack.generate(("one",))
+        self.assertEqual(
+            model.generate_calls[0][0]["spec"]["src_tokens"], ("source", "cuda:0")
+        )
+
+    def test_cuda_loader_places_model_without_changing_checkpoint_deserialization(self) -> None:
+        modules = FakeLoadModules()
+        modules.modules["torch"].cuda = SimpleNamespace(is_available=lambda: True)
+        selected = []
+        def place(device):
+            selected.append(device)
+            modules.model.parameters = lambda: (SimpleNamespace(device=SimpleNamespace(type="cuda")),)
+            modules.model.buffers = lambda: ()
+        modules.model.to = place
+        with patch.dict(sys.modules, modules.modules):
+            load_nmrpeak_runtime(
+                BytesIO(b"checkpoint"), tokenizer_mode=TokenizerMode(False, True, True, True, True, True),
+                decode_policy=HF_DECODE_POLICY, materialize=lambda value: value, device="cuda",
+            )
+        self.assertEqual(selected, ["cuda:0"])
+        self.assertEqual(modules.model.cpu_calls, 0)
+        self.assertEqual(modules.torch_loads[0][1]["map_location"], "cpu")
+
+    def test_device_selection_never_falls_back_to_cpu(self) -> None:
+        modules = FakeLoadModules()
+        modules.modules["torch"].cuda = SimpleNamespace(is_available=lambda: False)
+        with patch.dict(sys.modules, modules.modules), self.assertRaisesRegex(RuntimeError, "no available GPU"):
+            load_nmrpeak_runtime(
+                BytesIO(b"checkpoint"), tokenizer_mode=TokenizerMode(False, True, True, True, True, True),
+                decode_policy=HF_DECODE_POLICY, materialize=lambda value: value, device="cuda",
+            )
+        with self.assertRaisesRegex(ValueError, "cpu or cuda"):
+            LoadedNmrpeakStack(object(), object(), object(), HF_DECODE_POLICY, device="auto")
+        with self.assertRaisesRegex(ValueError, "cpu or cuda"):
+            load_nmrpeak_runtime(
+                BytesIO(), tokenizer_mode=TokenizerMode(False, True, True, True, True, True),
+                decode_policy=HF_DECODE_POLICY, materialize=lambda value: value, device="auto",
+            )
+
     def test_loaded_dictionary_owns_model_token_admission(self) -> None:
         dictionary = RecordingDictionary({"formula_ele_Cl"})
         model = RecordingModel()
