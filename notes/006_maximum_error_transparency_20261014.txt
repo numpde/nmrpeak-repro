@@ -6,8 +6,8 @@ Status and authority
 
 This note records the user's intended product policy following the review of
 NMRPeak's failure propagation and its Magnet and SECS siblings. It defines the
-required direction and records local implementation below. It does not claim
-deployment or completed live qualification of every error surface.
+required direction and records local implementation and the dated ProArt rollout
+below. It does not claim completed live qualification of every error surface.
 
 The user's instruction is: "max transparency, but no obviously sensitive
 material." This applies throughout the system, not only to model/interpreter
@@ -307,6 +307,47 @@ claim of live model or production qualification. The GUI checkout's unrelated
 pre-existing edits were preserved.
 
 The reviewed NMRPeak, API and GUI commits were pushed after explicit user
-authorization. No production deployment or historical terminal-message rewrite
-was performed. The original ProArt Attempt's model claims remain unrecovered;
+authorization. At that validation stage, no production deployment or historical
+terminal-message rewrite had been performed. The original ProArt Attempt's model claims remain unrecovered;
 these changes preserve useful explanations for future Attempts.
+
+ProArt rollout (2026-10-15)
+---------------------------
+
+After the user authorized deployment and SSH connectivity returned, the clean
+ProArt checkout was fast-forwarded from 7e25717 to reviewed runtime revision
+3c151c7318cdfb34d2399a71e15ad56a541733c5. The provider and both CPU runner images
+were rebuilt successfully on ProArt; existing services kept running during the
+builds. Deployment: nmr-dapp32-com, provider: provider:nmrpeak-pa-a.
+
+Independent comparison of the old and new public plans found only the intended
+three image/input identities, API release pin, and their derived topology,
+frozen-generation and runtime-config identities/paths. Checkpoints, generation
+windows, endpoint, networks, mount targets/modes, security and resource controls
+were unchanged. The guarded startup used the reviewed plan SHA-256:
+a0c70def35d9294fbe6f82788985ee95d062affb114f5d2e09705bf896d434e6
+
+The old deployment was stopped through its maintained Make lane. Locked offline
+inspection reported zero retained records and zero diagnostic histories before
+the cutover. No journal, checkpoint or credential was retired or replaced.
+The guarded startup completed with exit status 0 and frozen generation:
+sha256:323f1c2cef1af074180989ada77d34046202e87d342305e6f9131327c6fe48aa
+
+Live images observed at 2026-10-15 04:52:46 UTC:
+* Provider: sha256:7079865405c11378d484591b6299f50fb03f9fe39bfe5d04e0f0019c5f71b5b3
+* HF: sha256:e4863553dbd0e0ff8884a48138f1c3d771f878673507705f5f9657930a3a5e97
+* CHF: sha256:47d6add00b8cb20a8ea2107fd71936ec137b1afdaf9c26ded351678572fa63cd
+
+All three live containers reported source revision 3c151c7 and protocol version 4.
+The provider was healthy; both runners were running. Actual runner logs confirmed
+both reviewed checkpoints loaded on CPU and announced ready. Provider startup
+reported zero retained Attempts, completed recovery, and received an accepted
+signed Hello from https://nmr.dapp32.com at 04:51:37.711523 UTC before reporting
+ready. This establishes deployment, model loading, runner admission and API
+connectivity. No new production Jobs were submitted for this rollout; it does
+not add fresh end-to-end scientific or live failure-path qualification.
+
+Remote rollout artifacts were retained under
+/tmp/nmrpeak-transparency-deploy.fxdZeI/ (build/status/logs and public plan/journal
+inspection evidence). This evidence update changes documentation only; the
+running image revision remains the exact reviewed runtime revision above.
