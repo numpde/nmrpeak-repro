@@ -1,0 +1,110 @@
+CPU/GPU benchmark implementation and ProArt evidence (2026-10-15)
+===============================================================
+
+Source and interface
+--------------------
+
+Qualified source: 4331147244aaa9cab5356b8dc864065950c3e592.
+Implementation commits: 7254f5b, 53709ff, 371fc8e, a3a9ed3, a4c7ba8, 4331147.
+All were pushed to origin/main before the full comparison.
+
+Use make benchmark/image/build, then make benchmark. See docs/benchmark.md for
+selection, measurements, resource grants, failure behavior, and limitations.
+The Python harness compares HF and CHF on the current CPU stack, a common
+CPU/CUDA image on CPU, and each selected GPU by full UUID. Production runner
+wrappers remain explicitly CPU. This work did not restart production services
+or submit API Jobs.
+
+Full comparison
+---------------
+
+Command: make benchmark, with its committed defaults.
+Host: ra@proart, AMD Ryzen 9 7900X, NVIDIA driver 580.159.03.
+Source and results directory on ProArt and in the local checkout:
+
+  benchmark/20261015T065506.188575Z-4331147244aa/
+
+Results were copied from ProArt into the same gitignored local directory for
+independent review. They contain manifest.json, cases.json, flushed worker
+logs, measurements.jsonl, outputs.jsonl, summary.json, and comparison.md.
+The detached launcher retained full.log and full.exit=0 under:
+
+  /tmp/nmrpeak-benchmark-qualification-4331147/
+
+All eight model/device runs completed. Each used three synthetic cases, one
+initial pass per case, three warmup passes, and twenty measured passes. This
+produced 24 case summaries, 480 measured generations, and 576 total generations.
+Every measured GPU output matched its corresponding CPU output in exact ranked
+candidate order, against both CPU references; canonical molecule overlap was
+1.0 throughout these comparisons. Invalid candidates remain in the artifacts.
+
+Median speed ratios against the matched CPU image, across both models/cases:
+
+  RTX PRO 4000 Blackwell: 3.94x to 9.13x
+    GPU-75078110-7bdd-beaa-2195-2ba33a555cd7
+  RTX 2000 Ada Generation: 4.01x to 5.97x
+    GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347
+
+These are generation measurements on synthetic inputs on a shared host, with
+production services still running. Activity snapshots are retained, but cannot
+exclude interference between snapshots. They do not establish scientific
+accuracy, cold-disk startup performance, or end-to-end API Job latency.
+
+Validation and audit
+--------------------
+
+The contained validation at the qualified revision passed 654 tests: 594 unit,
+9 contract, 5 integration, 6 model-fixture, and 40 repository checks. Local log:
+
+  /tmp/nmrpeak-benchmark-final-4331147-tests.log
+
+Independent reviews covered source/device placement, container authority,
+report calculations, failure cleanup, and retained live artifacts. Corrections
+included separating upstream stdout notices from JSON events, resetting GPU
+memory peaks per generation, refusing completeness for missing/truncated data,
+and cleaning up an owned container after a failed Docker client connection.
+
+The first live qualification exposed a PyTorch getpass failure because the
+caller UID had no passwd entry. The harness now uses the admitted image's fixed
+non-root account, with explicitly readable staged files even under umask 077.
+That failed run remains under the earlier a3a9ed3 qualification evidence.
+
+A short all-device comparison completed before the full run:
+
+  benchmark/20261015T065128.947496Z-4331147244aa/
+
+A live interruption probe observed its owned CPU container, sent SIGTERM to
+the benchmark host process, and confirmed exit 2, interrupted manifest,
+incomplete summary, and no remaining owned benchmark containers. Evidence:
+
+  /tmp/nmrpeak-benchmark-qualification-4331147/interruption-result.json
+  benchmark/20261015T065503.468422Z-4331147244aa/
+
+Cache reuse and dependency limits
+--------------------------------
+
+All three NMRPeak image Dockerfiles now use the builder-wide UV cache mount
+/root/.cache/uv with sharing=locked and no repository/lane-specific ID. Hash
+verification remains specific to each image's lock. Other repositories can
+reuse the same mount on the same builder; sibling repositories were not edited.
+
+On ProArt, the previously populated NMRPeak CPU and CUDA caches were preserved
+as read-only donors for a one-off migration into the initially empty shared
+cache. Fresh CPU and CUDA environments were then installed with network disabled,
+UV offline mode, and required hashes; pip check and exact PyTorch version imports
+passed. Evidence and exit 0:
+
+  /tmp/nmrpeak-uv-shared-cache-20261015/proof.log
+  /tmp/nmrpeak-uv-shared-cache-20261015/proof.exit
+
+The subsequent three-image rebuild completed with zero package Downloading
+events in /tmp/nmrpeak-benchmark-qualification-4331147/build.log. Interrupted
+downloads from the earlier canceled build were not reusable completed artifacts.
+The cache is an optimization; independent image environments and differing CPU/
+CUDA wheels are still required. Builder garbage collection can remove artifacts.
+
+The common image uses the committed hash-locked PyTorch 2.10.0+cu128 stack.
+The 61-package advisory review found known issues documented in docs/benchmark.md;
+this is not an advisory-free image. It uses trusted committed code, verified
+local checkpoints, fixed configuration, and synthetic inputs. The production
+dependency lock was not changed.
