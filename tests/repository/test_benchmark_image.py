@@ -32,6 +32,17 @@ class BenchmarkImageTests(unittest.TestCase):
     def test_benchmark_lock_matches_shared_family_intent(self):
         check_lock(ROOT, "benchmark-cu128", ROOT / "containers/benchmark/requirements.lock")
 
+    def test_all_model_images_share_the_builder_wide_package_cache(self):
+        for relative in ("containers/benchmark/Dockerfile",
+                         "models/nmrpeak_hf_v1/runner/Dockerfile.runner",
+                         "models/nmrpeak_chf_v1/runner/Dockerfile.runner"):
+            with self.subTest(image=relative):
+                lines = (ROOT / relative).read_text().splitlines()
+                cache_mounts = [line.strip().removesuffix("\\").strip() for line in lines
+                                if "--mount=type=cache" in line]
+                self.assertEqual(cache_mounts, ["--mount=type=cache,target=/root/.cache/uv,sharing=locked"])
+                self.assertIn("--require-hashes", "\n".join(lines))
+
 
 if __name__ == "__main__":
     unittest.main()

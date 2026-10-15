@@ -24,7 +24,7 @@ RUN apt-get update \
 
 COPY containers/benchmark/requirements.lock /tmp/requirements.lock
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv,ro \
-    --mount=type=cache,id=nmrpeak-benchmark-cu128-uv,target=/root/.cache/uv,sharing=locked \
+    --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     export UV_CONCURRENT_DOWNLOADS=2 UV_LINK_MODE=copy; \
     uv pip install --system --no-deps --require-hashes --only-binary=:all: \
         --no-python-downloads -r /tmp/requirements.lock \

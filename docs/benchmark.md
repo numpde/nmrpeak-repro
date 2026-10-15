@@ -99,6 +99,14 @@ weights, local deployment state, and benchmark results are excluded. Networked
 builds fetch pinned dependency artifacts. `make benchmark/lock` stages a new
 hash-locked candidate in `/tmp` for review; it does not replace the committed lock.
 
+CPU and CUDA image builds use the builder-wide UV cache at `/root/.cache/uv`,
+without a repository or lane-specific cache ID. Other repositories using that
+same cache mount on the same builder can reuse completed artifacts. Each install
+still checks its own lockfile hashes and copies packages into its own image.
+Cache reuse does not imply that different package versions or CPU/CUDA wheels are
+interchangeable. Builder garbage collection or an incomplete download can cause
+an artifact to be fetched again; changing repositories or lanes should not.
+
 The common image pins PyTorch 2.10.0 with CUDA 12.8 for Ada and Blackwell support.
 Before selecting it, the PyTorch security advisories were reviewed, including the
 checkpoint issue fixed in 2.10.0:
