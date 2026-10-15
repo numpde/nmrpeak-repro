@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
@@ -10,7 +11,9 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
+import time
 import traceback
 import uuid
 
@@ -88,7 +91,48 @@ def image_spec(role, input_id, revision):
                           "python", "-m", f"models.{role}.runner.worker"))
 
 
-def prepare_images(revision, scratch, build=False):
+@contextmanager
+def build_network(scratch):
+    interface = os.environ.get("NMRPEAK_WIFI_INTERFACE_INPUT", "")
+    if not interface:
+        yield ["--network", "default"]
+        return
+    ready = scratch / "proxy.port"
+    proxy = subprocess.Popen([sys.executable, str(ROOT / "docker/bound_http_proxy.py"),
+                              "--interface", interface, "--ready-file", str(ready)], env=ENV)
+    failure = None
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists():
+            if proxy.poll() is not None:
+                raise RuntimeError(f"Cannot build benchmark images: Wi-Fi proxy exited with status {proxy.returncode}")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Cannot build benchmark images: Wi-Fi proxy did not become ready within five seconds")
+            time.sleep(0.05)
+        port = int(ready.read_text())
+        if not 1 <= port <= 65535:
+            raise ValueError(f"Cannot build benchmark images: Wi-Fi proxy published port {port}")
+        url = f"http://127.0.0.1:{port}"
+        print(f"Benchmark dependency downloads through Wi-Fi interface {interface}", flush=True)
+        yield ["--network", "host", "--build-arg", f"HTTP_PROXY={url}", "--build-arg", f"HTTPS_PROXY={url}"]
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            proxy.terminate()
+            try:
+                proxy.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proxy.kill()
+                proxy.wait(timeout=5)
+        except Exception as cleanup_error:
+            if failure is None:
+                raise
+            failure.add_note(f"Wi-Fi proxy cleanup failed: {cleanup_error}")
+
+
+def prepare_images(revision, scratch, build=False, network_arguments=()):
     images = {}
     for role in ("nmrpeak_hf_v1", "nmrpeak_chf_v1", "benchmark"):
         context = scratch / role
@@ -97,7 +141,7 @@ def prepare_images(revision, scratch, build=False):
         spec = image_spec(role, input_id, revision)
         if build:
             file = "containers/benchmark/Dockerfile" if role == "benchmark" else f"models/{role}/runner/Dockerfile.runner"
-            docker("build", "--network", "default", "--build-arg", f"SOURCE_REVISION={revision}",
+            docker("build", *network_arguments, "--build-arg", f"SOURCE_REVISION={revision}",
                    "--build-arg", f"IMAGE_INPUT_ID={input_id}", "--tag", f"{spec.repository}:{input_id[7:]}",
                    "--file", context / file, context, timeout=7200)
         image = resolve_local_image(DOCKER, spec)
@@ -318,7 +362,9 @@ def main():
         from repository_checks.nmrpeak_lock import check_lock
         check_lock(ROOT, "benchmark-cu128", ROOT / "containers/benchmark/requirements.lock")
         with tempfile.TemporaryDirectory(prefix="nmrpeak-benchmark-build-") as temporary:
-            print(json.dumps(prepare_images(revision, Path(temporary), build=True), indent=2))
+            with build_network(Path(temporary)) as network_arguments:
+                print(json.dumps(prepare_images(revision, Path(temporary), build=True,
+                                                network_arguments=network_arguments), indent=2))
         return
     options.devices = os.environ.get("BENCHMARK_DEVICES", "all").split()
     options.lanes = os.environ.get("BENCHMARK_MODELS", "hf chf").split()

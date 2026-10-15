@@ -30,7 +30,10 @@ export BENCHMARK_TIMEOUT = $(or $(TIMEOUT),7200)
 benchmark:
 	@$(PYTHON) -m benchmark_tools.host run
 
+benchmark/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 benchmark/image/build:
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
+	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
 	@$(PYTHON) -m benchmark_tools.host build
 
 benchmark/devices:

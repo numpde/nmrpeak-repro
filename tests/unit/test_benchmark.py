@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import signal
 from pathlib import Path
 import subprocess
@@ -17,6 +18,53 @@ GPU = "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7"
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_build_network_defaults_to_the_normal_docker_network(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"NMRPEAK_WIFI_INTERFACE_INPUT": ""}), \
+             patch.object(host.subprocess, "Popen") as launch:
+            with host.build_network(Path(temporary)) as arguments:
+                self.assertEqual(arguments, ["--network", "default"])
+            launch.assert_not_called()
+
+    def test_explicit_wifi_build_route_cleans_up_after_success_failure_and_interruption(self):
+        for failure in (None, RuntimeError("build failed"), KeyboardInterrupt()):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary, \
+                 patch.dict(os.environ, {"NMRPEAK_WIFI_INTERFACE_INPUT": "wlp10s0"}), \
+                 patch.object(host.subprocess, "Popen") as launch:
+                scratch = Path(temporary)
+                (scratch / "proxy.port").write_text("12345\n")
+                try:
+                    with host.build_network(scratch) as arguments:
+                        self.assertEqual(arguments[:2], ["--network", "host"])
+                        self.assertIn("HTTPS_PROXY=http://127.0.0.1:12345", arguments)
+                        self.assertIn("wlp10s0", launch.call_args.args[0])
+                        if failure is not None:
+                            raise failure
+                except BaseException as caught:
+                    self.assertIs(caught, failure)
+                launch.return_value.terminate.assert_called_once()
+                launch.return_value.wait.assert_called_once_with(timeout=5)
+
+    def test_build_proxy_failure_never_falls_back_to_default_network(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"NMRPEAK_WIFI_INTERFACE_INPUT": "missing"}), \
+             patch.object(host.subprocess, "Popen") as launch:
+            launch.return_value.poll.return_value = 7
+            launch.return_value.returncode = 7
+            with self.assertRaisesRegex(RuntimeError, "status 7"):
+                with host.build_network(Path(temporary)):
+                    self.fail("a failed proxy must not permit a build")
+            launch.return_value.terminate.assert_called_once()
+
+    def test_wifi_interface_is_deliberate_make_input(self):
+        for arguments, environment, succeeds in (
+            (["NMRPEAK_WIFI_INTERFACE=wlp10s0"], {}, True),
+            (["NMRPEAK_WIFI_INTERFACE="], {}, False),
+            ([], {"NMRPEAK_WIFI_INTERFACE": "wlp10s0"}, False),
+        ):
+            with self.subTest(arguments=arguments, environment=environment):
+                result = subprocess.run(["make", "-C", str(host.ROOT), "benchmark/image/build", "PYTHON=/bin/true", *arguments],
+                                        env={**os.environ, **environment}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr.decode())
+
     def test_sigterm_enters_the_controlled_interruption_path(self):
         with patch.object(host.signal, "signal") as register, patch("sys.argv", ["benchmark", "devices"]), \
              patch.object(host, "devices", return_value=[]), patch("sys.stdout", io.StringIO()):

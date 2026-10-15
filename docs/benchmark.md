@@ -7,6 +7,12 @@ make benchmark/image/build
 make benchmark
 ```
 
+For the repository's explicit Wi-Fi build route, use
+`make benchmark/image/build NMRPEAK_WIFI_INTERFACE=wlp10s0`. This reuses the
+existing temporary interface-bound proxy. Dependency tools honoring the proxy
+use that interface; base/frontend image pulls retain Docker engine networking.
+It does not change host routes, DNS, or daemon configuration.
+
 The build prepares the current HF/CHF CPU runner images and one common benchmark
 image. The run measures both models on the current CPU stack, the common image on
 CPU, and the common image on every discovered GPU, sequentially. It does not
