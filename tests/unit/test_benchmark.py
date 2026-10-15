@@ -5,6 +5,7 @@ import io
 import json
 import os
 import signal
+import stat
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +19,19 @@ GPU = "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7"
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_staged_harness_is_readable_by_the_image_user_under_restrictive_umask(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(host, "git", return_value=b"committed bytes"):
+            previous = os.umask(0o077)
+            try:
+                harness = host.stage_harness("a" * 40, Path(temporary))
+            finally:
+                os.umask(previous)
+            for directory in (harness, harness.parent):
+                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o555)
+            for file in harness.iterdir():
+                self.assertEqual(stat.S_IMODE(file.stat().st_mode), 0o444)
+                self.assertEqual(file.read_bytes(), b"committed bytes")
+
     def test_build_network_defaults_to_the_normal_docker_network(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"NMRPEAK_WIFI_INTERFACE_INPUT": ""}), \
              patch.object(host.subprocess, "Popen") as launch:
@@ -109,6 +123,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn("CUDA_VISIBLE_DEVICES=0", args)
         self.assertEqual(args[args.index("--network") + 1], "none")
         self.assertIn("--read-only", args)
+        self.assertNotIn("--user", args)
         mounts = [args[i + 1] for i, value in enumerate(args) if value == "--mount"]
         self.assertEqual(len(mounts), 2)
         self.assertTrue(all("readonly" in mount for mount in mounts))

@@ -125,7 +125,7 @@ uses the existing trusted-checkpoint `weights_only=False` policy.
 
 Runtime uses the local Docker default context and immutable image IDs, with no
 network, read-only root and checkpoint mounts, dropped capabilities, no new
-privileges, bounded resources, and an invoking-user identity. The harness mount
+privileges, bounded resources, and the image's fixed non-root identity. The harness mount
 contains only committed worker code and synthetic cases. Output goes through
 host-opened stdout/stderr files; containers have no writable host mount or engine
 socket. Temporary writes use bounded tmpfs. GPU access is an explicit UUID grant;

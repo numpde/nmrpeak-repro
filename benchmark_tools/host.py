@@ -178,7 +178,7 @@ def run_arguments(run, checkpoint_info, harness, options, name):
             "--label", f"io.numpde.nmrpeak.benchmark={name}", "--init", "--network", "none",
             "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--pids-limit", "256", "--cpus", "8", "--memory", "32g", "--memory-swap", "32g",
-            "--shm-size", "1g", "--user", f"{os.getuid()}:{os.getgid()}",
+            "--shm-size", "1g",
             "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=2g,mode=1777",
             "--mount", f'type=volume,src={checkpoint_info["volume"]},dst=/checkpoint,readonly,volume-nocopy',
             "--mount", f"type=bind,src={mount_source(harness)},dst=/harness,readonly",
@@ -244,6 +244,18 @@ def execute_run(run, checkpoint_info, harness, options, directory, gpu_devices):
     run["activity_after"] = activity(gpu_devices)
 
 
+def stage_harness(revision, scratch):
+    harness = scratch / "harness" / "benchmark_tools"
+    harness.mkdir(parents=True)
+    for name in ("__init__.py", "worker.py", "cases.json"):
+        target = harness / name
+        target.write_bytes(git("show", f"{revision}:benchmark_tools/{name}"))
+        target.chmod(0o444)
+    harness.chmod(0o555)
+    harness.parent.chmod(0o555)
+    return harness
+
+
 def run_benchmark(revision, options):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     if (ROOT / "benchmark").is_symlink():
@@ -269,10 +281,7 @@ def run_benchmark(revision, options):
         with tempfile.TemporaryDirectory(prefix="nmrpeak-benchmark-") as temporary:
             scratch = Path(temporary)
             images = prepare_images(revision, scratch)
-            harness = scratch / "harness" / "benchmark_tools"
-            harness.mkdir(parents=True)
-            for name in ("__init__.py", "worker.py", "cases.json"):
-                (harness / name).write_bytes(git("show", f"{revision}:benchmark_tools/{name}"))
+            harness = stage_harness(revision, scratch)
             corpus_bytes = (harness / "cases.json").read_bytes()
             (directory / "cases.json").write_bytes(corpus_bytes)
             corpus = json.loads(corpus_bytes)
