@@ -5,6 +5,46 @@ Deployment repository for an NMRPeak NMR API provider.
 [Documentation](https://numpde.github.io/nmrpeak-repro/) — analysis offerings,
 operator instructions, scientific references, and licensing.
 
+The provider serves `mol_from_1h_peaks` (HF: molecular formula and proton peaks)
+and `mol_from_1h_13c_formula` (CHF: formula, proton peaks, and carbon peaks).
+Production model runners use CPU. See the documentation for the structured-input
+and freeform-text routes and deployment requirements.
+
+## Check the software
+
+The maintained tests run in a pinned Docker image. On Linux, use Git, Make,
+Bash, Python 3.11+, Docker with Compose and a local default context, and a regular
+Docker-enabled account. The image-preparation command requires a kernel-recognized
+Wi-Fi interface; building a missing image also requires Podman. If the matching
+image already exists, run `make test` directly. Otherwise replace `wlp1s0` with
+your wireless interface's name:
+
+```bash
+git submodule update --init --recursive
+make test-image/base/build NMRPEAK_WIFI_INTERFACE=wlp1s0
+make test
+```
+
+Image preparation uses the network and reuses an existing matching image.
+`make test` runs without network, API credentials, weights, or GPUs. It checks
+software behavior using fixtures; live provider and model qualification are
+separate opt-in operations. `make help` lists preparation and deployment commands.
+
+## CPU/GPU experiment
+
+The [benchmark guide](docs/benchmark.md) explains how to run a comparison.
+The [2026-10-15 experiment](benchmark/20261015T065506.188575Z-4331147244aa/README.md)
+includes the machine description, methods, raw observations, results, and limits
+on their interpretation. Reproduce its calculations offline:
+
+```bash
+make benchmark/verify RUN=benchmark/20261015T065506.188575Z-4331147244aa
+```
+
+This checks the archived evidence and report without repeating model inference.
+
+## Retained-work diagnostics
+
 For retained-work diagnostics on an already stopped deployment, run
 `make provider/deployment/journal/inspect DEPLOYMENT=<name>`. The command holds
 the deployment and provider identity locks and uses the installed provider image

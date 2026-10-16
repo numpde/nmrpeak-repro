@@ -42,8 +42,8 @@ make test/live/failure-propagation \
 `LIVE_RUN_LABEL` is operator evidence only. The test verifies the provider ref
 observed on each Attempt, but cannot prove an image digest or that the provider
 had no other eligible work. Set `LIVE_CA_CERTIFICATE` for a private CA. Use
-`test/live/failure-propagation/observe` to recheck an existing state without
-creating or opening Jobs.
+`make test/live/failure-propagation/observe` with the same `LIVE_*` arguments to
+recheck an existing state without creating or opening Jobs.
 
 ## Positive success qualification
 
@@ -77,7 +77,12 @@ artifact identities are required reviewed inputs; they bind successful output
 to the intended checkpoint and runner image inputs instead of accepting any
 syntactically valid deployment provenance.
 
-The small input vector is copied from the repository's HF/CHF binding tests.
-This proves deployed parsing, runner execution, completion, publication, and
-readback. It does not claim that generated candidates are chemically correct;
-scientific quality qualification remains a separate model evaluation.
+Use `make test/live/success-propagation/observe` with the same `LIVE_*` arguments
+and expected artifact identities to recheck retained results without creating or
+opening Jobs.
+
+Both live lanes submit structured synthetic input. The success lane's small
+input vector comes from the repository's HF/CHF binding tests. A passing run
+demonstrates the structured parsing route, runner execution, completion,
+publication and readback for those inputs; it does not exercise freeform-text
+interpretation or establish chemical accuracy.

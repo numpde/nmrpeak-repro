@@ -23,22 +23,26 @@
     <p><a href="https://github.com/numpde/nmrpeak-repro">Source code</a></p>
 
     <h2>Inputs and results</h2>
-    <p>The provider connects NMR API jobs to two NMRPeak analysis offerings:</p>
+    <p>The provider connects NMR API jobs to two NMRPeak analyses. Use these <code>analysis_kind_ref</code> values when selecting an analysis through the API:</p>
     <ul>
-      <li><code>nmrpeak_hf_v1</code>: a molecular formula and a proton (<sup>1</sup>H) NMR peak list.</li>
-      <li><code>nmrpeak_chf_v1</code>: a molecular formula, a proton (<sup>1</sup>H) NMR peak list, and a carbon-13 (<sup>13</sup>C) NMR peak list.</li>
+      <li><code>mol_from_1h_peaks</code> (HF): a molecular formula and a proton (<sup>1</sup>H) NMR peak list.</li>
+      <li><code>mol_from_1h_13c_formula</code> (CHF): a molecular formula, a proton (<sup>1</sup>H) NMR peak list, and a carbon-13 (<sup>13</sup>C) NMR peak list.</li>
     </ul>
     <p>Each proton peak needs a chemical shift or shift range, an integral, and a multiplicity; include coupling constants when reported. Each carbon peak needs a chemical shift. The provider accepts structured input directly and uses a configured language-model service to interpret freeform job text before running NMRPeak.</p>
     <p>Results contain candidate structures represented as SMILES strings. They are model predictions; the provider does not establish the compound’s identity or report a confidence score.</p>
 
     <h2>Check the software</h2>
-    <p>You need Git, Make, and Python 3.11 or later, including <code>venv</code> and <code>pip</code>. Clone the repository and its pinned dependencies, then prepare a Python environment:</p>
+    <p>The maintained tests run in a pinned container. Use Linux, Git, Make, Bash, Python 3.11 or later, Docker with Compose, a local Docker default context, and a regular Docker-enabled account. The image-preparation command requires a kernel-recognized Wi-Fi interface; building a missing image also requires Podman. If the matching image already exists, run <code>make test</code> directly. Otherwise clone the pinned source and prepare the test image; replace <code>wlp1s0</code> with your wireless interface:</p>
     <pre><code>git clone --recurse-submodules https://github.com/numpde/nmrpeak-repro.git
 cd nmrpeak-repro
-python3 -m venv .venv
-.venv/bin/python -m pip install --require-hashes -r requirements.lock
-make test PYTHON=.venv/bin/python</code></pre>
-    <p>Cloning and installing dependencies require network access. The tests do not require network access, API credentials, or model weights. They check provider behavior, communication with the model processes, and repository consistency using test fixtures and the pinned source. Passing them does not demonstrate model accuracy or a working deployment.</p>
+make test-image/base/build NMRPEAK_WIFI_INTERFACE=wlp1s0
+make test</code></pre>
+    <p>Cloning and test-image preparation use network access. Preparation reuses an existing matching image. Ordinary tests never build or pull images: they run without network, API credentials, model weights, or GPUs, using a read-only source snapshot that excludes credentials and local deployment state. They check provider behavior, communication with the model processes, and repository consistency using fixtures and the pinned source. Passing them does not demonstrate model accuracy or a working deployment.</p>
+
+    <h2>CPU/GPU comparison</h2>
+    <p>The <a href="https://github.com/numpde/nmrpeak-repro/blob/main/docs/benchmark.md">benchmark guide</a> describes the opt-in comparison. The <a href="https://github.com/numpde/nmrpeak-repro/tree/main/benchmark/20261015T065506.188575Z-4331147244aa">2026-10-15 experiment</a> includes the machine description, methods, raw observations, and results for HF and CHF on CPU, Blackwell, and Ada. Its findings apply to synthetic workloads on a shared workstation.</p>
+    <pre><code>make benchmark/verify RUN=benchmark/20261015T065506.188575Z-4331147244aa</code></pre>
+    <p>This command checks the committed evidence and regenerates the report offline using Python's standard library. It does not require Docker, model weights, or GPUs, and does not repeat inference.</p>
 
     <h2>Deploy the provider</h2>
     <p>Deployment requires Docker with Compose, built provider and model images, installed model weights, an NMR API provider credential, and a configured OpenAI-compatible language-model endpoint for interpreting input text. The model processes run on CPU in separate containers without network access; the provider communicates with the API and the interpreter endpoint.</p>
@@ -46,8 +50,8 @@ make test PYTHON=.venv/bin/python</code></pre>
 
     <h2>Monitor the deployment</h2>
     <p>Run <code>make provider/logs DEPLOYMENT=&lt;name&gt;</code> to read the provider’s last 200 log lines and follow new entries while it runs. Use <code>make provider/deployment/status DEPLOYMENT=&lt;name&gt;</code> to find the model runner containers, then <code>docker --context default logs &lt;container&gt;</code> to read their retained logs.</p>
-    <p>Application logs include UTC timestamps, startup and model readiness, job and attempt identifiers, input text, interpreted input, generated results, and API delivery outcomes. Job content is recorded without redaction. Logging does not intentionally include configured credentials or signing keys.</p>
-    <p>A hello sends the provider’s description and analysis offerings to the API. Each <code>Provider Hello accepted</code> entry records the API origin, provider, acceptance time, and request identifier. Compare its age with <code>hello_interval_seconds</code>, reported in the <code>Provider ready</code> startup entry. If an expected acknowledgement is missing, inspect subsequent retry or shutdown messages. Provider container health reflects startup readiness.</p>
+    <p>Application logs record UTC timestamps, startup and model readiness, job and attempt identifiers, interpreter routing and validation, generation timing, result identities, and API delivery outcomes. Diagnostic messages preserve useful producer explanations and relevant excerpts; they do not provide a complete input or result dump. Diagnostics remove configured interpreter keys and recognizable credential syntax before applying size limits. They can still contain scientific input excerpts and producer messages; redaction does not classify arbitrary confidential content.</p>
+    <p>A hello sends the provider’s description and analysis offerings to the API. Each <code>Provider Hello accepted</code> entry records the API origin, provider, acceptance time, and request identifier. Compare its age with <code>hello_interval_seconds</code>, reported in the <code>Provider ready</code> startup entry. If an expected acknowledgement is missing, inspect subsequent retry or shutdown messages. Provider container health records startup readiness; it does not establish continuing API or interpreter availability.</p>
     <p><code>Completion retained for API delivery</code> means a result is stored locally for delivery; <code>API confirmed complete</code> records the API’s completion receipt. API-access and journal-admission retries report their reason and next delay, capped at five minutes. Retained attempts waiting for API expiry or conflict resolution report about every five minutes while polling continues; empty job polls remain quiet. Follow the reported failure evidence when retries persist. Leave the provider’s Docker journal volume intact so its retained attempts remain available for recovery.</p>
     <p>Docker retains up to three 10 MB log files per container. Older entries rotate out.</p>
 
@@ -59,9 +63,8 @@ make test PYTHON=.venv/bin/python</code></pre>
     <p>This repository maintains the provider deployment. The pinned upstream implementation also includes training scripts; see the NMRPeak paper and upstream project for training and data preparation.</p>
 
     <h2 id="licensing">Licensing</h2>
-    <p>Original code in this repository is licensed under Apache License 2.0. Third-party components retain their own licenses. The pinned NMRPeak source uses CC BY-NC-SA 4.0 and is restricted to non-commercial use; Uni-Core, the PyTorch model framework used by NMRPeak, uses the MIT License.</p>
+    <p>This repository does not include a standalone license file for its original provider code. Third-party components retain their own licenses. The pinned <a href="https://github.com/Colin-Jay/NMRPeak/blob/d615e193ec84d124dc916eb10b675744d27a79cf/LICENSE">NMRPeak license</a> is CC BY-NC-SA 4.0 and restricts use to non-commercial purposes; <a href="https://github.com/dptech-corp/Uni-Core/blob/ace6fae1c8479a9751f2bb1e1d6e4047427bc134/LICENSE">Uni-Core</a>, the PyTorch model framework used by NMRPeak, uses the MIT License. Their license texts are included in the pinned source directories.</p>
     <p>The NMRPeak checkpoints are downloaded from <a href="https://zenodo.org/records/19122815">Zenodo record 19122815</a>, whose metadata identifies the deposit’s license as <a href="https://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International</a>. This repository does not relicense those files.</p>
-  <p><a href="benchmark.md">CPU/GPU benchmark: commands, measurements, and result artifacts</a></p>
-</main>
+  </main>
 </body>
 </html>

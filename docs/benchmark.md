@@ -1,6 +1,6 @@
 # CPU/GPU comparison
 
-The [2026-10-15 experiment](../benchmark/20261015T065506.188575Z-4331147244aa/README.md)
+The [2026-10-15 experiment](https://github.com/numpde/nmrpeak-repro/tree/main/benchmark/20261015T065506.188575Z-4331147244aa)
 includes the machine description, protocol, limitations, raw observations, and
 derived results in Git. Reproduce its calculations offline without GPUs or weights:
 
@@ -13,16 +13,21 @@ report regeneration in temporary storage. It does not repeat inference or RDKit
 validation. The experiment README also gives commands to repeat the measurement
 at its original source revision.
 
-Run on the machine being measured, from a clean, committed checkout:
+Run on the Linux x86_64 machine being measured, using Git, Make, Bash, Python
+3.11+, and a local Docker default context with BuildKit. Use a regular
+Docker-enabled account. GPU runs require `nvidia-smi`, a compatible NVIDIA driver
+and NVIDIA Container Toolkit. Initialize the pinned submodules and use a clean,
+committed checkout:
 
 ```bash
+git submodule update --init --recursive
 make benchmark/image/build
-make benchmark
 ```
 
 For the repository's explicit Wi-Fi build route, use
-`make benchmark/image/build NMRPEAK_WIFI_INTERFACE=wlp10s0`. This reuses the
-existing temporary interface-bound proxy. Dependency tools honoring the proxy
+`make benchmark/image/build NMRPEAK_WIFI_INTERFACE=wlp10s0`, substituting your
+wireless interface. The build starts a temporary interface-bound proxy and stops
+it afterward. Dependency tools honoring the proxy
 use that interface; base/frontend image pulls retain Docker engine networking.
 It does not change host routes, DNS, or daemon configuration.
 
@@ -33,11 +38,26 @@ submit Jobs, contact an interpreter, or change the deployed provider.
 
 Imported HF and CHF checkpoint volumes must already exist. Their reviewed release
 identities, volume markers, and checkpoint bytes are verified before execution.
-Use the repository's normal checkpoint import commands if they are missing.
+If they are missing, reuse an existing public weights archive at its absolute
+path to import both checkpoints into the local engine:
+
+```bash
+make checkpoint/import RUNNER=nmrpeak_hf_v1 RELEASE=nmrpeak-zenodo-19122815-hf ARCHIVE=/absolute/path/to/weights.zip
+make checkpoint/import RUNNER=nmrpeak_chf_v1 RELEASE=nmrpeak-zenodo-19122815-chf ARCHIVE=/absolute/path/to/weights.zip
+```
+
+If no archive is available, `make weights/download` acquires the pinned archive
+into `weights/weights.zip`. Reuse that verified file across checkouts and lanes.
+Once the images and checkpoints are ready, start the comparison:
+
+```bash
+make benchmark
+```
 
 Results are created exclusively under `benchmark/<UTC-timestamp>-<12-character-sha>/`.
 The timestamp includes microseconds; existing comparisons are never replaced.
-New runs are ignored as scratch data until reviewed for publication. It contains:
+New runs are ignored as scratch data until reviewed for publication. Each run
+directory contains:
 
 - `manifest.json`: full source SHA, input/image/checkpoint/corpus identities,
   hardware, driver, resource settings, activity snapshots, and per-run status.
@@ -122,14 +142,16 @@ are retained; numerical differences are not silently treated as equivalent.
 
 Host RSS is the cumulative process high-water mark. GPU allocated/reserved peaks
 are reset before each generation and include the resident model. Neither is total
-host or GPU memory use. The container has eight CPUs, 32 GiB RAM, no swap beyond
-that limit, and a 1 GiB shared-memory allocation. CPU compute threads default to
-eight and interop threads to one.
+host or GPU memory use. Each container is configured for an eight-CPU quota,
+32 GiB memory with no additional swap allowance, and 1 GiB shared memory. Execution
+is not pinned to particular cores. CPU compute threads default to eight and
+interop threads to one.
 
-This is a shared machine comparison: load averages and GPU utilization, memory,
-process IDs, and temperatures are recorded before and after each lane. Those
-snapshots cannot establish absence of interference throughout a lane. Production
-services remain running; results must be interpreted with that limitation.
+Host load averages are recorded before and after each lane; GPU selections also
+record GPU utilization, memory, process IDs and temperatures. CPU-only selections
+do not inventory GPU activity. The benchmark does not isolate competing host
+workloads, and these snapshots cannot establish absence of interference throughout
+a lane.
 
 ## Image and container authority
 
@@ -152,8 +174,9 @@ checkpoint issue fixed in 2.10.0:
 https://github.com/pytorch/pytorch/security/advisories/GHSA-63cw-57p8-fm3p
 An OSV check of all 61 pinned benchmark packages also reported advisories in the
 inherited scikit-learn, tqdm, and transformers pins, and a torch.jit.script issue
-(GHSA-rrmf-rvhw-rf47, fixed in PyTorch 2.13). This benchmark preserves the reviewed
-family dependency intent and CUDA 12.8 compatibility; it is not an advisory-free
+([GHSA-rrmf-rvhw-rf47](https://github.com/advisories/GHSA-rrmf-rvhw-rf47), fixed in
+PyTorch 2.13). This benchmark preserves the reviewed family dependency intent and
+CUDA 12.8 compatibility; it is not an advisory-free
 image. It executes committed JIT code and fixed local configuration, with synthetic
 inputs, no tokenizer/model downloads, no tqdm CLI, and no TF-IDF training. The
 production dependency lock is unchanged. Review advisories again when refreshing

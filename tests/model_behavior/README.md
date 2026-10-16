@@ -13,13 +13,17 @@ and prove fallback from a failed endpoint to a source-faithful second endpoint.
 Validate the local corpus and offline harness without credentials or network calls:
 
 ```sh
-PYTHONPATH=. python tests/model_behavior/run_interpreter.py --lane hf --list
-PYTHONPATH=. python tests/model_behavior/run_interpreter.py --lane chf --list
 make test/model-behavior-fixtures
 ```
 
-Run against an explicitly supplied provider-format endpoint configuration
-directory:
+This Make target uses the prepared pinned test image described in the
+[software-check instructions](../../README.md#check-the-software). It validates
+both fixture lists and runs the offline harness tests.
+
+The direct Python entry point requires Python 3.11+ and the provider dependencies
+from `requirements.lock` in its environment. With that environment prepared, use
+`--list` to validate either lane without network access, or run live against an
+explicitly supplied provider-format endpoint configuration directory:
 
 ```sh
 PYTHONPATH=. python tests/model_behavior/run_interpreter.py \

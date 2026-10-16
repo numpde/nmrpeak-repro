@@ -145,9 +145,11 @@ it does not rerun inference or independently validate the recorded RDKit results
 
 ## Repeat the measurement
 
-Use a Linux workstation with a regular Docker-enabled account, an NVIDIA driver
-and container runtime supporting both GPUs, and enough available memory for the
-declared limits. From an existing clone, prepare the measured source separately:
+Use a Linux x86_64 workstation with Git, Make, Bash, Python 3.11+, a local Docker
+default context with BuildKit, and a regular Docker-enabled account. GPU runs
+require `nvidia-smi`, an NVIDIA driver and NVIDIA Container Toolkit supporting
+both GPUs, plus enough available memory for the declared limits. From an existing
+clone, prepare the measured source separately:
 
 ```bash
 git worktree add --detach ../nmrpeak-benchmark-4331147 4331147244aaa9cab5356b8dc864065950c3e592
@@ -166,8 +168,8 @@ make checkpoint/import RUNNER=nmrpeak_hf_v1 RELEASE=nmrpeak-zenodo-19122815-hf A
 make checkpoint/import RUNNER=nmrpeak_chf_v1 RELEASE=nmrpeak-zenodo-19122815-chf ARCHIVE=/absolute/path/to/weights.zip
 ```
 
-If the public archive is absent, `make weights/download` acquires the declaration
-in `families/nmrpeak/weights.declaration.json` into `weights/weights.zip`.
+If the public archive is absent, `make weights/download` acquires the archive
+identified by `families/nmrpeak/weights.declaration.json` into `weights/weights.zip`.
 The release declarations under `models/nmrpeak_{hf,chf}_v1/releases/` specify the
 selected checkpoint members and their SHA-256 identities. Do not download another
 copy merely because the checkout or benchmark lane changed.
