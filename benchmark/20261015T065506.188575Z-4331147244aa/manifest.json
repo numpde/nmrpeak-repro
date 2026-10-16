@@ -1,0 +1,1346 @@
+{
+  "source_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+  "status": "complete",
+  "runs": [
+    {
+      "id": "hf-baseline-cpu",
+      "lane": "hf",
+      "device": "baseline-cpu",
+      "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+      "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_hf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "baseline-cpu",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": null,
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.3.0+cpu",
+            "transformers": "4.55.4"
+          },
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.5220119394361973,
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.674972461536527,
+          "type": "load",
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "case": "small",
+          "input_tokens": 15,
+          "type": "case",
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 37,
+          "type": "case",
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "case": "long",
+          "input_tokens": 91,
+          "type": "case",
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "type": "complete",
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T06:55:09.003723+00:00",
+        "load_average": [
+          2.29736328125,
+          2.3583984375,
+          2.00537109375
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 32",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 34"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T06:56:54.144558+00:00",
+        "load_average": [
+          7.861328125,
+          4.322265625,
+          2.75341796875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 31",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 33"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    },
+    {
+      "id": "chf-baseline-cpu",
+      "lane": "chf",
+      "device": "baseline-cpu",
+      "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+      "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_chf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "baseline-cpu",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": null,
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.3.0+cpu",
+            "transformers": "4.55.4"
+          },
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5180571917444468,
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.558488212525845,
+          "type": "load",
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "case": "small",
+          "input_tokens": 18,
+          "type": "case",
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 48,
+          "type": "case",
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "case": "long",
+          "input_tokens": 116,
+          "type": "case",
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "type": "complete",
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T06:56:54.213478+00:00",
+        "load_average": [
+          7.861328125,
+          4.322265625,
+          2.75341796875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 31",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 33"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T06:58:56.687427+00:00",
+        "load_average": [
+          8.908203125,
+          5.8173828125,
+          3.4951171875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 30",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 32"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    },
+    {
+      "id": "hf-cpu",
+      "lane": "hf",
+      "device": "cpu",
+      "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+      "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_hf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "cpu",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": "12.8",
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.10.0+cu128",
+            "transformers": "4.55.4"
+          },
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.5165835060179234,
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.441466566175222,
+          "type": "load",
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "input_tokens": 15,
+          "type": "case",
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 37,
+          "type": "case",
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "long",
+          "input_tokens": 91,
+          "type": "case",
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "type": "complete",
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T06:58:56.757629+00:00",
+        "load_average": [
+          8.908203125,
+          5.8173828125,
+          3.4951171875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 30",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 32"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T07:00:42.850042+00:00",
+        "load_average": [
+          8.89208984375,
+          6.65087890625,
+          4.0400390625
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 29",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    },
+    {
+      "id": "chf-cpu",
+      "lane": "chf",
+      "device": "cpu",
+      "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+      "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_chf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "cpu",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": "12.8",
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.10.0+cu128",
+            "transformers": "4.55.4"
+          },
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5211661159992218,
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.431706629693508,
+          "type": "load",
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "input_tokens": 18,
+          "type": "case",
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 48,
+          "type": "case",
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "long",
+          "input_tokens": 116,
+          "type": "case",
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "type": "complete",
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T07:00:42.921352+00:00",
+        "load_average": [
+          8.89208984375,
+          6.65087890625,
+          4.0400390625
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 29",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T07:02:48.059743+00:00",
+        "load_average": [
+          9.04736328125,
+          7.373046875,
+          4.62841796875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 28",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    },
+    {
+      "id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "hf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+      "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "architectures": [
+            "sm_70",
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ],
+          "capability": [
+            12,
+            0
+          ],
+          "name": "NVIDIA RTX PRO 4000 Blackwell",
+          "type": "cuda",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_hf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": "12.8",
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.10.0+cu128",
+            "transformers": "4.55.4"
+          },
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.5129001252353191,
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.441533233970404,
+          "type": "load",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "input_tokens": 15,
+          "type": "case",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 37,
+          "type": "case",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "long",
+          "input_tokens": 91,
+          "type": "case",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "type": "complete",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T07:02:48.133277+00:00",
+        "load_average": [
+          9.04736328125,
+          7.373046875,
+          4.62841796875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 28",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T07:03:10.193685+00:00",
+        "load_average": [
+          6.72216796875,
+          6.95751953125,
+          4.56298828125
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 1, 2, 46",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    },
+    {
+      "id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "chf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+      "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "architectures": [
+            "sm_70",
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ],
+          "capability": [
+            12,
+            0
+          ],
+          "name": "NVIDIA RTX PRO 4000 Blackwell",
+          "type": "cuda",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_chf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": "12.8",
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.10.0+cu128",
+            "transformers": "4.55.4"
+          },
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5096596833318472,
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.488687260076404,
+          "type": "load",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "input_tokens": 18,
+          "type": "case",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 48,
+          "type": "case",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "long",
+          "input_tokens": 116,
+          "type": "case",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "type": "complete",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T07:03:10.259683+00:00",
+        "load_average": [
+          6.72216796875,
+          6.95751953125,
+          4.56298828125
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 1, 2, 46",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T07:03:33.909972+00:00",
+        "load_average": [
+          5.380859375,
+          6.6357421875,
+          4.50732421875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 1, 2, 56",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    },
+    {
+      "id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "hf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+      "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "architectures": [
+            "sm_70",
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ],
+          "capability": [
+            8,
+            9
+          ],
+          "name": "NVIDIA RTX 2000 Ada Generation",
+          "type": "cuda",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_hf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": "12.8",
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.10.0+cu128",
+            "transformers": "4.55.4"
+          },
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.523284250870347,
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.416933158412576,
+          "type": "load",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "input_tokens": 15,
+          "type": "case",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 37,
+          "type": "case",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "long",
+          "input_tokens": 91,
+          "type": "case",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "type": "complete",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T07:03:33.978237+00:00",
+        "load_average": [
+          5.380859375,
+          6.6357421875,
+          4.50732421875
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 1, 2, 55",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 31"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T07:04:00.131098+00:00",
+        "load_average": [
+          4.04736328125,
+          6.19189453125,
+          4.42626953125
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 42",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 4, 8622, 44"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    },
+    {
+      "id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "chf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+      "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592",
+      "event_errors": [],
+      "worker_complete": true,
+      "metadata": [
+        {
+          "architectures": [
+            "sm_70",
+            "sm_75",
+            "sm_80",
+            "sm_86",
+            "sm_90",
+            "sm_100",
+            "sm_120"
+          ],
+          "capability": [
+            8,
+            9
+          ],
+          "name": "NVIDIA RTX 2000 Ada Generation",
+          "type": "cuda",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "decode_policy": {
+            "beam_size": 10,
+            "decode_policy_id": "nmrpeak_chf_decode_v1",
+            "maximum_generated_tokens": 160,
+            "seed": 1,
+            "temperature": "3.0"
+          },
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "interop_threads": 1,
+          "precision": "float32",
+          "tf32": false,
+          "threads": 8,
+          "torch_cuda": "12.8",
+          "type": "configuration",
+          "versions": {
+            "numpy": "1.24.4",
+            "rdkit": "2024.9.6",
+            "torch": "2.10.0+cu128",
+            "transformers": "4.55.4"
+          },
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5174288935959339,
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.4984539616853,
+          "type": "load",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "input_tokens": 18,
+          "type": "case",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "medium",
+          "input_tokens": 48,
+          "type": "case",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "long",
+          "input_tokens": 116,
+          "type": "case",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "type": "complete",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ],
+      "activity_before": {
+        "utc": "2026-10-15T07:04:00.205571+00:00",
+        "load_average": [
+          4.04736328125,
+          6.19189453125,
+          4.42626953125
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 42",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 4, 8622, 43"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      },
+      "exit_code": 0,
+      "activity_after": {
+        "utc": "2026-10-15T07:04:29.319581+00:00",
+        "load_average": [
+          3.34765625,
+          5.85400390625,
+          4.3603515625
+        ],
+        "gpu": [
+          "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7, 0, 2, 38",
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 0, 8622, 51"
+        ],
+        "compute_processes": [
+          "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347, 3906171, 8612"
+        ]
+      }
+    }
+  ],
+  "gpus": [
+    {
+      "uuid": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "name": "NVIDIA RTX PRO 4000 Blackwell",
+      "pci_bus_id": "00000000:01:00.0",
+      "memory_mib": "24467",
+      "driver": "580.159.03"
+    },
+    {
+      "uuid": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "name": "NVIDIA RTX 2000 Ada Generation",
+      "pci_bus_id": "00000000:03:00.0",
+      "memory_mib": "16380",
+      "driver": "580.159.03"
+    }
+  ],
+  "repetitions": 20,
+  "warmups": 3,
+  "threads": 8,
+  "cpu_limit": 8,
+  "memory_limit_bytes": 34359738368,
+  "host": {
+    "lscpu": [
+      {
+        "field": "Architecture:",
+        "data": "x86_64"
+      },
+      {
+        "field": "CPU op-mode(s):",
+        "data": "32-bit, 64-bit"
+      },
+      {
+        "field": "Address sizes:",
+        "data": "48 bits physical, 48 bits virtual"
+      },
+      {
+        "field": "Byte Order:",
+        "data": "Little Endian"
+      },
+      {
+        "field": "CPU(s):",
+        "data": "24"
+      },
+      {
+        "field": "On-line CPU(s) list:",
+        "data": "0-23"
+      },
+      {
+        "field": "Vendor ID:",
+        "data": "AuthenticAMD"
+      },
+      {
+        "field": "Model name:",
+        "data": "AMD Ryzen 9 7900X 12-Core Processor"
+      },
+      {
+        "field": "CPU family:",
+        "data": "25"
+      },
+      {
+        "field": "Model:",
+        "data": "97"
+      },
+      {
+        "field": "Thread(s) per core:",
+        "data": "2"
+      },
+      {
+        "field": "Core(s) per socket:",
+        "data": "12"
+      },
+      {
+        "field": "Socket(s):",
+        "data": "1"
+      },
+      {
+        "field": "Stepping:",
+        "data": "2"
+      },
+      {
+        "field": "Frequency boost:",
+        "data": "enabled"
+      },
+      {
+        "field": "CPU(s) scaling MHz:",
+        "data": "79%"
+      },
+      {
+        "field": "CPU max MHz:",
+        "data": "5737.9858"
+      },
+      {
+        "field": "CPU min MHz:",
+        "data": "414.7950"
+      },
+      {
+        "field": "BogoMIPS:",
+        "data": "9399.98"
+      },
+      {
+        "field": "Flags:",
+        "data": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid overflow_recov succor smca fsrm flush_l1d amd_lbr_pmc_freeze"
+      },
+      {
+        "field": "Virtualization:",
+        "data": "AMD-V"
+      },
+      {
+        "field": "L1d cache:",
+        "data": "384 KiB (12 instances)"
+      },
+      {
+        "field": "L1i cache:",
+        "data": "384 KiB (12 instances)"
+      },
+      {
+        "field": "L2 cache:",
+        "data": "12 MiB (12 instances)"
+      },
+      {
+        "field": "L3 cache:",
+        "data": "64 MiB (2 instances)"
+      },
+      {
+        "field": "NUMA node(s):",
+        "data": "1"
+      },
+      {
+        "field": "NUMA node0 CPU(s):",
+        "data": "0-23"
+      },
+      {
+        "field": "Vulnerability Gather data sampling:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Ghostwrite:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Indirect target selection:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Itlb multihit:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability L1tf:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Mds:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Meltdown:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Mmio stale data:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Old microcode:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Reg file data sampling:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Retbleed:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Spec rstack overflow:",
+        "data": "Mitigation; Safe RET"
+      },
+      {
+        "field": "Vulnerability Spec store bypass:",
+        "data": "Mitigation; Speculative Store Bypass disabled via prctl"
+      },
+      {
+        "field": "Vulnerability Spectre v1:",
+        "data": "Mitigation; usercopy/swapgs barriers and __user pointer sanitization"
+      },
+      {
+        "field": "Vulnerability Spectre v2:",
+        "data": "Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; PBRSB-eIBRS Not affected; BHI Not affected"
+      },
+      {
+        "field": "Vulnerability Srbds:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Tsa:",
+        "data": "Mitigation; Clear CPU buffers"
+      },
+      {
+        "field": "Vulnerability Tsx async abort:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Vmscape:",
+        "data": "Mitigation; IBPB before exit to userspace"
+      }
+    ]
+  },
+  "cases": [
+    "small",
+    "medium",
+    "long"
+  ],
+  "corpus_sha256": "sha256:ca91db7bf90f36782a26ef43c3a50c313364b83e3f3d4d1676a4fa616e94ebaf",
+  "images": {
+    "nmrpeak_hf_v1": {
+      "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+      "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592"
+    },
+    "nmrpeak_chf_v1": {
+      "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+      "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592"
+    },
+    "benchmark": {
+      "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+      "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32",
+      "image_build_revision": "4331147244aaa9cab5356b8dc864065950c3e592"
+    }
+  },
+  "checkpoints": {
+    "hf": {
+      "volume": "nmrpeak-hf-checkpoint-abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+      "sha256": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+      "bytes": 1241133674
+    },
+    "chf": {
+      "volume": "nmrpeak-chf-checkpoint-375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+      "sha256": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+      "bytes": 1241133674
+    }
+  }
+}

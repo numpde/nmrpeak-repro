@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import signal
@@ -76,6 +77,21 @@ def activity(gpu_devices):
             result = command(["nvidia-smi", query, "--format=csv,noheader,nounits"], stdout=subprocess.PIPE)
             facts[key] = result.stdout.decode().splitlines()
     return facts
+
+
+def system_metadata():
+    """Record relevant host versions and memory without identity or environment dumps."""
+    release = platform.freedesktop_os_release()
+    memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+    return {
+        "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "os": {key: release[key] for key in ("ID", "VERSION_ID", "PRETTY_NAME") if key in release},
+        "kernel": {"system": platform.system(), "release": platform.release(), "machine": platform.machine()},
+        "memory_total_bytes": int(memory["MemTotal"].split()[0]) * 1024,
+        "swap_total_bytes": int(memory["SwapTotal"].split()[0]) * 1024,
+        "docker_server_version": docker("version", "--format", "{{.Server.Version}}",
+                                        stdout=subprocess.PIPE).stdout.decode().strip(),
+    }
 
 
 def image_spec(role, input_id, revision):
@@ -278,6 +294,7 @@ def run_benchmark(revision, options):
         if "all" in options.devices and options.devices != ["all"]:
             raise ValueError("Cannot combine all with individual benchmark device selectors")
         manifest["host"] = json.loads(command(["lscpu", "--json"], stdout=subprocess.PIPE).stdout)
+        manifest["system"] = system_metadata()
         with tempfile.TemporaryDirectory(prefix="nmrpeak-benchmark-") as temporary:
             scratch = Path(temporary)
             images = prepare_images(revision, scratch)

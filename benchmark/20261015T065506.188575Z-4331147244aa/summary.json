@@ -1,0 +1,3001 @@
+{
+  "status": "complete",
+  "latencies": [
+    {
+      "run_id": "hf-baseline-cpu",
+      "lane": "hf",
+      "device": "baseline-cpu",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.19379938300698996,
+      "p95_seconds": 0.2005751170217991,
+      "input_tokens": 15,
+      "first_generation_seconds": 0.19740233197808266,
+      "process_peak_rss_bytes": 2101768192,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        2,
+        3,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "run_id": "hf-baseline-cpu",
+      "lane": "hf",
+      "device": "baseline-cpu",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 0.9013367649167776,
+      "p95_seconds": 0.9239942580461502,
+      "input_tokens": 37,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2101768192,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 160,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        18,
+        20,
+        21,
+        22,
+        23
+      ]
+    },
+    {
+      "run_id": "hf-baseline-cpu",
+      "lane": "hf",
+      "device": "baseline-cpu",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 2.909629775211215,
+      "p95_seconds": 3.0071393866091967,
+      "input_tokens": 91,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2101768192,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "run_id": "chf-baseline-cpu",
+      "lane": "chf",
+      "device": "baseline-cpu",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.24259770568460226,
+      "p95_seconds": 0.2524033896625042,
+      "input_tokens": 18,
+      "first_generation_seconds": 0.2271671276539564,
+      "process_peak_rss_bytes": 2101686272,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 120,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "run_id": "chf-baseline-cpu",
+      "lane": "chf",
+      "device": "baseline-cpu",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 1.0128542268648744,
+      "p95_seconds": 1.0542085375636816,
+      "input_tokens": 48,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2101686272,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        22,
+        23,
+        24,
+        25
+      ]
+    },
+    {
+      "run_id": "chf-baseline-cpu",
+      "lane": "chf",
+      "device": "baseline-cpu",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 3.5085914814844728,
+      "p95_seconds": 3.616322634741664,
+      "input_tokens": 116,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2101686272,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        52,
+        53,
+        54
+      ]
+    },
+    {
+      "run_id": "hf-cpu",
+      "lane": "hf",
+      "device": "cpu",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.19645729940384626,
+      "p95_seconds": 0.2006293162703514,
+      "input_tokens": 15,
+      "first_generation_seconds": 0.20003636553883553,
+      "process_peak_rss_bytes": 2503995392,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        2,
+        3,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "run_id": "hf-cpu",
+      "lane": "hf",
+      "device": "cpu",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 0.9069467587396502,
+      "p95_seconds": 0.9333587493747473,
+      "input_tokens": 37,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2503995392,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 160,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        18,
+        20,
+        21,
+        22,
+        23
+      ]
+    },
+    {
+      "run_id": "hf-cpu",
+      "lane": "hf",
+      "device": "cpu",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 2.97231487557292,
+      "p95_seconds": 3.0507201105356216,
+      "input_tokens": 91,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2503995392,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "run_id": "chf-cpu",
+      "lane": "chf",
+      "device": "cpu",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.2517234729602933,
+      "p95_seconds": 0.25903571397066116,
+      "input_tokens": 18,
+      "first_generation_seconds": 0.24916818365454674,
+      "process_peak_rss_bytes": 2504302592,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 120,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "run_id": "chf-cpu",
+      "lane": "chf",
+      "device": "cpu",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 1.0384607519954443,
+      "p95_seconds": 1.0583648849278688,
+      "input_tokens": 48,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2504302592,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        22,
+        23,
+        24,
+        25
+      ]
+    },
+    {
+      "run_id": "chf-cpu",
+      "lane": "chf",
+      "device": "cpu",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 3.6004613684490323,
+      "p95_seconds": 3.6555165257304907,
+      "input_tokens": 116,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2504302592,
+      "gpu_peak_allocated_bytes": 0,
+      "gpu_peak_reserved_bytes": 0,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        52,
+        53,
+        54
+      ]
+    },
+    {
+      "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "hf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.049857485108077526,
+      "p95_seconds": 0.05071969889104366,
+      "input_tokens": 15,
+      "first_generation_seconds": 0.16256003454327583,
+      "process_peak_rss_bytes": 2836611072,
+      "gpu_peak_allocated_bytes": 449419264,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        2,
+        3,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "hf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 0.1488789664581418,
+      "p95_seconds": 0.15141713060438633,
+      "input_tokens": 37,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2836611072,
+      "gpu_peak_allocated_bytes": 461386752,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 160,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        18,
+        20,
+        21,
+        22,
+        23
+      ]
+    },
+    {
+      "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "hf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 0.34440454561263323,
+      "p95_seconds": 0.34826639853417873,
+      "input_tokens": 91,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2836611072,
+      "gpu_peak_allocated_bytes": 476613120,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "chf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.05968123208731413,
+      "p95_seconds": 0.061250438913702965,
+      "input_tokens": 18,
+      "first_generation_seconds": 0.17586967535316944,
+      "process_peak_rss_bytes": 2836729856,
+      "gpu_peak_allocated_bytes": 450763264,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 120,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "chf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 0.15660710167139769,
+      "p95_seconds": 0.15814541094005108,
+      "input_tokens": 48,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2836729856,
+      "gpu_peak_allocated_bytes": 461761536,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        22,
+        23,
+        24,
+        25
+      ]
+    },
+    {
+      "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "lane": "chf",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 0.39450794737786055,
+      "p95_seconds": 0.39744644425809383,
+      "input_tokens": 116,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2836729856,
+      "gpu_peak_allocated_bytes": 482172928,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        52,
+        53,
+        54
+      ]
+    },
+    {
+      "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "hf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.04902646690607071,
+      "p95_seconds": 0.04979529790580273,
+      "input_tokens": 15,
+      "first_generation_seconds": 0.1560873817652464,
+      "process_peak_rss_bytes": 2743209984,
+      "gpu_peak_allocated_bytes": 449419264,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        2,
+        3,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "hf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 0.16968955006450415,
+      "p95_seconds": 0.17071412689983845,
+      "input_tokens": 37,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2743209984,
+      "gpu_peak_allocated_bytes": 461386752,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 160,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        18,
+        20,
+        21,
+        22,
+        23
+      ]
+    },
+    {
+      "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "hf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 0.5028692511841655,
+      "p95_seconds": 0.5042098313570023,
+      "input_tokens": 91,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2743209984,
+      "gpu_peak_allocated_bytes": 476613120,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ]
+    },
+    {
+      "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "chf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "case": "small",
+      "samples": 20,
+      "median_seconds": 0.058588515035808086,
+      "p95_seconds": 0.05967595987021923,
+      "input_tokens": 18,
+      "first_generation_seconds": 0.13359787873923779,
+      "process_peak_rss_bytes": 2741948416,
+      "gpu_peak_allocated_bytes": 450763264,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 120,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "chf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "case": "medium",
+      "samples": 20,
+      "median_seconds": 0.18340376857668161,
+      "p95_seconds": 0.18490269593894482,
+      "input_tokens": 48,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2741948416,
+      "gpu_peak_allocated_bytes": 461761536,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 180,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        22,
+        23,
+        24,
+        25
+      ]
+    },
+    {
+      "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "lane": "chf",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "case": "long",
+      "samples": 20,
+      "median_seconds": 0.6026904759928584,
+      "p95_seconds": 0.6045672744512558,
+      "input_tokens": 116,
+      "first_generation_seconds": null,
+      "process_peak_rss_bytes": 2741948416,
+      "gpu_peak_allocated_bytes": 482172928,
+      "gpu_peak_reserved_bytes": 530579456,
+      "valid_candidates": 200,
+      "total_candidates": 200,
+      "candidate_character_lengths": [
+        52,
+        53,
+        54
+      ]
+    }
+  ],
+  "comparisons": [
+    {
+      "lane": "hf",
+      "case": "small",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "cpu",
+      "median_speed_ratio": 3.9403772367976453,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "small",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 3.887066958690062,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "medium",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "cpu",
+      "median_speed_ratio": 6.091839433844026,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "medium",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 6.054157859634214,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "long",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "cpu",
+      "median_speed_ratio": 8.630300945319147,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "long",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 8.44829086107302,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "small",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "cpu",
+      "median_speed_ratio": 4.217799535237808,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "small",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 4.0648910419557,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "medium",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "cpu",
+      "median_speed_ratio": 6.630994002905464,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "medium",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 6.467485931705097,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "long",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "cpu",
+      "median_speed_ratio": 9.126460930330772,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "long",
+      "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 8.893588848601665,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "small",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "cpu",
+      "median_speed_ratio": 4.007168205292801,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "small",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 3.9529542966717988,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "medium",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "cpu",
+      "median_speed_ratio": 5.3447413726708115,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "medium",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 5.31168103500865,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "long",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "cpu",
+      "median_speed_ratio": 5.910711121377296,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "hf",
+      "case": "long",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 5.786056252911799,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "small",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "cpu",
+      "median_speed_ratio": 4.29646446588457,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "small",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 4.140704121555761,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "medium",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "cpu",
+      "median_speed_ratio": 5.662156018136896,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "medium",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 5.522537703151924,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "long",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "cpu",
+      "median_speed_ratio": 5.973980860602974,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    },
+    {
+      "lane": "chf",
+      "case": "long",
+      "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "reference": "baseline-cpu",
+      "median_speed_ratio": 5.821547910981171,
+      "output_pairs": [
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        },
+        {
+          "ranked_equal": true,
+          "molecule_overlap": 1.0
+        }
+      ]
+    }
+  ],
+  "startup": [
+    {
+      "run_id": "hf-baseline-cpu",
+      "events": [
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.5220119394361973,
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.674972461536527,
+          "type": "load",
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.19740233197808266,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": null,
+          "gpu_peak_reserved_bytes": null,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2101768192,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "hf-baseline-cpu",
+          "lane": "hf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:fd296d243ff3a8617680a6d5cf750411025e0a0911f39ea9cd0c6ebd0fec17de",
+          "image_input_id": "sha256:1437d83277ccd8b2093a94c3b8fd42074bbb7f1550ef35b911ad87eedb67c972"
+        }
+      ]
+    },
+    {
+      "run_id": "chf-baseline-cpu",
+      "events": [
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5180571917444468,
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.558488212525845,
+          "type": "load",
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.2271671276539564,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": null,
+          "gpu_peak_reserved_bytes": null,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2101686272,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "chf-baseline-cpu",
+          "lane": "chf",
+          "device": "baseline-cpu",
+          "image_id": "sha256:55d8a8ef10509646fc12aa13799f2571a16cab0d546d0e0085949aed6570e182",
+          "image_input_id": "sha256:fb0802e685d6e209cdde48d0f96d2d4063ac009d18562bb56bdfea82bf71f664"
+        }
+      ]
+    },
+    {
+      "run_id": "hf-cpu",
+      "events": [
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.5165835060179234,
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.441466566175222,
+          "type": "load",
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.20003636553883553,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": null,
+          "gpu_peak_reserved_bytes": null,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2503995392,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "hf-cpu",
+          "lane": "hf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ]
+    },
+    {
+      "run_id": "chf-cpu",
+      "events": [
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5211661159992218,
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.431706629693508,
+          "type": "load",
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.24916818365454674,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": null,
+          "gpu_peak_reserved_bytes": null,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2504302592,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "chf-cpu",
+          "lane": "chf",
+          "device": "cpu",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ]
+    },
+    {
+      "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "events": [
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.5129001252353191,
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.441533233970404,
+          "type": "load",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.16256003454327583,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": 449419264,
+          "gpu_peak_reserved_bytes": 507510784,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2836611072,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "hf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "hf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ]
+    },
+    {
+      "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+      "events": [
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5096596833318472,
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.488687260076404,
+          "type": "load",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.17586967535316944,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": 450763264,
+          "gpu_peak_reserved_bytes": 507510784,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2836729856,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "chf-GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "lane": "chf",
+          "device": "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ]
+    },
+    {
+      "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "events": [
+        {
+          "checkpoint": "sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6",
+          "type": "checkpoint",
+          "verification_seconds": 0.523284250870347,
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.416933158412576,
+          "type": "load",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.1560873817652464,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": 449419264,
+          "gpu_peak_reserved_bytes": 507510784,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2743209984,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "hf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "hf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ]
+    },
+    {
+      "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+      "events": [
+        {
+          "checkpoint": "sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02",
+          "type": "checkpoint",
+          "verification_seconds": 0.5174288935959339,
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "model_load_and_transfer_seconds": 5.4984539616853,
+          "type": "load",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        },
+        {
+          "case": "small",
+          "elapsed_seconds": 0.13359787873923779,
+          "first_generation": true,
+          "gpu_peak_allocated_bytes": 450763264,
+          "gpu_peak_reserved_bytes": 507510784,
+          "phase": "initial_case_pass",
+          "process_peak_rss_bytes": 2741948416,
+          "repetition": 0,
+          "type": "measurement",
+          "run_id": "chf-GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "lane": "chf",
+          "device": "GPU-45b76e53-80bd-70cb-dd21-857e4b7f5347",
+          "image_id": "sha256:87963be22e48239b3ba3e34f311ac35e58173fb483c878508170cabdcab4a5ce",
+          "image_input_id": "sha256:02e47fac284a63f6a07960ef0d1c0b2f3b79da6cfb676cadc05381119a184e32"
+        }
+      ]
+    }
+  ]
+}

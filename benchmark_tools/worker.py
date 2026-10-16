@@ -7,6 +7,7 @@ from dataclasses import asdict
 import importlib.metadata
 import json
 from pathlib import Path
+import platform
 import random
 import resource
 import sys
@@ -85,6 +86,7 @@ def run(options) -> None:
         raise ValueError("Cannot benchmark: no corpus cases were selected")
     versions = {name: importlib.metadata.version(name) for name in
                 ("torch", "numpy", "transformers", "rdkit")}
+    versions["python"] = platform.python_version()
     emit("configuration", versions=versions, torch_cuda=torch.version.cuda,
          threads=torch.get_num_threads(), interop_threads=torch.get_num_interop_threads(),
          device=options.device, precision="float32", tf32=False, decode_policy=asdict(policy))

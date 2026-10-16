@@ -26,7 +26,7 @@ export BENCHMARK_WARMUPS = $(or $(WARMUPS),3)
 export BENCHMARK_THREADS = $(or $(THREADS),8)
 export BENCHMARK_TIMEOUT = $(or $(TIMEOUT),7200)
 
-.PHONY: benchmark benchmark/image/build benchmark/devices benchmark/lock
+.PHONY: benchmark benchmark/image/build benchmark/devices benchmark/lock benchmark/verify
 benchmark:
 	@$(PYTHON) -m benchmark_tools.host run
 
@@ -42,6 +42,10 @@ benchmark/devices:
 benchmark/lock:
 	@$(PYTHON) -m benchmark_tools.host lock
 
+benchmark/verify: private export BENCHMARK_RUN := $(value RUN)
+benchmark/verify:
+	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
+
 .PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
@@ -54,6 +58,8 @@ help:
 		'      Compare the current CPU stack and matched CPU/GPU stack; save benchmark/<UTC>-<sha>/.' \
 		'  make benchmark/devices' \
 		'      List GPU identities; see docs/benchmark.md for measurements and resource use.' \
+		'  make benchmark/verify RUN=benchmark/<UTC>-<sha>' \
+		'      Check archived bytes and reproduce the report offline without changing the evidence.' \
 		'  make test' \
 		'      Run the complete default lane in the pinned, networkless test container.' \
 		'      One read-only source snapshot excludes credentials, deployment state, weights, and ignored files.' \

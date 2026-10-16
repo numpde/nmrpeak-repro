@@ -1,0 +1,17 @@
+{
+  "observed_at_utc": "2026-10-16T12:09:29.661810+00:00",
+  "scope": "Post-run observation of the same workstation; not recorded during the 2026-10-15 benchmark.",
+  "os": {
+    "ID": "ubuntu",
+    "VERSION_ID": "24.04",
+    "PRETTY_NAME": "Ubuntu 24.04.4 LTS"
+  },
+  "kernel": {
+    "system": "Linux",
+    "release": "6.17.0-35-generic",
+    "machine": "x86_64"
+  },
+  "memory_total_bytes": 201702354944,
+  "swap_total_bytes": 8589930496,
+  "docker_server_version": "29.6.1"
+}

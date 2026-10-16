@@ -1,7 +1,9 @@
 # Local checkpoint acquisition and generated model data.
 /weights/
 /output/
-/benchmark/
+# Scratch comparisons stay local; reviewed experiments include their full evidence.
+/benchmark/*
+!/benchmark/20261015T065506.188575Z-4331147244aa/
 *.pt
 *.pth
 *.ckpt

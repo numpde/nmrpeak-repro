@@ -1,5 +1,18 @@
 # CPU/GPU comparison
 
+The [2026-10-15 experiment](../benchmark/20261015T065506.188575Z-4331147244aa/README.md)
+includes the machine description, protocol, limitations, raw observations, and
+derived results in Git. Reproduce its calculations offline without GPUs or weights:
+
+```bash
+make benchmark/verify RUN=benchmark/20261015T065506.188575Z-4331147244aa
+```
+
+Verification checks file hashes, corpus identity, completeness and byte-for-byte
+report regeneration in temporary storage. It does not repeat inference or RDKit
+validation. The experiment README also gives commands to repeat the measurement
+at its original source revision.
+
 Run on the machine being measured, from a clean, committed checkout:
 
 ```bash
@@ -24,7 +37,7 @@ Use the repository's normal checkpoint import commands if they are missing.
 
 Results are created exclusively under `benchmark/<UTC-timestamp>-<12-character-sha>/`.
 The timestamp includes microseconds; existing comparisons are never replaced.
-The directory is gitignored. It contains:
+New runs are ignored as scratch data until reviewed for publication. It contains:
 
 - `manifest.json`: full source SHA, input/image/checkpoint/corpus identities,
   hardware, driver, resource settings, activity snapshots, and per-run status.
@@ -34,6 +47,32 @@ The directory is gitignored. It contains:
   and tracebacks. Raw events survive interruption even before consolidation.
 - `summary.json` and `comparison.md`: derived results, including incomplete runs.
 - `error.log` when orchestration fails.
+
+Host provenance includes CPU inventory, OS version, kernel release/architecture,
+kernel-reported RAM and swap totals, Docker server version, and observation time.
+Workers record Python and relevant library versions. Collection does not dump
+environment variables, account/network configuration or system serial numbers.
+Earlier runs may lack these fields; disclose missing provenance instead of
+filling historical fields with current observations.
+
+For a result used to support a shared claim, commit the entire reviewed run:
+inputs, manifest, raw logs and derived outputs, plus a methods README describing
+the machine, protocol, results and limitations. Add a precise exception under
+`/benchmark/*` in `.gitignore`; preserve the timestamp/source directory name.
+Review for sensitive material before publication, and disclose any redactions.
+After finalizing that directory's contents, create its checksum inventory:
+
+```bash
+cd benchmark/<timestamp>-<sha>
+sha256sum README.md cases.json manifest.json logs/* measurements.jsonl outputs.jsonl summary.json comparison.md > SHA256SUMS
+```
+
+Include any additional evidence files in that command (such as the historical
+experiment's separately dated `machine-observation.json`). From the repository
+root, run `make benchmark/verify RUN=benchmark/<timestamp>-<sha>` before committing.
+Do not publish a prose summary whose supporting observations exist only in an
+ignored directory or temporary logs. Preserve published runs; corrections and
+new measurements must explain their provenance.
 
 ## Selection and quick qualification
 
