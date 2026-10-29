@@ -1054,6 +1054,31 @@ class ProviderDeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(DeploymentOperationRejected, "volume still references"):
                 provider_deployment._require_snapshot_unmounted(Path("/usr/bin/docker"), target)
 
+    def test_runtime_config_borrower_inventory_checks_every_container_batch(self):
+        identifiers = [f"{number:064x}" for number in range(1, 10)]
+        def command(_docker, arguments, **_kwargs):
+            if arguments[0] == "ps":
+                output = ("\n".join(identifiers) + "\n").encode()
+            elif arguments[0] == "inspect":
+                output = json.dumps([{"Id": value, "Mounts": []} for value in arguments[1:]]).encode()
+            else:
+                output = b""
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+        with patch.object(provider_deployment, "_docker_command", side_effect=command) as docker:
+            provider_deployment._require_snapshot_unmounted(Path("/usr/bin/docker"), Path("/private/runtime/target"))
+        inspections = [call.args[1] for call in docker.call_args_list if call.args[1][0] == "inspect"]
+        self.assertEqual([len(batch) - 1 for batch in inspections], [8, 1])
+
+    def test_runtime_config_borrower_inventory_checks_every_volume_batch(self):
+        names = {f"volume-{number}" for number in range(9)}
+        def command(_docker, arguments, **_kwargs):
+            output = json.dumps([{"Name": name, "Driver": "local", "Options": None}
+                                 for name in arguments[2:]]).encode()
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+        with patch.object(provider_deployment, "_docker_command", side_effect=command) as docker:
+            provider_deployment._require_volume_sources_unmounted(Path("/usr/bin/docker"), names, Path("/private/runtime/target"))
+        self.assertEqual([len(call.args[1]) - 2 for call in docker.call_args_list], [8, 1])
+
     def test_journal_inventory_helper_has_only_read_only_journal_authority(
         self,
     ) -> None:

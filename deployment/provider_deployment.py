@@ -786,9 +786,13 @@ def _require_snapshot_unmounted(docker: Path, target: Path) -> None:
     identifiers = _docker_command(docker, ("ps", "--all", "--no-trunc", "--quiet"), timeout=60).stdout.decode("ascii").splitlines()
     if len(identifiers) != len(set(identifiers)) or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in identifiers):
         raise DeploymentOperationRejected("Docker returned an invalid container inventory")
-    records = _json_output(_docker_command(docker, ("inspect", *identifiers), timeout=60).stdout, "Snapshot borrower inventory") if identifiers else []
-    if type(records) is not list or len(records) != len(identifiers):
-        raise DeploymentOperationRejected("Docker returned an incomplete snapshot borrower inventory")
+    records = []
+    for offset in range(0, len(identifiers), 8):
+        batch = identifiers[offset:offset + 8]
+        inspected = _json_output(_docker_command(docker, ("inspect", *batch), timeout=60).stdout, "Snapshot borrower inventory")
+        if type(inspected) is not list or len(inspected) != len(batch):
+            raise DeploymentOperationRejected("Docker returned an incomplete snapshot borrower inventory")
+        records.extend(inspected)
     seen = set()
     volumes = set()
     for record in records:
@@ -821,10 +825,15 @@ def _require_snapshot_unmounted(docker: Path, target: Path) -> None:
 
 
 def _require_volume_sources_unmounted(docker: Path, names: set[str], target: Path) -> None:
-    output = _docker_command(docker, ("volume", "inspect", *sorted(names)), timeout=60).stdout
-    records = _json_output(output, "Snapshot volume borrower inventory")
-    if type(records) is not list or len(records) != len(names):
-        raise DeploymentOperationRejected("Docker returned an incomplete snapshot volume inventory")
+    records = []
+    ordered = sorted(names)
+    for offset in range(0, len(ordered), 8):
+        batch = ordered[offset:offset + 8]
+        output = _docker_command(docker, ("volume", "inspect", *batch), timeout=60).stdout
+        inspected = _json_output(output, "Snapshot volume borrower inventory")
+        if type(inspected) is not list or len(inspected) != len(batch):
+            raise DeploymentOperationRejected("Docker returned an incomplete snapshot volume inventory")
+        records.extend(inspected)
     seen = set()
     for record in records:
         if type(record) is not dict or record.get("Name") not in names or record["Name"] in seen:
