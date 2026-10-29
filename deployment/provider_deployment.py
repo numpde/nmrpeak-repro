@@ -730,14 +730,16 @@ def remove_frozen_generation(
         image = _resolve_provider_image(docker, root)
         _policy, _definition, binding = _journal_binding(root, deployment, docker, image,
                                       provider_ref, namespace="nmrpeak-" + deployment)
-        references = _journal_generation_ids(
-            docker, root, deployment, provider_ref, binding["journal_authority_id"], services,
-        )
-        if frozen_generation in references:
-            raise DeploymentOperationRejected(
-                "Provider journal still references the frozen generation"
+        lock = inspect_provider_identity_lock_volume(docker, provider_ref)
+        with _held_provider_identity_lock(docker, lock, provider_ref, image):
+            references = _journal_generation_ids(
+                docker, root, deployment, provider_ref, binding["journal_authority_id"], services,
             )
-        _remove_retained_generation(state_root, frozen_generation)
+            if frozen_generation in references:
+                raise DeploymentOperationRejected(
+                    "Provider journal still references the frozen generation"
+                )
+            _remove_retained_generation(state_root, frozen_generation)
 
 
 def inspect_provider_journal(

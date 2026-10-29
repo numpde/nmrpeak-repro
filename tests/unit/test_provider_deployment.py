@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from hashlib import sha256
 from io import BytesIO, StringIO
 import json
@@ -851,8 +851,26 @@ class ProviderDeploymentTests(unittest.TestCase):
             )
             neighbor = generation.parent / ("f" * 64)
             neighbor.mkdir(mode=0o700)
+            held = False
+
+            @contextmanager
+            def identity_lock(*_args):
+                nonlocal held
+                held = True
+                try:
+                    yield
+                finally:
+                    held = False
+
+            def inventory(*_args):
+                self.assertTrue(held)
+                return references
+
+            references = (generation_id,)
             with (
                 patch.object(provider_deployment, "_resolve_provider_image", return_value=IMAGES["provider"]),
+                patch.object(provider_deployment, "inspect_provider_identity_lock_volume", return_value="identity-lock"),
+                patch.object(provider_deployment, "_held_provider_identity_lock", side_effect=identity_lock),
                 patch.object(
                     provider_deployment,
                     "_inspect_project_containers",
@@ -866,7 +884,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 patch.object(
                     provider_deployment,
                     "_journal_generation_ids",
-                    return_value=(generation_id,),
+                    side_effect=inventory,
                 ),
                 self.assertRaisesRegex(
                     DeploymentOperationRejected,
@@ -881,8 +899,18 @@ class ProviderDeploymentTests(unittest.TestCase):
                 )
             self.assertTrue(generation.is_dir())
 
+            references = ()
+            remove = provider_deployment._remove_retained_generation
+
+            def remove_while_locked(*args):
+                self.assertTrue(held)
+                return remove(*args)
+
             with (
                 patch.object(provider_deployment, "_resolve_provider_image", return_value=IMAGES["provider"]),
+                patch.object(provider_deployment, "inspect_provider_identity_lock_volume", return_value="identity-lock"),
+                patch.object(provider_deployment, "_held_provider_identity_lock", side_effect=identity_lock),
+                patch.object(provider_deployment, "_remove_retained_generation", side_effect=remove_while_locked),
                 patch.object(
                     provider_deployment,
                     "_inspect_project_containers",
@@ -896,7 +924,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 patch.object(
                     provider_deployment,
                     "_journal_generation_ids",
-                    return_value=(),
+                    side_effect=inventory,
                 ),
             ):
                 remove_frozen_generation(
