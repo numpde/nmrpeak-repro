@@ -288,11 +288,64 @@ class ProviderDeploymentTests(unittest.TestCase):
                 patch.object(provider_deployment, "verify_chf_checkpoint", side_effect=lambda *_args, **_kwargs: events.append("chf")),
                 patch.object(provider_deployment, "ensure_provider_state_volumes", side_effect=lambda *_: events.append("provider_volumes")),
                 patch.object(provider_deployment, "_inspect_project_containers", side_effect=({}, ready_services(plan))),
+                patch.object(provider_deployment, "_admit_session_volumes", side_effect=lambda *_: events.append("session_admission")),
                 patch.object(provider_deployment, "_run_compose_plan", side_effect=lambda *_: events.append("compose_up")),
             ):
                 self.assertEqual(start_deployment(repository, "production", expected_plan_sha256=preview_sha256), plan)
-            self.assertEqual(events, ["materialize", "hf", "chf", "provider_volumes", "compose_up"])
+            self.assertEqual(events, ["session_admission", "materialize", "hf", "chf", "provider_volumes", "compose_up"])
 
+
+    def test_start_refuses_session_volume_drift_before_changes(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+            with (
+                patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                patch.object(provider_deployment, "_inspect_project_containers", return_value={}),
+                patch.object(provider_deployment, "_admit_session_volumes", side_effect=DeploymentOperationRejected("volume drift")),
+                patch.object(provider_deployment, "_materialize_locked") as materialize,
+                patch.object(provider_deployment, "_run_compose_plan") as compose,
+                self.assertRaisesRegex(DeploymentOperationRejected, "volume drift"),
+            ):
+                start_deployment(repository, "production", expected_plan_sha256=sha256(deployment_plan_bytes(plan) + b"\n").hexdigest())
+            materialize.assert_not_called()
+            compose.assert_not_called()
+
+    def test_start_session_volume_admission_checks_actual_engine_grant(self) -> None:
+        name = "nmrpeak-production_hf-session"
+        record = {"Name": name, "Driver": "local", "Options": dict(provider_deployment._SESSION_VOLUME_OPTIONS),
+                  "Labels": {"com.docker.compose.project": "nmrpeak-production", "com.docker.compose.volume": "hf-session"}}
+        def inspect(candidate, attachment=b"", services=None):
+            def command(_docker, arguments, **_kwargs):
+                if arguments[:2] == ("volume", "ls"):
+                    output = (name + "\n").encode()
+                elif arguments[:2] == ("volume", "inspect"):
+                    output = json.dumps([candidate]).encode()
+                else:
+                    output = attachment
+                return subprocess.CompletedProcess(arguments, 0, output, b"")
+            with patch.object(provider_deployment, "_docker_command", side_effect=command):
+                provider_deployment._admit_session_volumes(Path("/usr/bin/docker"), "production", services or {})
+        inspect(record)
+        for altered in (
+            {**record, "Driver": "other"},
+            {**record, "Options": {**record["Options"], "o": "size=2m"}},
+            {**record, "Labels": {"com.docker.compose.project": "wrong", "com.docker.compose.volume": "hf-session"}},
+        ):
+            with self.subTest(altered=altered), self.assertRaises(DeploymentOperationRejected):
+                inspect(altered)
+        with self.assertRaisesRegex(DeploymentOperationRejected, "foreign container"):
+            inspect(record, ("a" * 64 + "\n").encode())
+        provider_id = "a" * 64
+        mount = {"Type": "volume", "Name": name, "Destination": "/run/nmrpeak-provider/hf", "RW": True}
+        services = {"provider": {"Id": provider_id, "Mounts": [mount]}}
+        inspect(record, (provider_id + "\n").encode(), services)
+        services["provider"]["Mounts"].append({**mount, "Destination": "/extra"})
+        with self.assertRaisesRegex(DeploymentOperationRejected, "unexpected container grant"):
+            inspect(record, (provider_id + "\n").encode(), services)
+        services["provider"]["Mounts"].pop()
+        mount["Destination"] = "/wrong"
+        with self.assertRaisesRegex(DeploymentOperationRejected, "unexpected container grant"):
+            inspect(record, (provider_id + "\n").encode(), services)
 
     def test_start_rejects_changed_preview_before_materialization_or_engine_effects(self) -> None:
         with render_repository() as repository:
@@ -348,6 +401,8 @@ class ProviderDeploymentTests(unittest.TestCase):
             failure = DeploymentOperationRejected("Captured provider inputs could not be published")
             with (
                 patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                patch.object(provider_deployment, "_inspect_project_containers", return_value={}),
+                patch.object(provider_deployment, "_admit_session_volumes"),
                 patch.object(provider_deployment, "_materialize_locked", side_effect=failure),
                 patch.object(provider_deployment, "verify_hf_checkpoint") as verify_hf,
                 patch.object(provider_deployment, "verify_chf_checkpoint") as verify_chf,

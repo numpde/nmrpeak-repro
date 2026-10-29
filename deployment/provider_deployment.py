@@ -88,6 +88,9 @@ _DOCKER = Path("/usr/bin/docker")
 _SETFACL = Path("/usr/bin/setfacl")
 _GETFACL = Path("/usr/bin/getfacl")
 _MAX_FILE_BYTES = 1_048_576
+_SESSION_VOLUME_OPTIONS = {
+    "device": "tmpfs", "o": "size=1m,uid=65532,gid=65532,mode=0700", "type": "tmpfs",
+}
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _PRIVATE_DIRECTORY_ACL = ("user::rwx", "group::---", "other::---")
 _PROVIDER_DIRECTORY_ACL = (
@@ -577,6 +580,8 @@ def start_deployment(
                 f"expected SHA-256 {expected_plan_sha256}, "
                 f"rendered SHA-256 {actual_plan_sha256}"
             )
+        services = _inspect_project_containers(docker, root, deployment)
+        _admit_session_volumes(docker, deployment, services)
         _materialize_locked(state_root, plan)
         verify_hf_checkpoint(root, plan.releases.hf, docker_binary=docker)
         verify_chf_checkpoint(root, plan.releases.chf, docker_binary=docker)
@@ -587,7 +592,6 @@ def start_deployment(
             plan.provider_ref,
             plan.binding_projection["journal_authority_id"],
         )
-        _inspect_project_containers(docker, root, deployment)
         _run_compose_plan(docker, root, deployment, plan)
         _require_ready_project(docker, root, deployment, plan)
         return plan
@@ -1828,6 +1832,43 @@ def _api_route_volumes(deployment, services):
     return tuple(sorted(names))
 
 
+def _admit_session_volumes(docker: Path, deployment: str, services: dict[str, dict[str, object]]) -> None:
+    """Refuse reused session volumes whose actual grant differs from Compose."""
+    project = f"nmrpeak-{deployment}"
+    names = _docker_command(docker, ("volume", "ls", "--quiet"), timeout=60).stdout.decode("ascii").splitlines()
+    if len(names) != len(set(names)):
+        raise DeploymentOperationRejected("Docker returned an ambiguous volume inventory")
+    for lane in ("hf", "chf"):
+        logical = f"{lane}-session"
+        name = f"{project}_{logical}"
+        if name not in names:
+            continue
+        records = _json_output(_docker_command(docker, ("volume", "inspect", name), timeout=60).stdout, "Session volume inspection")
+        if type(records) is not list or len(records) != 1 or type(records[0]) is not dict:
+            raise DeploymentOperationRejected("Docker returned an invalid session volume inspection")
+        record = records[0]
+        labels = record.get("Labels")
+        if (record.get("Name") != name or record.get("Driver") != "local"
+                or record.get("Options") != _SESSION_VOLUME_OPTIONS or type(labels) is not dict
+                or labels.get("com.docker.compose.project") != project
+                or labels.get("com.docker.compose.volume") != logical):
+            raise DeploymentOperationRejected(f"Session volume {name} has different ownership, driver, or options")
+        attachments = _docker_command(docker, ("ps", "--all", "--no-trunc", "--quiet", "--filter", f"volume={name}"), timeout=60).stdout.decode("ascii").splitlines()
+        allowed = {services[role]["Id"]: (role, destination) for role, destination in (
+            ("provider", f"/run/nmrpeak-provider/{lane}"), (f"{lane}-runner", "/run/nmrpeak"),
+        ) if role in services}
+        if len(attachments) != len(set(attachments)) or any(re.fullmatch(r"[0-9a-f]{64}", value) is None or value not in allowed for value in attachments):
+            raise DeploymentOperationRejected(f"Session volume {name} has a foreign container attachment")
+        for identifier in attachments:
+            role, destination = allowed[identifier]
+            mounts = services[role].get("Mounts")
+            if type(mounts) is not list or any(type(mount) is not dict for mount in mounts):
+                raise DeploymentOperationRejected(f"Session volume {name} has an uninspectable container grant")
+            grants = [mount for mount in mounts if mount.get("Type") == "volume" and mount.get("Name") == name]
+            if len(grants) != 1 or grants[0].get("Destination") != destination or grants[0].get("RW") is not True:
+                raise DeploymentOperationRejected(f"Session volume {name} has an unexpected container grant")
+
+
 def _inspect_project_resources(
     docker: Path,
     deployment: str,
@@ -1888,11 +1929,7 @@ def _inspect_project_resources(
             if name in route_volumes:
                 if options not in (None, {}):
                     raise DeploymentOperationRejected("API route volume has unexpected driver options")
-            elif options != {
-                "device": "tmpfs",
-                "o": "size=1m,uid=65532,gid=65532,mode=0700",
-                "type": "tmpfs",
-            }:
+            elif options != _SESSION_VOLUME_OPTIONS:
                 raise DeploymentOperationRejected("Scientific session volume options have drifted")
             if (
                 name not in volume_names
