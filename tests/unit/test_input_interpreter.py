@@ -103,7 +103,7 @@ class BoundEndpoints:
     def __init__(self, endpoints: tuple[InterpreterEndpoint, ...]) -> None:
         self.endpoints = endpoints
 
-    async def join_response_releases(self) -> None:
+    async def retire(self) -> None:
         pass
 
 

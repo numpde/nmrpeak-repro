@@ -10,7 +10,8 @@ from .attempt_journal_store import (
     AttemptJournalStore,
 )
 from .canonical_json import canonical_json_bytes
-from .provider_config import JOURNAL_MAXIMUM_RECORDS, JOURNAL_PATH
+from .attempt_journal_store import JOURNAL_MAXIMUM_RECORDS
+from .provider_config import JOURNAL_PATH
 
 
 def journal_generation_inventory(root: Path) -> bytes:

@@ -1,181 +1,215 @@
-"""Decode the small mutable transport and timing policy for one provider process."""
+"""Admit local policy separately from the deployment-generated API route grant."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from hashlib import sha256
+import json
+import math
 from pathlib import Path
 import tomllib
 
 from .attempt_journal import validate_frozen_generation_id
-from .attempt_lifecycle import ObservationPolicy
 from .canonical_json import canonical_json_bytes
-from .provider_https import (
-    ProviderHttpsEndpoint,
-    validate_provider_https_endpoint_config,
-)
-from .provider_process import ProviderProcessPolicy
 from .interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
-from .runner_session import RunnerDeadlines
+from .native_policy import RETIREMENT_SECONDS
 
-
-SCHEMA_ID = "nmrpeak.provider.runtime_config.v1"
+SCHEMA_ID = "nmrpeak.provider.runtime_config.v2"
 CONFIG_PATH = Path("/run/config/nmrpeak-provider/provider.toml")
-CA_PATH = Path("/run/config/nmrpeak-provider/server-a-ca.crt")
-CREDENTIAL_PATH = Path("/run/secrets/nmrpeak-provider/signing.private.json")
+BINDING_PATH = Path("/run/config/nmrpeak-provider/bindings.toml")
+API_INPUT_ROOT = CONFIG_PATH.parent / "grants"
 FROZEN_ROOT = Path("/run/nmrpeak-provider/frozen")
 IDENTITY_LOCK_PATH = Path("/run/nmrpeak-provider-lock/provider.lock")
 JOURNAL_PATH = Path("/var/lib/nmrpeak-provider/journal")
-JOURNAL_MAXIMUM_RECORDS = 10_000
 HF_SOCKET_PATH = "/run/nmrpeak-provider/hf/session.sock"
 CHF_SOCKET_PATH = "/run/nmrpeak-provider/chf/session.sock"
 
+class ProviderConfigurationRejected(ValueError):
+    """An operator configuration violates a reviewed NMR-owned input contract."""
+
 
 @dataclass(frozen=True, slots=True)
-class ProviderEndpointConfig:
-    """Validated Server A facts that do not acquire TLS trust material."""
+class RunnerDeadlines:
+    """Bounded waits for each private runner exchange phase."""
 
-    origin: str
-    expected_topology: str
-    connect_timeout_seconds: float
-    io_deadline_seconds: float
-    ca_file: Path | None
+    connect_seconds: float
+    ready_seconds: float
+    validate_seconds: float
+    generate_seconds: float
+    retire_seconds: float
 
     def __post_init__(self) -> None:
-        validate_provider_https_endpoint_config(
-            self.origin,
-            self.expected_topology,
-            self.connect_timeout_seconds,
-            self.io_deadline_seconds,
-        )
-
-    def materialize(self) -> ProviderHttpsEndpoint:
-        """Load configured TLS trust at the runtime transport boundary."""
-
-        return ProviderHttpsEndpoint(
-            origin=self.origin,
-            expected_topology=self.expected_topology,
-            connect_timeout_seconds=self.connect_timeout_seconds,
-            io_deadline_seconds=self.io_deadline_seconds,
-            ca_file=self.ca_file,
-        )
+        for value in (self.connect_seconds, self.ready_seconds, self.validate_seconds,
+                      self.generate_seconds, self.retire_seconds):
+            if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
+                raise ProviderConfigurationRejected("NMRPeak runner deadlines must be positive finite seconds")
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderRuntimeConfig:
-    """Validated mutable facts that remain outside frozen execution identity."""
+class ObservationPolicy:
+    """Poll live Attempts and pace recovery without changing Attempt authority."""
 
-    frozen_generation_id: str
-    endpoint: ProviderEndpointConfig
-    journal_maximum_records: int
-    journal_filesystem_reserve_bytes: int
+    poll_interval_seconds: float
+    retry_initial_seconds: float
+    retry_max_seconds: float
+
+    def __post_init__(self):
+        for value in (self.poll_interval_seconds, self.retry_initial_seconds, self.retry_max_seconds):
+            if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
+                raise ProviderConfigurationRejected("Observation intervals and retry delays must be positive finite seconds")
+        if self.retry_initial_seconds > self.retry_max_seconds:
+            raise ProviderConfigurationRejected("Observation initial retry delay must not exceed its maximum")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderProcessPolicy:
+    """The bounded waits and inventory extent owned by one provider process."""
+
+    feed_interval_seconds: float
+    hello_interval_seconds: float
+    shutdown_drain_seconds: float
+    forced_join_seconds: float
+    inventory_maximum_pages: int
+    observation: ObservationPolicy
+
+    def __post_init__(self) -> None:
+        for value in (self.feed_interval_seconds, self.hello_interval_seconds,
+                      self.shutdown_drain_seconds, self.forced_join_seconds):
+            if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
+                raise ProviderConfigurationRejected("NMRPeak process waits must be positive finite seconds")
+        if type(self.inventory_maximum_pages) is not int or self.inventory_maximum_pages < 1:
+            raise ProviderConfigurationRejected("NMRPeak inventory page bound must be positive")
+        if type(self.observation) is not ObservationPolicy:
+            raise TypeError("NMRPeak process requires an admitted observation policy")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPolicy:
+    """Operator selection and scientific policy without a transport route grant."""
+
+    binding_definition: Path
+    binding_name: str
     process: ProviderProcessPolicy
     runner: RunnerDeadlines
     interpreter: InterpreterPolicy
 
 
-def server_a_authority_id(endpoint: ProviderEndpointConfig) -> str:
-    """Identify the Server A namespace to which durable Attempts belong."""
+@dataclass(frozen=True, slots=True)
+class ProviderRuntimeConfig:
+    """Frozen policy plus the API socket granted by the actual SDK projection."""
 
-    if type(endpoint) is not ProviderEndpointConfig:
-        raise TypeError("Server A authority identity requires endpoint config")
-    material = canonical_json_bytes(
-        {
-            "origin": endpoint.origin,
-            "topology": endpoint.expected_topology,
-        }
-    )
-    return "sha256:" + sha256(b"nmrpeak.server_a_authority.v1\0" + material).hexdigest()
+    frozen_generation_id: str
+    policy: ProviderPolicy
+    api_proxy_socket: str
+
+
+def _document(raw, fields):
+    if type(raw) is not bytes or len(raw) > 65536:
+        raise ProviderConfigurationRejected("Provider configuration must be bounded bytes")
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError) as cause:
+        raise ProviderConfigurationRejected("Provider configuration must be valid UTF-8 TOML") from cause
+    _fields("top level", document, fields)
+    if document["schema_id"] != SCHEMA_ID:
+        raise ProviderConfigurationRejected("Provider configuration schema is unsupported; startup requires v2")
+    return document
+
+
+_POLICY_FIELDS = {"schema_id", "binding", "process", "runner", "interpreter"}
+
+
+def decode_provider_template(raw: bytes) -> ProviderPolicy:
+    """Admit operator input, refusing deployment-generated route fields."""
+    return _policy(_document(raw, _POLICY_FIELDS))
 
 
 def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
-    """Decode one closed TOML document into existing boundary-owned values."""
-
-    if type(raw) is not bytes or len(raw) > 65_536:
-        raise ValueError("Provider runtime config must be bounded bytes")
-    try:
-        document = tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeError, tomllib.TOMLDecodeError) as error:
-        raise ValueError("Provider runtime config is not valid TOML") from error
-    _fields(
-        "top level",
-        document,
-        {
-            "frozen_generation_id",
-            "interpreter",
-            "journal",
-            "process",
-            "runner",
-            "schema_id",
-            "server_a",
-        },
-    )
-    if document["schema_id"] != SCHEMA_ID:
-        raise ValueError("Provider runtime config schema is unsupported")
+    """Require a frozen route before runtime can construct an API transport."""
+    document = _document(raw, _POLICY_FIELDS | {"frozen_generation_id", "api_route"})
     frozen_id = document["frozen_generation_id"]
-    validate_frozen_generation_id(frozen_id)
-    server = _table(
-        document,
-        "server_a",
-        {"connect_timeout_seconds", "io_deadline_seconds", "origin", "topology"},
-        {"use_private_ca"},
+    try:
+        validate_frozen_generation_id(frozen_id)
+    except ValueError as cause:
+        raise ProviderConfigurationRejected(str(cause)) from cause
+    route = _table(document, "api_route", {"proxy_socket"})
+    socket = _absolute_path(route["proxy_socket"], "Generated API proxy socket")
+    policy = _policy(document)
+    if policy.binding_definition != BINDING_PATH:
+        raise ProviderConfigurationRejected(f"Provider runtime requires the captured binding at {BINDING_PATH}")
+    return ProviderRuntimeConfig(frozen_id, policy, str(socket))
+
+
+def render_provider_runtime_config(policy, *, frozen_generation_id, api_proxy_socket):
+    """Encode admitted policy with the deployment's generated identity and grants."""
+    process, observation = policy.process, policy.process.observation
+    tables = (
+        ("binding", {"definition_file": str(BINDING_PATH), "name": policy.binding_name}),
+        ("process", {
+            "feed_interval_seconds": process.feed_interval_seconds,
+            "hello_interval_seconds": process.hello_interval_seconds,
+            "shutdown_drain_seconds": process.shutdown_drain_seconds,
+            "forced_join_seconds": process.forced_join_seconds,
+            "inventory_maximum_pages": process.inventory_maximum_pages,
+            "observation_interval_seconds": observation.poll_interval_seconds,
+            "observation_retry_initial_seconds": observation.retry_initial_seconds,
+            "observation_retry_max_seconds": observation.retry_max_seconds,
+        }),
+        ("runner", asdict(policy.runner)),
+        ("interpreter", {
+            "request_timeout_seconds": policy.interpreter.call_policy.request_timeout_seconds,
+            "turn_timeout_seconds": policy.interpreter.call_policy.turn_timeout_seconds,
+            "interpretation_timeout_seconds": policy.interpreter.interpretation_timeout_seconds,
+        }),
+        ("api_route", {"proxy_socket": api_proxy_socket}),
     )
-    use_private_ca = server.get("use_private_ca", False)
-    if type(use_private_ca) is not bool:
-        raise ValueError("Provider runtime private-CA selection must be a boolean")
-    endpoint = ProviderEndpointConfig(
-        origin=server["origin"],
-        expected_topology=server["topology"],
-        connect_timeout_seconds=server["connect_timeout_seconds"],
-        io_deadline_seconds=server["io_deadline_seconds"],
-        ca_file=CA_PATH if use_private_ca else None,
-    )
-    journal = _table(
-        document,
-        "journal",
-        {"filesystem_reserve_bytes", "maximum_records"},
-    )
-    maximum_records = journal["maximum_records"]
-    reserve = journal["filesystem_reserve_bytes"]
-    if (
-        type(maximum_records) is not int
-        or maximum_records < 1
-        or maximum_records > JOURNAL_MAXIMUM_RECORDS
-    ):
-        raise ValueError(
-            "Provider runtime journal record bound must be between 1 and 10000"
-        )
-    if type(reserve) is not int or reserve < 0:
-        raise ValueError("Provider runtime journal reserve cannot be negative")
-    process = _table(
-        document,
-        "process",
-        {
-            "feed_interval_seconds",
-            "forced_join_seconds",
-            "hello_interval_seconds",
-            "inventory_maximum_pages",
-            "observation_interval_seconds",
-            "observation_maximum_gap_seconds",
-            "shutdown_drain_seconds",
-        },
-        frozenset({"maximum_consecutive_unavailable"}),
-    )
-    retired_unavailability_budget = process.get("maximum_consecutive_unavailable")
-    if retired_unavailability_budget is not None and (
-        type(retired_unavailability_budget) is not int
-        or retired_unavailability_budget < 1
-    ):
-        raise ValueError("Retired provider unavailability budget must be positive")
+    lines = [f"schema_id = {json.dumps(SCHEMA_ID)}",
+             f"frozen_generation_id = {json.dumps(frozen_generation_id)}"]
+    for section, values in tables:
+        lines.append(f"\n[{section}]")
+        lines.extend(f"{key} = {json.dumps(value, ensure_ascii=True, allow_nan=False)}"
+                     for key, value in values.items())
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def runtime_config_id(files: dict[str, bytes]) -> str:
+    """Identify every filename and byte in one captured startup-input tree."""
+    material = {path: {"sha256": sha256(raw).hexdigest(), "byte_length": len(raw)}
+                for path, raw in files.items()}
+    return "sha256:" + sha256(
+        b"nmrpeak.provider_runtime_config.v2\0" + canonical_json_bytes(material),
+    ).hexdigest()
+
+
+def api_input_target(path: str) -> Path:
+    """Name an SDK-admitted file grant without importing its host path layout."""
+    return API_INPUT_ROOT / sha256(path.encode("utf-8")).hexdigest()
+
+
+def _absolute_path(value, label):
+    if type(value) is not str or not value or "\0" in value:
+        raise ProviderConfigurationRejected(f"{label} must be an absolute normalized path")
+    path = Path(value)
+    if not path.is_absolute() or path == Path("/") or ".." in path.parts or str(path) != value:
+        raise ProviderConfigurationRejected(f"{label} must be an absolute normalized path below root")
+    return path
+
+
+def _policy(document):
+    binding = _table(document, "binding", {"definition_file", "name"})
+    definition = _absolute_path(binding["definition_file"], "Binding definition")
+    name = binding["name"]
+    if type(name) is not str or not name:
+        raise ProviderConfigurationRejected("Provider binding selection requires a nonempty name")
+    process = _table(document, "process", {
+        "feed_interval_seconds", "hello_interval_seconds", "shutdown_drain_seconds",
+        "forced_join_seconds", "inventory_maximum_pages", "observation_interval_seconds",
+        "observation_retry_initial_seconds", "observation_retry_max_seconds",
+    })
     process_policy = ProviderProcessPolicy(
-        feed_interval_seconds=process["feed_interval_seconds"],
-        hello_interval_seconds=process["hello_interval_seconds"],
-        shutdown_drain_seconds=process["shutdown_drain_seconds"],
-        forced_join_seconds=process["forced_join_seconds"],
-        inventory_maximum_pages=process["inventory_maximum_pages"],
-        observation=ObservationPolicy(
-            process["observation_interval_seconds"],
-            process["observation_maximum_gap_seconds"],
+        process["feed_interval_seconds"], process["hello_interval_seconds"],
+        process["shutdown_drain_seconds"], process["forced_join_seconds"],
+        process["inventory_maximum_pages"], ObservationPolicy(
+            process["observation_interval_seconds"], process["observation_retry_initial_seconds"],
+            process["observation_retry_max_seconds"],
         ),
     )
     runner = _table(
@@ -196,6 +230,10 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
         runner["generate_seconds"],
         runner["retire_seconds"],
     )
+    if deadlines.retire_seconds < RETIREMENT_SECONDS:
+        raise ProviderConfigurationRejected(
+            f"runner.retire_seconds must be at least {RETIREMENT_SECONDS} for native TERM, KILL, scratch cleanup and observation"
+        )
     interpreter = _table(
         document,
         "interpreter",
@@ -205,25 +243,19 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
             "turn_timeout_seconds",
         },
     )
-    interpreter_policy = InterpreterPolicy(
-        call_policy=OpenAIChatCallPolicy(
-            request_timeout_seconds=interpreter["request_timeout_seconds"],
-            turn_timeout_seconds=interpreter["turn_timeout_seconds"],
-        ),
-        interpretation_timeout_seconds=interpreter[
-            "interpretation_timeout_seconds"
-        ],
-    )
-    return ProviderRuntimeConfig(
-        frozen_id,
-        endpoint,
-        maximum_records,
-        reserve,
-        process_policy,
-        deadlines,
-        interpreter_policy,
-    )
-
+    try:
+        interpreter_policy = InterpreterPolicy(
+            call_policy=OpenAIChatCallPolicy(
+                request_timeout_seconds=interpreter["request_timeout_seconds"],
+                turn_timeout_seconds=interpreter["turn_timeout_seconds"],
+            ),
+            interpretation_timeout_seconds=interpreter[
+                "interpretation_timeout_seconds"
+            ],
+        )
+    except ValueError as cause:
+        raise ProviderConfigurationRejected(str(cause)) from cause
+    return ProviderPolicy(definition, name, process_policy, deadlines, interpreter_policy)
 
 def _table(
     document: dict[str, object],
@@ -233,7 +265,7 @@ def _table(
 ) -> dict[str, object]:
     value = document[name]
     if type(value) is not dict:
-        raise ValueError(f"Provider runtime config [{name}] must be a table")
+        raise ProviderConfigurationRejected(f"Provider runtime config [{name}] must be a table")
     _fields(name, value, required, optional)
     return value
 
@@ -246,4 +278,4 @@ def _fields(
 ) -> None:
     actual = set(value)
     if not required <= actual or actual - required - optional:
-        raise ValueError(f"Provider runtime config {name} has invalid fields")
+        raise ProviderConfigurationRejected(f"Provider runtime config {name} has invalid fields")

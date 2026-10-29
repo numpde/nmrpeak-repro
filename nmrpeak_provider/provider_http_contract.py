@@ -1,4 +1,4 @@
-"""Authenticate the immutable NMR API provider contract consumed here."""
+"""Authenticate the retained historical API source release for provenance tooling."""
 
 from __future__ import annotations
 

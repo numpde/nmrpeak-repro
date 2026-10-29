@@ -1,781 +1,353 @@
-"""Serve the fixed HF and CHF lanes under one bounded process owner."""
+"""Compose the shared lifecycle and delivery owners for the two NMR lanes."""
 
-from __future__ import annotations
-
+import asyncio
 from dataclasses import dataclass
 import logging
-import math
-from threading import Event, Thread
-import time
-from typing import TYPE_CHECKING, Callable
+import secrets
 
-from .diagnostic_text import diagnostic_text, exception_diagnostic
+from provider_core.api import ApiFailure
+from provider_core.analysis import AnalysisFailure, AnalysisSuccess
+from provider_core.attempt_record import RecoveryScope, StartPending
+from provider_core.attempt_request import start_body
+from provider_core.controller import AttemptController, LiveStartPolicy
+from provider_core.delivery_client import DeliveryUnavailable
+from provider_core.task_boundary import contain_task_exit
+from provider_core.diagnostics import failure_evidence
+from provider_core.execution import AttemptExecutor, ConditionRecovery, ExecutionRefused, ObservationRecovery
+from provider_core.ownership import AttemptClaims, LiveAttemptLimits, LiveCapacityFull
+from provider_core.producer_checkpoint import DeliveryAcceptedCheckpoint
 
-from .attempt_inventory import (
-    AttemptInventoryRejected,
-    AttemptInventoryReadFailed,
-    read_attempt_inventory,
-    validate_startup_inventory,
-)
-from .attempt_journal import AttemptJournalRecord, ObserveUntilExpiry, RetainTerminalConflict
-from .attempt_journal_store import (
-    AttemptJournalAdmissionRejected,
-    AttemptJournalStore,
-)
-from .attempt_lifecycle import (
-    AttemptObservationFailed,
-    TerminalReconciliationPending,
-    FeedReadFailed,
-    InputInterpretationUnavailable,
-    InputReadFailed,
-    JobAdmitted,
-    ObservationPolicy,
-    PageExhausted,
-    admit_next_job,
-    run_admitted_job,
-    run_recovery_record,
-)
-from .generation_runtime import GenerationLane, GenerationRuntime
-from .network_failure import network_failure_reason
-from .provider_api import ProviderApiClient
-from .provider_outcomes import (
-    AttemptMutationCommitPossible,
-    AttemptMutationNotCommitted,
-)
-from .provider_problems import (
-    ProviderProblem,
-    ProviderProblemRejected,
-    parse_provider_problem,
-)
-from .provider_https import (
-    ProviderHttpResponse,
-    ProviderOperation,
-    ProviderRequestUnavailable,
-    ProviderResponseRejected,
-    ProviderTlsRejected,
-)
-from .provider_requests import _PreparedProviderRequest
-from .provider_success import (
-    ProviderHelloAccepted,
-    ProviderSuccessRejected,
-    parse_provider_hello_success,
-)
-from .runner_session import RunnerSession, RunnerSessionRetired
+from .provider_diagnostics import describe_nmrpeak_failure
 
-if TYPE_CHECKING:
-    from .input_interpreter import InputInterpreter
+from .analysis_session import NmrpeakAnalysisSession
+from .canonical_json import canonical_json_bytes
+from .provider_config import ProviderProcessPolicy
+from .run_generation import run_generation_fingerprint
 
 
 _LOG = logging.getLogger(__name__)
-_MAX_REMOTE_RETRY_SECONDS = 300.0
-
-
-class ProviderLaneFailed(RuntimeError):
-    """One fixed lane stopped before the provider process requested shutdown."""
-
-
-class ProviderShutdownFailed(RuntimeError):
-    """At least one fixed lane remained live after forced bounded shutdown."""
+# NMR results are at most 65536 bytes before the SDK's base64 envelope.
+MAXIMUM_TERMINAL_BYTES = 131072
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderProcessPolicy:
-    """The bounded waits and inventory extent owned by one provider process."""
-
-    feed_interval_seconds: float
-    hello_interval_seconds: float
-    shutdown_drain_seconds: float
-    forced_join_seconds: float
-    inventory_maximum_pages: int
-    observation: ObservationPolicy
-
-    def __post_init__(self) -> None:
-        for value in (
-            self.feed_interval_seconds,
-            self.hello_interval_seconds,
-            self.shutdown_drain_seconds,
-            self.forced_join_seconds,
-        ):
-            if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
-                raise ValueError("NMRPeak process waits must be positive finite seconds")
-        if type(self.inventory_maximum_pages) is not int or self.inventory_maximum_pages < 1:
-            raise ValueError("NMRPeak inventory page bound must be positive")
-        if type(self.observation) is not ObservationPolicy:
-            raise TypeError("NMRPeak process requires an admitted observation policy")
-
-
-@dataclass(frozen=True, slots=True)
-class _LaneOwner:
-    generation: GenerationLane
-    session: RunnerSession
+class ProviderAnnouncement:
+    display_name: str
+    description: str
+    analysis_offerings: tuple
 
 
 @dataclass(slots=True)
-class _LaneWork:
-    owner: _LaneOwner
-    finished: Event
-    error: BaseException | None = None
-
-    def run(
-        self,
-        *,
-        runtime: GenerationRuntime,
-        api: ProviderApiClient,
-        journal: AttemptJournalStore,
-        interpreter: InputInterpreter,
-        policy: ProviderProcessPolicy,
-        stop: Event,
-    ) -> None:
-        try:
-            _run_lane(
-                runtime=runtime,
-                api=api,
-                journal=journal,
-                interpreter=interpreter,
-                policy=policy,
-                stop=stop,
-                owner=self.owner,
-            )
-        except BaseException as error:
-            self.error = error
-        finally:
-            self.finished.set()
-
-
-def run_provider_process(
-    *,
-    runtime: GenerationRuntime,
-    api: ProviderApiClient,
-    journal: AttemptJournalStore,
-    interpreter: InputInterpreter,
-    hf_session: RunnerSession,
-    chf_session: RunnerSession,
-    hello: _PreparedProviderRequest,
-    policy: ProviderProcessPolicy,
-    stop: Event,
-    on_ready: Callable[[], None],
-) -> None:
-    """Recover startup state, then serve exactly two sibling lane owners."""
-
-    if type(runtime) is not GenerationRuntime:
-        raise TypeError("NMRPeak process requires one admitted generation runtime")
-    if type(hf_session) is not RunnerSession or type(chf_session) is not RunnerSession:
-        raise TypeError("NMRPeak process requires both admitted runner sessions")
-    if type(policy) is not ProviderProcessPolicy:
-        raise TypeError("NMRPeak process requires an admitted process policy")
-    if (
-        type(hello) is not _PreparedProviderRequest
-        or hello.operation is not ProviderOperation.PROVIDER_HELLO
-    ):
-        raise TypeError("NMRPeak process requires one prepared hello snapshot")
-    if not isinstance(stop, Event):
-        raise TypeError("NMRPeak process requires one stop event")
-    if not callable(on_ready):
-        raise TypeError("NMRPeak process requires one readiness publisher")
-
-    owners = (
-        _LaneOwner(runtime.hf, hf_session),
-        _LaneOwner(runtime.chf, chf_session),
-    )
-    if stop.is_set():
-        _retire_sessions(owners)
-        return
-
-    started = False
-    primary_error: BaseException | None = None
-    try:
-        for owner in owners:
-            if owner.session.result_facts != owner.generation.result_facts:
-                raise ValueError(
-                    "NMRPeak process received a runner session for another lane generation"
-                )
-        _recover_startup(
-            runtime=runtime,
-            api=api,
-            journal=journal,
-            interpreter=interpreter,
-            owners=owners,
-            policy=policy,
-            stop=stop,
-        )
-        if stop.is_set():
-            return
-
-        provider_ref = runtime.hf.generation.provider_ref
-        _await_initial_hello(
-            api=api,
-            prepared=hello,
-            provider_ref=provider_ref,
-            policy=policy,
-            stop=stop,
-        )
-        if stop.is_set():
-            return
-        next_hello_at = time.monotonic() + policy.hello_interval_seconds
-        hello_retry_seconds = _initial_retry_delay(policy.feed_interval_seconds)
-        hello_outage_active = False
-
-        finished = Event()
-        works = tuple(_LaneWork(owner, finished) for owner in owners)
-        threads = tuple(
-            Thread(
-                target=work.run,
-                kwargs={
-                    "runtime": runtime,
-                    "api": api,
-                    "journal": journal,
-                    "interpreter": interpreter,
-                    "policy": policy,
-                    "stop": stop,
-                },
-                name=f"nmrpeak-{work.owner.generation.lane.offering.implementation_ref}",
-            )
-            for work in works
-        )
-        started_threads: list[Thread] = []
-        try:
-            for thread in threads:
-                thread.start()
-                started_threads.append(thread)
-        except BaseException as error:
-            if started_threads:
-                started = True
-                stop.set()
-                cancellation_errors: list[RunnerSessionRetired] = []
-                for owner in owners:
-                    try:
-                        owner.session.cancel()
-                    except RunnerSessionRetired as cancellation_error:
-                        cancellation_errors.append(cancellation_error)
-                _join_threads(tuple(started_threads), policy.forced_join_seconds)
-                if cancellation_errors:
-                    error.add_note(
-                        "Partial process startup could not confirm every session closure."
-                    )
-                if any(thread.is_alive() for thread in started_threads):
-                    error.add_note(
-                        "A partially started NMRPeak lane remained live after cancellation."
-                    )
-            raise
-        started = True
-        coordination_error: BaseException | None = None
-        try:
-            on_ready()
-            _LOG.info(
-                'Provider ready; provider=%s hello_interval_seconds=%s',
-                provider_ref,
-                policy.hello_interval_seconds,
-            )
-        except BaseException as error:
-            coordination_error = error
-            stop.set()
-        while not stop.is_set():
-            until_hello = max(0.0, next_hello_at - time.monotonic())
-            if finished.wait(min(policy.feed_interval_seconds, until_hello)):
-                break
-            if stop.is_set():
-                break
-            if time.monotonic() >= next_hello_at:
-                hello_failure = _publish_hello(
-                    api=api,
-                    prepared=hello,
-                    provider_ref=provider_ref,
-                )
-                if hello_failure is None:
-                    if hello_outage_active:
-                        _LOG.info("Provider Hello recovered")
-                    hello_outage_active = False
-                    hello_retry_seconds = _initial_retry_delay(
-                        policy.feed_interval_seconds
-                    )
-                    next_hello_at = (
-                        time.monotonic() + policy.hello_interval_seconds
-                    )
-                else:
-                    _LOG.warning(
-                        "Provider Hello is unavailable; retrying in %s seconds: %r",
-                        hello_retry_seconds, _remote_evidence_message(hello_failure),
-                    )
-                    hello_outage_active = True
-                    next_hello_at = time.monotonic() + hello_retry_seconds
-                    hello_retry_seconds = _next_retry_delay(hello_retry_seconds)
-        if finished.is_set() and not stop.is_set():
-            stop.set()
-
-        _LOG.info(
-            'Provider shutdown began; draining lane work for up to %s seconds',
-            policy.shutdown_drain_seconds,
-        )
-        _join_threads(threads, policy.shutdown_drain_seconds)
-        live = tuple(thread for thread in threads if thread.is_alive())
-        cancellation_errors: list[RunnerSessionRetired] = []
-        if live:
-            _LOG.warning("Provider drain deadline reached; cancelling %d live lane(s)", len(live))
-            for owner in owners:
-                try:
-                    owner.session.cancel()
-                except RunnerSessionRetired as error:
-                    cancellation_errors.append(error)
-            _join_threads(threads, policy.forced_join_seconds)
-        live = tuple(thread for thread in threads if thread.is_alive())
-        if coordination_error is not None:
-            if live:
-                raise ProviderShutdownFailed(
-                    "NMRPeak lane threads did not stop after session cancellation"
-                ) from coordination_error
-            if cancellation_errors:
-                raise ProviderShutdownFailed(
-                    "NMRPeak forced shutdown could not confirm every session closure"
-                ) from cancellation_errors[0]
-            for work in works:
-                if work.error is not None:
-                    lane = work.owner.generation.lane.offering.implementation_ref
-                    coordination_error.add_note(
-                        f"The {lane} lane also failed during coordinated shutdown."
-                    )
-            raise coordination_error
-        for work in works:
-            if work.error is not None:
-                lane = work.owner.generation.lane.offering.implementation_ref
-                failure = ProviderLaneFailed(
-                    f"The {lane} provider lane stopped unexpectedly, so coordinated "
-                    "provider shutdown began."
-                )
-                if live:
-                    failure.add_note(
-                        "A sibling lane remained live after forced session cancellation."
-                    )
-                if cancellation_errors:
-                    failure.add_note(
-                        "Forced shutdown could not confirm every session closure."
-                    )
-                raise failure from work.error
-        if live:
-            failure = ProviderShutdownFailed(
-                "NMRPeak lane threads did not stop after session cancellation"
-            )
-            for error in cancellation_errors:
-                failure.add_note(str(error))
-            raise failure
-        if cancellation_errors:
-            raise ProviderShutdownFailed(
-                "NMRPeak forced shutdown could not confirm every session closure"
-            ) from cancellation_errors[0]
-    except BaseException as error:
-        primary_error = error
-        raise
-    finally:
-        if not started:
-            try:
-                _retire_sessions(owners)
-            except RunnerSessionRetired as error:
-                if primary_error is None:
-                    raise
-                primary_error.add_note(
-                    "Provider startup failure was followed by a runner retirement failure."
-                )
-
-
-def _publish_hello(
-    *,
-    api: ProviderApiClient,
-    prepared: _PreparedProviderRequest,
-    provider_ref: str,
-) -> object | None:
-    """Publish once, returning remote evidence instead of process policy."""
-
-    outcome = api.send(prepared)
-    if type(outcome) in {
-        ProviderRequestUnavailable,
-        ProviderResponseRejected,
-        ProviderTlsRejected,
-    }:
-        return outcome
-    if type(outcome) is not ProviderHttpResponse:
-        raise TypeError("Provider Hello returned unsupported transport evidence")
-    if outcome.status == 200:
-        receipt = parse_provider_hello_success(
-            prepared,
-            outcome,
-            expected_provider_ref=provider_ref,
-        )
-        if type(receipt) is ProviderHelloAccepted:
-            _LOG.info(
-                "Provider Hello accepted; provider=%s origin=%s accepted_at=%s request=%s",
-                receipt.provider_ref,
-                api.endpoint.origin,
-                receipt.accepted_at,
-                outcome.request_id,
-            )
-            return None
-        if type(receipt) is ProviderSuccessRejected:
-            return receipt
-        raise AssertionError("NMRPeak hello parser returned an unknown outcome")
-    return parse_provider_problem(prepared.operation, outcome)
-
-
-def _await_initial_hello(
-    *,
-    api: ProviderApiClient,
-    prepared: _PreparedProviderRequest,
-    provider_ref: str,
-    policy: ProviderProcessPolicy,
-    stop: Event,
-) -> None:
-    delay = _initial_retry_delay(policy.feed_interval_seconds)
-    outage_active = False
-    while not stop.is_set():
-        failure = _publish_hello(
-            api=api,
-            prepared=prepared,
-            provider_ref=provider_ref,
-        )
-        if failure is None:
-            if outage_active:
-                _LOG.info("Initial provider Hello recovered")
-            return
-        _LOG.warning(
-            "Initial provider Hello is unavailable; retrying in %s seconds: %r",
-            delay, _remote_evidence_message(failure),
-        )
-        outage_active = True
-        if stop.wait(delay):
-            return
-        delay = _next_retry_delay(delay)
-
-
-def _recover_startup(
-    *,
-    runtime: GenerationRuntime,
-    api: ProviderApiClient,
-    journal: AttemptJournalStore,
-    interpreter: InputInterpreter,
-    owners: tuple[_LaneOwner, _LaneOwner],
-    policy: ProviderProcessPolicy,
-    stop: Event,
-) -> None:
-    records = journal.records()
-    _LOG.info("Startup recovery began; retained_attempts=%d", len(records))
-    delay = _initial_retry_delay(policy.feed_interval_seconds)
-    outage_active = False
-    while not stop.is_set():
-        failure: object | None = None
-        try:
-            inventory = read_attempt_inventory(
-                api=api,
-                maximum_pages=policy.inventory_maximum_pages,
-            )
-            if type(inventory) is AttemptInventoryReadFailed:
-                failure = inventory.evidence
-            else:
-                validate_startup_inventory(
-                    runtime=runtime,
-                    records=records,
-                    inventory=inventory,
-                )
-        except AttemptInventoryRejected as error:
-            failure = error
-        if failure is None:
-            if outage_active:
-                _LOG.info("Startup Attempt inventory recovered")
-            break
-        _LOG.warning(
-            "Startup Attempt inventory is unavailable; retrying in %s seconds: %r",
-            delay, _remote_evidence_message(failure),
-        )
-        outage_active = True
-        if stop.wait(delay):
-            return
-        delay = _next_retry_delay(delay)
-
-    for record in records:
-        if stop.is_set():
-            return
-        current = record
-        delay = _initial_retry_delay(policy.feed_interval_seconds)
-        outage_active = False
-        while not stop.is_set():
-            owner = (
-                _owner_for_record(runtime, owners, current)
-                if current.frozen_generation_id == runtime.frozen_generation_id
-                else None
-            )
-            outcome = run_recovery_record(
-                runtime=runtime,
-                api=api,
-                journal=journal,
-                interpreter=interpreter,
-                session=None if owner is None else owner.session,
-                record=current,
-                observation=policy.observation,
-            )
-            failure = _remote_failure_evidence(outcome)
-            if failure is None:
-                _log_recovery_wait(outcome)
-                if outage_active:
-                    _LOG.info(
-                        "Startup recovery for %s recovered",
-                        current.provider_attempt_key,
-                    )
-                break
-            retained = tuple(
-                candidate
-                for candidate in journal.records()
-                if candidate.provider_attempt_key == record.provider_attempt_key
-            )
-            if not retained:
-                raise RuntimeError(
-                    "Unavailable recovery outcome lost its durable Attempt record"
-                )
-            current = retained[0]
-            _LOG.warning(
-                "Startup recovery is unavailable; job=%s attempt_key=%s retry_seconds=%s: %r",
-                current.job_ref, current.provider_attempt_key,
-                delay, _remote_evidence_message(failure),
-            )
-            outage_active = True
-            if stop.wait(delay):
-                return
-            delay = _next_retry_delay(delay)
-
-    if not stop.is_set():
-        _LOG.info("Startup recovery pass completed")
-
-
-def _run_lane(
-    *,
-    runtime: GenerationRuntime,
-    api: ProviderApiClient,
-    journal: AttemptJournalStore,
-    interpreter: InputInterpreter,
-    policy: ProviderProcessPolicy,
-    stop: Event,
-    owner: _LaneOwner,
-) -> None:
+class _LaneOwner:
+    generation: object
+    runner: object
+    controller: AttemptController | None = None
     cursor: str | None = None
-    next_wait_report_at = 0.0
-    retry_delay = _initial_retry_delay(policy.feed_interval_seconds)
-    outage_active = False
-    primary_error: BaseException | None = None
-    try:
-        while not stop.is_set():
-            failure: object | None = None
-            records = tuple(
-                record
-                for record in journal.records()
-                if runtime.resolve(record) is owner.generation
-            )
-            if records:
-                report_waits = time.monotonic() >= next_wait_report_at
-                for record in records:
-                    if stop.is_set():
-                        break
-                    outcome = run_recovery_record(
-                        runtime=runtime,
-                        api=api,
-                        journal=journal,
-                        interpreter=interpreter,
-                        session=owner.session,
-                        record=record,
-                        observation=policy.observation,
-                    )
-                    if report_waits and type(outcome) in {ObserveUntilExpiry, RetainTerminalConflict}:
-                        _log_recovery_wait(outcome)
-                        next_wait_report_at = time.monotonic() + _MAX_REMOTE_RETRY_SECONDS
-                    failure = _remote_failure_evidence(outcome)
-                    if failure is not None:
-                        break
-            else:
-                next_wait_report_at = 0.0
-                try:
-                    admitted = admit_next_job(
-                        lane=owner.generation.lane,
-                        api=api,
-                        journal=journal,
-                        generation=owner.generation.generation,
-                        frozen_generation_id=runtime.frozen_generation_id,
-                        cursor=cursor,
-                    )
-                except AttemptJournalAdmissionRejected as error:
-                    admitted = None
-                    failure = error
-                if type(admitted) is JobAdmitted:
-                    cursor = None
-                    outcome = run_admitted_job(
-                        runtime=runtime,
-                        api=api,
-                        journal=journal,
-                        session=owner.session,
-                        interpreter=interpreter,
-                        admitted=admitted,
-                        observation=policy.observation,
-                    )
-                    failure = _remote_failure_evidence(outcome)
-                elif type(admitted) is PageExhausted:
-                    cursor = admitted.next_cursor
-                elif admitted is not None:
-                    failure = _remote_failure_evidence(admitted)
-            if owner.session.retired:
-                raise RunnerSessionRetired(
-                    f"Cannot continue the {owner.generation.lane.offering.implementation_ref} "
-                    "lane because its runner session retired. Inspect the runner container "
-                    "before restarting the provider."
-                )
-            if failure is not None:
-                _LOG.warning(
-                    "%s provider lane is unavailable; retrying in %s seconds: %r",
-                    owner.generation.lane.offering.implementation_ref,
-                    retry_delay, _remote_evidence_message(failure),
-                )
-                outage_active = True
-                if stop.wait(retry_delay):
-                    break
-                retry_delay = _next_retry_delay(retry_delay)
-                continue
-            if outage_active:
-                _LOG.info(
-                    "%s provider lane recovered",
-                    owner.generation.lane.offering.implementation_ref,
-                )
-            outage_active = False
-            retry_delay = _initial_retry_delay(policy.feed_interval_seconds)
-            stop.wait(policy.feed_interval_seconds)
-    except BaseException as error:
-        primary_error = error
-        raise
-    finally:
+
+
+class ProviderProcess:
+    """Keep loaded science owners while SDK controllers own each live Attempt."""
+
+    def __init__(self, *, runtime, hf_session, chf_session, interpreter,
+                 new_api, new_delivery, policy, announcement):
+        if type(policy) is not ProviderProcessPolicy:
+            raise TypeError("Provider process requires admitted timing policy")
+        self.policy, self.announcement, self.interpreter = policy, announcement, interpreter
+        self._new_api, self._new_delivery = new_api, new_delivery
+        self.api, self.hello_api, self.delivery = new_api(), new_api(), new_delivery()
+        self.lanes = (_LaneOwner(runtime.hf, hf_session), _LaneOwner(runtime.chf, chf_session))
+        for lane in self.lanes:
+            if lane.runner.result_facts != lane.generation.result_facts:
+                raise ValueError("Provider lane and loaded runner belong to different generations")
+        provider_ref = runtime.hf.generation.provider_ref
+        if (runtime.chf.generation.provider_ref != provider_ref
+                or self.delivery.endpoint.provider_ref != provider_ref
+                or self.delivery.endpoint.api_origin != self.api.origin):
+            raise ValueError("Provider lanes, API and delivery must share one provider binding")
+        self._claims = AttemptClaims.live(limits=LiveAttemptLimits(2, 262144, 2 * MAXIMUM_TERMINAL_BYTES))
+        self._admission = asyncio.Lock()
+        self._admission_paused = asyncio.Event()
+        self._delivery_waiters = set()
+        self._stop = asyncio.Event()
+        self._scientific_stopping = asyncio.Event()
+        self._state = "new"
+        self.diagnostic_failure = None
+
+    def _controllers(self):
+        return tuple(dict.fromkeys((*self._claims.live_owners(), *(
+            lane.controller for lane in self.lanes if lane.controller is not None))))
+
+    @property
+    def shutdown_ready(self):
+        return (self._state == "stopped" and all(owner.shutdown_ready for owner in self._controllers())
+                and self.api.retirement_confirmed and self.hello_api.retirement_confirmed
+                and self.delivery.retirement_confirmed)
+
+    def request_stop(self):
+        """Stop admission while existing scientific/report drivers drain."""
+        self._admission_paused.set()
+        self._stop.set()
+
+    async def run(self, *, on_ready):
+        if self._state != "new":
+            raise ValueError("Provider process accepts only its original invocation")
+        self._state = "running"
+        primary = None
         try:
-            owner.session.retire()
-        except RunnerSessionRetired:
-            if primary_error is None:
+            if self._stop.is_set():
+                return
+            inventory = await self._pending()
+            while inventory is None and not self._stop.is_set():
+                await self._pause(self.policy.feed_interval_seconds)
+                if not self._stop.is_set():
+                    inventory = await self._pending()
+            if inventory is not None:
+                capacity = inventory["capacity"]
+                if capacity["provider_items"] < 2 or capacity["provider_bytes"] < 2 * MAXIMUM_TERMINAL_BYTES:
+                    raise ValueError("Delivery binding must reserve two NMR reports and at least 262144 bytes")
+            if not self._stop.is_set():
+                await self._announce()
+            if not self._stop.is_set():
+                on_ready()
+                async with asyncio.TaskGroup() as tasks:
+                    tasks.create_task(contain_task_exit(self._lane_loop, self.lanes[0]))
+                    tasks.create_task(contain_task_exit(self._lane_loop, self.lanes[1]))
+                    tasks.create_task(contain_task_exit(self._hello_loop))
+        except BaseException as cause:
+            primary = cause
+            self._scientific_stopping.set()
+        finally:
+            self.request_stop()
+            self._state = "stopping"
+            try:
+                await self._drain()
+            except BaseException as cleanup:
+                if primary is not None and cleanup is not primary:
+                    raise BaseExceptionGroup(
+                        "Provider failure and independent shutdown failure", [primary, cleanup],
+                    ) from None
                 raise
-            primary_error.add_note(
-                "The failed NMRPeak lane also could not retire its runner session."
-            )
+        if primary is not None:
+            raise primary
 
-
-def _log_recovery_wait(outcome: object) -> None:
-    """Report retained waits; leave other recovery outcomes to their owners."""
-
-    if type(outcome) is ObserveUntilExpiry:
-        _LOG.info(
-            "Recovery is waiting for API attempt expiry after the job closed; "
-            "job=%s attempt=%s; journal retained",
-            outcome.record.job_ref, outcome.record.execution_attempt_ref,
-        )
-    elif type(outcome) is RetainTerminalConflict:
-        _LOG.warning(
-            "API terminal state conflicts with the retained command; "
-            "job=%s attempt=%s command=%s; journal retained for investigation",
-            outcome.record.job_ref, outcome.record.execution_attempt_ref,
-            outcome.record.terminal_operation.value,
-        )
-
-
-def _owner_for_record(
-    runtime: GenerationRuntime,
-    owners: tuple[_LaneOwner, _LaneOwner],
-    record: AttemptJournalRecord,
-) -> _LaneOwner:
-    generation = runtime.resolve(record)
-    for owner in owners:
-        if owner.generation is generation:
-            return owner
-    raise AssertionError("NMRPeak record resolved outside the two fixed lane owners")
-
-
-def _remote_failure_evidence(outcome: object) -> object | None:
-    """Select retry evidence, retaining mutation certainty; return None otherwise."""
-
-    if type(outcome) in {AttemptMutationCommitPossible, AttemptMutationNotCommitted}:
-        return outcome
-    if type(outcome) in {
-        AttemptInventoryReadFailed,
-        AttemptObservationFailed,
-        TerminalReconciliationPending,
-        FeedReadFailed,
-        InputReadFailed,
-        InputInterpretationUnavailable,
-    }:
-        return outcome.evidence
-    return None
-
-
-def _remote_evidence_message(evidence: object) -> str:
-    if type(evidence) is AttemptMutationCommitPossible:
-        return "API mutation outcome is unconfirmed; " + _remote_evidence_message(evidence.evidence)
-    if type(evidence) is AttemptMutationNotCommitted:
-        return "this API send did not commit its mutation; " + _remote_evidence_message(evidence.evidence)
-    if type(evidence) is ProviderProblem:
-        code = f", code {evidence.code}" if evidence.code is not None else ""
-        return (
-            f"the API returned HTTP {evidence.status} ({evidence.title}{code}; "
-            f"transport request {evidence.transport_request_id}; "
-            f"body request {evidence.body_request_id})"
-            + ("; " + diagnostic_text(evidence.detail) if evidence.detail else "")
-        )
-    if type(evidence) is ProviderProblemRejected:
-        if evidence.diagnostic is not None:
-            diagnostic = evidence.diagnostic
-            return f"the HTTP {evidence.status} response is unverified ({diagnostic.rejection})"
-        return (
-            f"the HTTP {evidence.status} problem response failed validation "
-            f"({evidence.reason.value})"
-        )
-    if type(evidence) is ProviderSuccessRejected:
-        return f"the HTTP 200 success response failed validation ({evidence.reason.value})"
-    if type(evidence) is ProviderResponseRejected:
-        status = "without a valid status" if evidence.status is None else f"with HTTP {evidence.status}"
-        return f"the API response {status} failed validation ({evidence.reason.value})" + _cause_message(evidence.cause)
-    if type(evidence) is ProviderTlsRejected:
-        return "TLS verification failed before the request was sent" + _cause_message(evidence.cause)
-    if type(evidence) is ProviderRequestUnavailable:
-        if evidence.status is not None:
-            return f"HTTP {evidence.status} ended without a complete API response" + _cause_message(evidence.cause)
-        delivery = evidence.delivery.value.replace("_", " ")
-        if evidence.cause is None:
-            return f"request delivery was {delivery}"
-        return f"request delivery was {delivery}; " + network_failure_reason(evidence.cause) + _cause_message(evidence.cause)
-    if type(evidence) is AttemptJournalAdmissionRejected:
-        if str(evidence) == "Attempt journal record slots are exhausted":
-            return "Attempt journal record slots are exhausted"
-        if str(evidence) == "Attempt journal recovery reserve cannot admit another record":
-            return "Attempt journal recovery reserve cannot admit another record"
-        return "Attempt journal admission was rejected without a reviewed cause"
-    if isinstance(evidence, BaseException):
-        return exception_diagnostic(evidence)
-    raise AssertionError("Remote provider evidence has no operator description")
-
-
-def _cause_message(cause: BaseException | None) -> str:
-    return "; " + exception_diagnostic(cause) if cause is not None else ""
-
-
-def _initial_retry_delay(feed_interval_seconds: float) -> float:
-    return min(feed_interval_seconds, _MAX_REMOTE_RETRY_SECONDS)
-
-
-def _next_retry_delay(current: float) -> float:
-    return min(current * 2.0, _MAX_REMOTE_RETRY_SECONDS)
-
-
-def _join_threads(threads: tuple[Thread, ...], timeout_seconds: float) -> None:
-    deadline = time.monotonic() + timeout_seconds
-    for thread in threads:
-        thread.join(max(0.0, deadline - time.monotonic()))
-
-
-def _retire_sessions(owners: tuple[_LaneOwner, _LaneOwner]) -> None:
-    first_error: RunnerSessionRetired | None = None
-    for owner in owners:
-        try:
-            owner.session.retire()
-        except RunnerSessionRetired as error:
-            if first_error is None:
-                first_error = error
+    async def _lane_loop(self, lane):
+        while not self._stop.is_set():
+            selected = await self._select(lane)
+            if selected is None:
+                await self._pause(self.policy.feed_interval_seconds)
+                continue
+            pending, instructions = selected
+            session = NmrpeakAnalysisSession(lane.generation, lane.runner, self.interpreter,
+                                             retry_seconds=self.policy.feed_interval_seconds)
+            lane.controller = self._controller(lane, session, pending, instructions)
+            try:
+                result = await lane.controller.run(pending)
+            except LiveCapacityFull:
+                await session.retire()
             else:
-                first_error.add_note(
-                    "A second NMRPeak runner session also failed to retire."
+                if type(result) is DeliveryAcceptedCheckpoint:
+                    self._delivery_waiters.discard(lane.controller)
+                if lane.runner.retired:
+                    raise RuntimeError("The loaded NMR lane retired; retain its owners before replacing it")
+
+    def _controller(self, lane, session, pending, instructions):
+        policy = self.policy
+        return AttemptController.live(
+            self._new_api(), self._claims, session, scope=pending.scope, stopping=self._scientific_stopping,
+            admission_stopping=self._admission_paused,
+            start_policy=LiveStartPolicy(policy.feed_interval_seconds, self._start_retry, self._start_recovered),
+            maximum_terminal_bytes=MAXIMUM_TERMINAL_BYTES, preverified_input=instructions,
+            allow_active_start_replay=True, delivery=self._new_delivery(),
+            on_delivery_retry=lambda acknowledged, failure, seconds: self._delivery_retry(lane, failure),
+            delivery_retry_initial_seconds=policy.feed_interval_seconds,
+            delivery_retry_max_seconds=30,
+            allowed_job_states=frozenset({"open"}),
+            poll_seconds=policy.observation.poll_interval_seconds,
+            task_settle_seconds=policy.forced_join_seconds,
+            observation_recovery=ObservationRecovery(policy.observation.retry_initial_seconds, policy.observation.retry_max_seconds,
+                                                       self._observation_retry, self._observation_recovered),
+            condition_recovery=ConditionRecovery(policy.observation.retry_initial_seconds, policy.observation.retry_max_seconds,
+                                                  self._condition_retry, self._condition_recovered),
+            on_unconfirmed_phase_progress=self._phase_unconfirmed,
+        )
+
+    async def _select(self, lane):
+        async with self._admission:
+            inventory = await self._pending()
+            if inventory is None or self._stop.is_set():
+                return None
+            self._clear_delivery_pressure()
+            if self._admission_paused.is_set() or not self._room(inventory):
+                return None
+            queued_jobs = {item["job_ref"] for item in inventory["items"]}
+            generation = lane.generation.generation
+            scope = RecoveryScope(self.api.origin, generation.provider_ref,
+                                  lane.generation.result_facts.identity.runner_ref,
+                                  run_generation_fingerprint(generation))
+            for _ in range(self.policy.inventory_maximum_pages):
+                try:
+                    page = await self.api.jobs(analysis_kind_ref=generation.analysis_kind_ref,
+                                               has_provider_execution_attempt=False, limit=50,
+                                               cursor=lane.cursor, owner=self)
+                    lane.cursor = page.next_cursor
+                    for job in page.jobs:
+                        if (not generation.scope.contains(job.created_at) or job.input.job_ref in queued_jobs
+                                or self._claims.owns_job(scope, job.input.job_ref)):
+                            continue
+                        instructions = await self.api.job_input(job.input,
+                                                                analysis_kind_ref=generation.analysis_kind_ref,
+                                                                owner=self)
+                        if self._stop.is_set() or self._admission_paused.is_set():
+                            return None
+                        # A new selection cannot replay an admission from a lost process.
+                        key = "nmrpeak-provider.v1:" + secrets.token_hex(32)
+                        return StartPending(scope, generation.analysis_kind_ref, job.input,
+                                            start_body(job.input.job_ref, key)), instructions
+                except ApiFailure as cause:
+                    await self.api.retire(owner=self)
+                    if not (self.api.can_retry_job_discovery(cause) or self.api.can_retry_read(cause)):
+                        raise
+                    self._notice("Job discovery temporarily unavailable", cause)
+                    return None
+                if lane.cursor is None:
+                    return None
+            return None
+
+    async def _pending(self):
+        try:
+            return await self.delivery.pending()
+        except DeliveryUnavailable as cause:
+            self._admission_paused.set()
+            await self.delivery.retire()
+            if not self.delivery.can_retry(cause):
+                raise
+            self._notice("Delivery inventory temporarily unavailable", cause)
+            return None
+
+    def _room(self, inventory):
+        reserved = len(self._claims.live_owners()) + 1
+        return (len(inventory["items"]) + reserved <= inventory["capacity"]["provider_items"]
+                and sum(item["body_bytes"] for item in inventory["items"])
+                + reserved * MAXIMUM_TERMINAL_BYTES <= inventory["capacity"]["provider_bytes"])
+
+    def _delivery_retry(self, lane, cause):
+        self._admission_paused.set()
+        self._delivery_waiters.add(lane.controller)
+        self._notice("Exact report remains with its original shared controller", cause)
+
+    def _clear_delivery_pressure(self):
+        for controller in tuple(self._delivery_waiters):
+            operation = controller.operation
+            if (type(operation) is AttemptExecutor and operation.last_failure is not None
+                    and type(operation.last_failure.attempt) is DeliveryAcceptedCheckpoint):
+                self._delivery_waiters.discard(controller)
+        if not self._delivery_waiters and not self._stop.is_set():
+            self._admission_paused.clear()
+
+    async def _announce(self):
+        while not self._stop.is_set():
+            try:
+                await self.hello_api.publish_hello(
+                    provider_ref=self.lanes[0].generation.generation.provider_ref,
+                    display_name=self.announcement.display_name, description=self.announcement.description,
+                    analysis_offerings=self.announcement.analysis_offerings, owner=self,
                 )
-    if first_error is not None:
-        raise first_error
+                return
+            except ApiFailure as cause:
+                await self.hello_api.retire(owner=self)
+                if not self.hello_api.can_refresh_hello(cause):
+                    raise
+                self._notice("Provider Hello remains unconfirmed", cause)
+                await self._pause(self.policy.feed_interval_seconds)
+
+    async def _hello_loop(self):
+        while not await self._pause(self.policy.hello_interval_seconds):
+            await self._announce()
+
+    async def _pause(self, seconds):
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=seconds)
+        except TimeoutError:
+            return False
+        return True
+
+    async def _drain(self):
+        controllers = self._controllers()
+        blocked = set()
+        failures = []
+        for controller in controllers:
+            controller.request_stop()
+        for controller in controllers:
+            try:
+                await controller.join()
+            except asyncio.CancelledError as cause:
+                failures.append(cause)
+            except BaseException as cause:
+                self._notice("Original Attempt driver stopped with retained evidence", cause)
+        while any(not controller.shutdown_ready and controller not in blocked for controller in controllers):
+            for controller in controllers:
+                if not controller.shutdown_ready and controller not in blocked:
+                    operation = controller.operation
+                    disposition_attempted = False
+                    try:
+                        if (type(operation) is AttemptExecutor and operation.work_settled
+                                and operation.last_failure is not None
+                                and type(operation.last_failure.outcome) in (AnalysisSuccess, AnalysisFailure)):
+                            disposition_attempted = True
+                            await operation.retain_suppressed_disposition()
+                        await controller.settle()
+                    except (ExecutionRefused, asyncio.CancelledError) as cause:
+                        blocked.add(controller)
+                        failures.append(cause)
+                    except BaseException as cause:
+                        self._notice("Original Attempt cleanup or report remains owned", cause)
+                        if disposition_attempted:
+                            blocked.add(controller)
+                            failures.append(cause)
+            if any(not controller.shutdown_ready and controller not in blocked for controller in controllers):
+                try:
+                    await asyncio.sleep(self.policy.feed_interval_seconds)
+                except asyncio.CancelledError as cause:
+                    blocked.update(controller for controller in controllers if not controller.shutdown_ready)
+                    failures.append(cause)
+                    break
+        for retire in (lambda: self.api.retire(owner=self),
+                       lambda: self.hello_api.retire(owner=self), self.delivery.retire):
+            try:
+                await retire()
+            except BaseException as cause:
+                failures.append(cause)
+        if (not blocked and self.api.retirement_confirmed and self.hello_api.retirement_confirmed
+                and self.delivery.retirement_confirmed):
+            self._state = "stopped"
+        if failures:
+            raise BaseExceptionGroup("Provider shutdown retained owners or retirement failures", failures)
+
+    def _notice(self, message, cause):
+        try:
+            evidence = failure_evidence(cause, describe_owner=describe_nmrpeak_failure, secrets=self.interpreter.diagnostic_secrets)
+            _LOG.warning("%s; %s", message, canonical_json_bytes(evidence).decode("utf-8"))
+        except Exception as diagnostic:
+            if self.diagnostic_failure is None:
+                self.diagnostic_failure = diagnostic
+
+    def _start_retry(self, pending, failure, seconds):
+        self._notice("Original live START remains unconfirmed", failure)
+
+    def _start_recovered(self, acknowledged, failure):
+        self._notice("Original live START acknowledgement recovered", failure)
+
+    def _observation_retry(self, acknowledged, failure, seconds):
+        self._notice("Attempt observation temporarily unavailable", failure)
+
+    def _observation_recovered(self, acknowledged, failure):
+        self._notice("Attempt observation recovered", failure)
+
+    def _condition_retry(self, acknowledged, phase, condition, failure, seconds):
+        self._notice("Current scientific condition remains unconfirmed", failure)
+
+    def _condition_recovered(self, acknowledged, phase, condition, failure):
+        self._notice("Current scientific condition confirmed", failure)
+
+    def _phase_unconfirmed(self, acknowledged, phase, failure):
+        self._notice("Scientific phase announcement remains unconfirmed", failure)

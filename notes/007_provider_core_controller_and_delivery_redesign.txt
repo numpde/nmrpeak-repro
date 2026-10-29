@@ -1,0 +1,631 @@
+NMRPeak: adopt the shared Attempt controller and result delivery
+==============================================================
+2026-10-28
+
+Status and decision
+-------------------
+
+The redesign is implemented and locally validated with provider-core 0.5.1 and
+Python 3.12.16. The final validation summary appears below; no NMRPeak production
+deployment was performed. The original design replaces the provider's generic
+Attempt lifecycle, journal-driven restart engine, publication loop, and native
+supervision/control layer with provider-core and shared delivery.
+Keep HF/CHF input projection, interpretation, model validation, generation,
+scientific result policy, offerings, and model configuration in NMRPeak.
+
+The goal is one maintained implementation of uncertain START, live exclusion,
+Attempt observation/progress, terminal handoff, and native retirement. A facade
+that calls AttemptController while attempt_lifecycle still controls those effects
+would not meet the design. NMRPeak's scientific behavior must survive; its old
+recovery model does not survive unchanged.
+
+Original source reviewed
+------------------------
+
+NMRPeak checkout: 1697dc84dd1d76ae25b04efc8183fd80614000e5.
+nmr-provider-tools checkout: e8f3afc4c18ee5faf1bde6a2e08dd90f25abd2e9;
+the package declares provider-core 0.4.0.
+
+NMRPeak owners:
+  nmrpeak_provider/attempt_lifecycle.py: prepare_execution, execute_prepared,
+    select_completion, deliver_terminal, reconcile_record
+  nmrpeak_provider/lifecycle_lane.py: HF/CHF scientific bindings
+  nmrpeak_provider/runner_session.py: validate, generate, cancel, retire
+  nmrpeak_provider/provider_process.py: two lane owners and startup recovery
+  nmrpeak_provider/{attempt_journal,attempt_journal_store,generation_runtime,
+    frozen_generation,product,input_interpreter,preparation_failure_policy}.py
+  nmrpeak_provider/owner_session_supervisor.py
+  families/nmrpeak/{runner_worker,runner_runtime}.py
+  notes/003_preparation_failure_explanation.txt and
+    notes/006_maximum_error_transparency_20261014.txt
+
+Shared owners under packages/provider-core/src/provider_core/:
+  controller.py, execution.py, analysis.py, ownership.py, lifetime.py
+  runner.py, runner_session.py, runner_protocol.py
+  delivery_client.py, delivery_store.py, deployment_binding.py
+
+The SDK's AnalysisSession explicitly follows NMRPeak's preparation/execution
+split. That is evidence of a compatible boundary, not proof of this consumer's
+adoption. The reviewed checkouts do not establish any running image's identity.
+
+Finished ownership
+------------------
+
+NMRPeak retains a supervising composition with two scientific lanes, HF and CHF.
+Both use one shared live AttemptClaims registry. Each Attempt receives a fresh
+lane-specific AnalysisSession and an AttemptController. The provider sets its
+scientific slot limits independently of the registry's bookkeeping capacity.
+
+Acquire ProviderLifetime before API effects on a canonical private root shared
+by every possible local supervisor for this provider identity. It is a lifetime
+lock, not a recovery journal; a private directory inside each container cannot
+exclude another container. Keep deployment identity locking for cutover as well.
+Keep one active scientific request per loaded lane initially; the SDK default
+capacity does not authorize extra model concurrency.
+
+The controller owns START/replay, active Attempt observation, preparing/running
+progress, stop decisions, and handoff of the binding's returned terminal outcome.
+NMRPeak owns Job selection, lane/generation selection, scientific deadlines,
+model readiness, per-lane resource scheduling, and the accuracy of its outcome.
+
+HF and CHF in the reviewed process share a provider identity. They therefore
+share one delivery binding for that API-origin/provider-ref pair, not two
+bindings merely because they use different models. Each original operation
+still needs its own serial transport owner; serialize access to a shared client
+or allocate clients to the same binding without overlapping their exchanges.
+Hello and scientific input operations must not borrow an active controller's
+API transport. Give concurrent operations separately owned transports.
+
+Shared delivery owns the durable exact-byte queue, publication/retry decisions,
+and held-report state. After a matching durable enqueue acknowledgement, report
+delivery can continue while NMRPeak or either model runner is stopped. Before
+that acknowledgement the controller still owns the report and its uncertainty.
+NMRPeak does not retain another terminal publisher or mutate queued commands.
+
+Keep the current open-only execution permission: closure or cancellation stops
+generation. Configure observation deadlines and recovery explicitly rather than
+silently continuing under the SECS closed-Job policy. On delivery backpressure,
+pause new scientific admission for this binding and retain each exact report;
+settled HF/CHF scientific resources need not remain occupied by delivery.
+
+One admission gate in the supervising event loop owns pause/resume for this
+binding across both lanes. A DeliveryFull or retryable delivery-unavailable
+notice pauses new admissions and records the exact blocking controller. Lane
+release does not remove that controller or its live/control/terminal reservation.
+Already admitted work retains its reserved terminal allowance even if the other
+lane fills the queue; a free lane alone never authorizes new work while paused.
+Check the gate and reserve an admission permit together before dispatching START.
+
+The SDK has no delivery-recovered callback. Observe normal completion of the
+original controller invocation with DeliveryAcceptedCheckpoint to clear its
+delivery-pressure blocker. Enqueue may instead be acknowledged while independent
+cleanup fails and run raises. Explicit disposition may use verified
+delivery_acceptance retained by that original execution failure to clear only
+its delivery blocker; keep the owner and its cleanup exclusion/lifetime lock.
+Do not classify already-enqueued bytes as unacknowledged or resubmit them merely
+because cleanup failed. Resume only when every delivery blocker is discharged
+and the required scientific resources have independently settled. Another held
+owner requiring intervention cannot be silently cleared by a timer or error.
+An enqueue acknowledgement proves that report's handoff, not reserved queue
+space for a future report. A new admitted operation must still reserve its own
+live terminal capacity and may meet backpressure again. Queue inventory and a
+successful status read are not capacity reservations or resume permissions.
+
+Use the existing scientific split
+--------------------------------
+
+Create one lane-parameterized NMRPeak AnalysisSession implementation. Supply the
+existing LifecycleLane binding so HF and CHF keep their own input projection,
+token constraints, failure policy, and model schema. Avoid copying the shared
+controller for each lane or adding another inventory of hard-coded lane names.
+The existing generation/lane definitions remain the source for composition.
+
+prepare receives the actual START acknowledgement and verified Job input. Keep
+the existing structured/freeform routing rule: rejected structured input does
+not become prose. Keep bounded interpreter candidate repair, attributed model
+explanations, and model-specific validation. A preparation defect classified by
+the provider returns AnalysisFailure; an interpreter availability problem may
+be retried or held within the live session's explicit deadline and condition
+policy. Do not turn a reported model claim into a verified source defect.
+
+Use the validated runner request as session-owned authority. Return
+PreparedAnalysis with a protected identity for its exact lane, generation,
+source/candidate, and validated model input. The session retains the actual
+ValidatedRunnerRequest; the SDK stores identity metadata, not the capability
+or a second copy of the model payload.
+
+execute accepts only that session's unused prepared handle and invokes generation
+once. Retain Attempt/key/runner-boot correlation through the result decoder.
+Keep existing candidate admission, HF/CHF result encoders, decimal handling,
+scientific facts, and failure explanations. Return AnalysisSuccess with opaque
+provider-owned result bytes or an explicitly classified AnalysisFailure. An
+uncertain generation reply does not authorize candidate reconstruction or another
+generate call. A generic exception is not evidence of invalid user input.
+
+Move API effects out of the old preparation/execution helpers. In particular,
+the binding must not send a second running observation or journal an Entered
+record after the controller has already made the transition. Await the SDK's
+phase-bound condition callback for reviewed public conditions. Do not retain
+and reuse that callback across phases or ignore a failed condition publication
+before dependent work.
+
+Native ownership and loaded models
+---------------------------------
+
+Use provider_core.runner's owner-session lifetime and SDK RunnerSession control
+for each loaded model child. Adapt the child launcher to the inherited science
+and lease descriptors; retain NMRPeak's Ready/Validate/Generate/result codec and
+runtime. Remove the displaced generic owner_session_supervisor rather than
+layering it beneath a second owner of the same child's exit.
+
+The existing NMRPeak RunnerSession.retire only hands off RETIRE and closes its
+channel. It explicitly does not establish process exit. It cannot directly
+satisfy the SDK's retirement contract, and it is a different type from the SDK's
+RunnerSession required for ObservedWorkerCrash. Do not alias these two classes
+or manufacture native exit evidence from the scientific protocol.
+
+Keep models loaded across healthy Attempts. A provider-owned lane pool retains
+the native session and gives an AnalysisSession exclusive use of the next request.
+After a complete response, certify no operation still uses the Attempt's inputs,
+consume/release validated state, and release per-Attempt grants before returning
+the lane to the pool. retire may then confirm per-Attempt quiescence without
+killing the healthy loaded child. Mere Python completion or socket closure is
+not that certificate. On interruption or uncertainty, request native stop and
+observe child/scratch retirement; a failed confirmation keeps the slot excluded.
+
+SDK RunnerSession.operation and native scratch belong to the loaded child, not
+one Attempt. The lane pool must bind scientific frames/prepared handles to the
+child boot, exclusive per-Attempt lease, Attempt/key, and request sequence.
+Late/duplicate replies cannot cross leases; an idle-child exit fails no Attempt.
+Do not attribute death during lease handover to a new Attempt without its own
+correlated entry evidence. This is a consumer binding proof, not a property
+conferred by owner-session mode.
+
+The present worker sends ResultFrame before clearing pending, and the provider
+marks itself IDLE on receiving that frame. Make scientific completion a real
+linearization point: finish/join per-request work and clear prepared/source
+state before sending the correlated terminal reply. Keep loaded model state and
+native scratch as child-lifetime resources. If this ordering proves quiescence,
+use that reply rather than adding a redundant acknowledgement. Cancellation
+after validation still has pending state: retire the native child unless a
+separately qualified discard protocol clears it. Current RETIRE refuses pending
+validation and cannot be treated as a successful release.
+
+The scientific READY frame still proves the selected checkpoint, model, and
+codec, whereas the shared control greeting proves control/session identity.
+Neither substitutes for the other. Preserve frozen generation/result facts and
+use one bounded startup budget across control admission and model readiness.
+Do not impose a short whole-session timeout on a healthy warm model.
+
+Blocking existing runner/interpreter functions may be adapted behind an async
+port, but cancelling the await does not stop their thread or model request.
+Retain the original operations, make stop reach their native owner, and join
+them. The controller must be able to observe the API while preparation or model
+generation runs. API failure, session cancellation, cleanup failure, and a chosen
+scientific outcome remain separately observable.
+
+Refactor scientific failure ownership before adapting those blocking calls.
+The existing _retire_with_error closes science before its caller sees EOF or a
+protocol/timeout failure. It cannot remain in that order: the owner must get the
+cause before deliberate close so unexpected EOF can receive one bounded native
+observation; mark interruption before any deliberate close or stop. A matching
+worker failure frame remains attributed scientific evidence, not proof of an
+original native exit. Do not retroactively manufacture original_exit after close.
+
+Keep the native control session across warm requests without starting a cleanup-
+timed read for the whole healthy model lifetime. On unexpected scientific EOF,
+start/retain the one bounded original retirement observation before deliberate
+interruption; on a deliberate stop mark interruption first and observe cleanup.
+Expiry of a caller's wait leaves an outstanding read to be joined. Failure of
+the SDK read itself poisons the channel: later reads are refused even if the
+child later exits. Preserve sources/exclusion and expose blocked retirement.
+The current SDK offers no reset; recovery requires explicit offline containment
+of the exact provider/runner lifetime and separate proof of child exit and
+scratch cleanup before a fresh lifetime starts. This can require emergency
+provider death and its disclosed pre-handoff loss risk. Do not treat a status
+snapshot, another reader, or a second supervisor as a retirement receipt.
+
+Recovery policy changes deliberately
+-----------------------------------
+
+The current reconcile_record can replay pending START, resume pre-execution
+preparation for the same frozen generation, or create an interrupted failure
+after restart. The adopted live-only controller does none of those after its
+supervisor dies. New startup does not restore journaled START operations, scan
+old Attempts, restore prepared requests, or use history to authorize FAIL.
+Unresolved server Attempts remain under server-owned expiry policy.
+
+Preserve derive_provider_attempt_key as the existing logical identity policy for
+ordinary newly discovered Jobs in a scientific generation. Discovery may thereby
+encounter the same logical key after restart; that is not permission to resume
+its old execution. Keep allow_active_start_replay=False, handle the verified
+already-active receipt without entering science, and do not generate another key
+to defeat the refusal. Retry an uncertain live START with its exact body/key.
+If product policy later needs another calculation, review its generation/admission
+rules explicitly rather than hiding that permission in migration code.
+
+A live owner may report an observed original native crash, correlated to its
+actual Attempt and phase. The SDK requires its actual native RunnerSession,
+the original exit, and the owning analysis session. Record local interruption
+before any deliberate stop or close. EOF, timeout, our own kill, and missing
+restart state do not establish an unexpected worker crash. Preserve the exact
+START acknowledgement for this correlation and retain original bounded readers
+when caller waits expire; do not create a second reader to obtain a nicer answer.
+
+After shared delivery durably accepts a report, its queue survives provider
+restart and owns publication. Before acceptance is confirmed, provider death
+may leave an already queued report or lose it; no restart reconstruction is
+promised. This is weaker pre-handoff recovery than the current journal and must
+be stated plainly in operator documentation. It is the intended policy, not an
+accidental migration regression to hide behind a generic recovery claim.
+
+Keep note 006's maximum useful non-sensitive transparency policy. Preserve
+attributed interpreter/model explanations, original causes, cleanup uncertainty,
+bounded redacted histories, and correlation. Those histories may have their own
+retention and inspection, separate from active obligations. They must not become
+a second START or terminal-replay authority. A diagnostic sink failure must stay
+visible without vetoing an admitted crash report or replacing a chosen outcome.
+This redesign supersedes note 006's requirement that the producer itself retain
+an executable terminal-command journal; shared delivery owns that obligation.
+It does not supersede the note's disclosure policy or historical rollout record.
+
+There is a current SDK boundary to account for: _notify_delivery_retry protects
+observer failures for admitted crashes, while ordinary selected reports keep
+fail-stop callbacks. NMRPeak's callback must update its admission gate without
+diagnostic I/O, and isolate logging/history writes in their own error boundary.
+Retain the first bounded sink failure separately and expose diagnostic degradation
+through operator state without throwing that sink exception back into ordinary
+handoff. Do not suppress scheduler/ownership failures as logging failures or
+silently discard diagnostics. This is a qualified consumer observer contract;
+it does not claim that SDK 0.4.0 protects all observers or broaden core behavior.
+
+Deployment and old obligations
+-----------------------------
+
+Separate stopping new admission from setting the controllers' stopping event.
+A scientific outcome being returned is not yet a selected terminal handoff:
+_handoff checks require_execution_ready before selection. If stopping wins that
+race, the controller can refuse selection. Do not promise that every returned
+outcome drains on orderly stop. Already selected/approved handoffs retain their
+original exact retry owner; unselected outcomes stopped by controller policy
+need settled original work/I/O followed by the SDK's explicit supported
+suppression disposition where applicable. Record the reason; never send them
+through an alternate publisher or mark them enqueued. A selected report cannot
+be erased using the unselected-outcome suppression path. Other unresolved
+outcomes remain held. Shutdown readiness requires each owner's actual valid
+delivery/suppression disposition and independent cleanup, not a fabricated ACK.
+
+Orderly shutdown stops new admission, settles the original operations, and
+requires every retained controller's shutdown_ready plus settlement of the
+provider's independent API and native owners before releasing ProviderLifetime.
+work_settled does not permit discarding a report awaiting durable handoff.
+Queue publication continues in its own service after provider shutdown.
+
+Keep exact handoff retries alive while settled scientific resources release.
+If delivery remains unavailable, orderly drain has no guaranteed finite bound.
+Expose the blocked controllers and causes. Deployment stop tooling must observe
+that state and permit restoring delivery rather than silently making generic
+task cancellation or a service timeout the normal report-loss path. An explicit
+emergency force-stop may accept unacknowledged-report loss; record that decision
+and do not report successful orderly shutdown or recover the report on restart.
+
+Bind the provider and delivery service to the same neutral definition for API
+origin, issued provider identity, signing credential/CA, route, and socket grant.
+Preserve HF/CHF scientific generations, checkpoints, prompt policy, CPU/resource
+selection, and scientific runner permissions in their existing provider owners.
+The shared queue's persistent volume is independent of runner scratch and the
+provider's optional diagnostic history. Mount IPC at the configured socket's
+parent and grant the socket group to the provider process.
+
+Choose an empty-obligation cutover. Stop new admission and let the old qualified
+runtime settle its existing journal records under the old rules. While stopped,
+hold the existing deployment/identity locks and inspect its retained obligations.
+Refuse the upgrade if any START, active, terminal, held, or uncertain obligation
+remains. Resolve it explicitly under the owning old runtime; never erase it,
+reinterpret its phase, change its command bytes, or replace its Attempt key.
+Preserve diagnostic histories independently after obligations have ended.
+
+Do not ship a permanent old-journal reader, automatic journal importer, or
+simultaneous old/new publisher. This design has no automatic in-place conversion
+of an outstanding legacy record. Drain is a migration step; the finished new
+runtime has no journal-driven startup recovery.
+
+After consumers move, remove the generic lifecycle/recovery/publication code
+from attempt_lifecycle and provider_process, and retire the executable-journal
+ownership of attempt_journal/attempt_journal_store. Preserve or move genuinely
+scientific helpers and separately owned diagnostic storage; delete dead wrappers
+instead of retaining facade names for compatibility. Update inspected deployment
+plans, image/source closures, commands, and operator docs to their final owners.
+
+Addressing likely objections
+-----------------------------
+
+"Our preparation/execution split already works." Reuse that scientific boundary.
+The shared SDK was shaped around it. The benefit is removing a second lifecycle
+and transport policy implementation, not replacing NMRPeak's input/model code.
+
+"Two lanes need independent controllers." They get separate Attempt owners and
+scientific resources, with a shared exclusion registry and provider-wide delivery
+identity. A different model or frozen generation cannot partition ownership of
+the same remote Attempt or grant another START key.
+
+"We need durable restart preparation and interrupted-failure recovery." Those
+are real existing behaviors, and adoption deliberately removes them. Do not
+preserve them through a parallel journal engine. If retaining them becomes a
+requirement, revisit the design explicitly before implementing a hybrid.
+
+"Shared retirement will unload both models." Qualified per-Attempt quiescence
+allows healthy warm reuse. Failed or uncertain work requires actual retirement;
+closing a session while its child continues is insufficient. HF trouble does
+not itself prove CHF work must be discarded or replayed.
+
+"Diagnostic history requires the journal." Storage and its operator history can
+remain without carrying executable lifecycle obligations. Keep its useful evidence,
+and stop using historical records to authorize new effects after restart.
+
+
+The admitted-crash path catches ANY retry-observer exception, including a
+semantic admission-gate failure. Raising that exception alone cannot enforce
+fail-closed scheduling. Before a semantic gate update, latch a separate visible
+intervention/admission-block marker; clear that provisional marker only after
+the semantic update succeeds. On failure, preserve its cause and leave the
+marker set independently of whether the SDK catches the exception. Admission
+always checks this marker. Diagnostic-sink isolation must not clear it; operator
+recovery needs an explicit validated gate/owner disposition. Protecting crash
+handoff must not silently reopen scientific admission after scheduler failure.
+
+Report and evidence budgets
+---------------------------
+
+Configure explicit live-control, terminal-body, queue-count, and queue-byte
+allowances. The controller's hard ceiling is 2,097,152 encoded terminal-request
+bytes; configuration cannot raise it. Bound and qualify supported HF/CHF result
+envelopes, candidate counts, and explanatory text before admitting science.
+Do not silently truncate scientific content to fit. Unexpected oversize holds
+the exact outcome, stops new admission, and exposes the size/ceiling while
+settled scientific resources release. It cannot be remedied by recomputation,
+a replacement FAIL, increasing the reservation, or an ordinary restart. Any
+required larger contract needs a separately qualified SDK/wire change before
+rollout. Keep diagnostic-history budgets separate from required report bytes.
+
+Completion and evidence required
+--------------------------------
+
+Before merge, establish these properties with the actual HF and CHF adapters:
+
+- Race stopping with scientific return before terminal selection, then with an
+  already selected handoff. Prove supported explicit suppression versus exact
+  draining; neither path invents delivery or cleanup acceptance.
+- Inject durable enqueue ACK followed by independent retirement failure. Clear
+  delivery pressure only from retained verified acceptance, preserve cleanup
+  exclusion, and never resend already queued bytes as a replacement report.
+- Fail the semantic gate update during admitted-crash retry. Even if the SDK
+  catches the callback exception and handoff continues, admission stays latched
+  closed and the semantic failure remains visible for explicit intervention.
+
+- Structured/freeform routing, token limits, attributed explanations, candidate
+  repair, result content, and HF/CHF generation facts remain provider-owned.
+- One validated request is consumed once; wrong Attempt/lane/boot/handle is
+  refused before generation. No uncertain generate is retried as fresh science.
+- HF and CHF can make progress independently while shared claims prevent duplicate
+  Job/Attempt ownership. API observation continues while blocking science runs.
+- Readiness proves the right scientific generation. Healthy repeated Attempts
+  reuse loaded models; interrupted work cannot release a lane before confirmed
+  native retirement or a qualified quiescence result.
+- Prove cleanup-before-terminal-reply and validated-request cancellation. Race
+  native exit with science EOF, failure-frame delivery, lease handover, and
+  deliberate cancellation; wrong or idle-lease evidence creates no crash report.
+- Fail diagnostic sinks during both selected success and classified-failure
+  handoff under backpressure. Exact handoff continues, diagnostic degradation
+  remains visible, and semantic scheduler failures stay distinct.
+- Fill the shared binding from either lane while both hold report reservations.
+  Neither a released lane nor a status snapshot admits a third calculation while
+  paused; only completion of the original blocking handoffs clears the gate.
+- Exercise partial retirement frames and poisoned reads, offline containment,
+  blocked shutdown with unavailable delivery, and exact/oversize report bounds.
+  No such failure fabricates cleanup confirmation or shutdown readiness.
+- Unexpected native exit, deliberate stop, failed retirement, and diagnostic
+  failure preserve their distinct evidence. Only the admitted original crash
+  becomes worker_crashed; lost supervisor state creates no new report.
+- Retained terminal bytes survive queue backpressure and live acknowledgement
+  loss. After durable enqueue, provider/runner death does not block publication.
+  API acceptance is claimed only from its matching receipt, not local enqueue.
+- Nonempty or unreadable legacy obligations refuse cutover. Diagnostic history
+  survives separately; queue/identity/socket grants remain stable across restart.
+- Neither lane can reach an old START/recovery/publisher path. Adding or changing
+  a scientific offering uses the existing lane definitions and session port,
+  without duplicating the shared state machine or editing SDK scientific rules.
+
+Use contained consumer tests for these adapters, installed deployment checks for
+their actual images/grants, model qualification for real generation, and signed
+API acceptance for end-to-end behavior. These are separate proofs. This design
+note supplies none of them and authorizes no production rollout.
+
+2026-10-29 stopped-maintenance cut (joint D118)
+-----------------------------------------------
+
+A stopped legacy journal remains readable and must block new provider startup
+until its obligations are deliberately resolved. Its private archive format and
+exact-byte evidence remain NMR-owned. SDK ProviderAPI owns authenticated Attempt
+and inventory reads; its read_attempt call receives the retained Job identity.
+The archive codec stays independent of any live API implementation.
+
+Maintenance captures only the selected bindings, signing key and applicable
+CA/resolver inputs through the existing retained-tree publisher. SDK admission
+runs in the installed image. No scientific generation placeholder, interpreter
+keys, delivery grant or loaded scientific image is needed to prove an empty
+inventory. Archival additionally mounts the actual retained scientific
+generation, journal and identity lock, preserving the reviewed digest/hold guard.
+
+Use a fresh API route namespace and the exact SDK api/api-init projection. The
+existing resource inspection and teardown owner accepts this explicit API-only
+projection; do not reconstruct SDK volume names or introduce a cleanup registry.
+Original captured projection bytes authorize partial-start cleanup; observed
+container labels, image, route mounts, local volume driver/options and all
+borrowers must still match before removal. Foreign or ambiguous resources block
+cleanup. No orphan deletion is allowed.
+
+For journal retirement, the host-held provider identity lock spans complete
+empty inventory, successful route teardown and exact volume deletion. The
+reader does not reacquire that same lock. A nonempty page refuses immediately;
+empty pages require bounded pagination without repeated cursors and an actual
+end. No partial inventory can authorize deletion. The archive child holds its
+own identity descriptor and retains it through unconfirmed SDK API retirement,
+or until OS process teardown. Archive success still does not prove delivery.
+
+Rejected alternatives: host parsing/signing duplicates SDK authority; old
+localhost overrides bypass the selected route; borrowing the current full
+scientific deployment introduces unrelated grants and image requirements;
+per-operation cleanup registries split resource ownership. These choices are
+implementation prerequisites, not evidence of a running deployment.
+
+Maintenance qualification (Python 3.12.16, published SDK 0.5.0)
+---------------------------------------------------------------
+An initial isolated-image rehearsal exercised the actual installed package.
+The lifecycle probe started the real SDK api/api-init projection, admitted the
+captured signing credential as UID 65532, verified network-none client access
+through a read-only socket mount, and proved exact removal of containers and
+route volume. The TLS probe additionally sent a real signed inventory GET
+through that socket to a disposable mapped TLS fixture, checked explicit CA and
+hostname verification, and received complete-empty only after API retirement.
+The fixture checked signing-header presence, not cryptographic verification of
+the signature. Both probes preserved the original mode-0600 credential bytes.
+Neither probe contacted a production API, changed a journal or incumbent
+service, or qualified a canonical provider image or a working deployment.
+
+2026-10-29 model HTTP ownership (joint D115/D122)
+------------------------------------------------
+
+InputInterpreter remains immutable configuration and scientific prompt facts.
+Each Attempt adopts an InterpretationSession before preparing prose. That
+session retains the bound endpoint owner and its actual SDK HttpTransport until
+confirmed retirement. Analysis retirement closes interpreter admission and
+settles both interpreter and scientific owners independently; an idle runner
+alone cannot discharge an unfinished model request.
+
+Keep NMR's tool JSON, finish_reason, repair/fallback ordering and request retry
+policy. Replace only HTTP work/body decoding/physical retirement with the SDK
+exchange_decoded boundary. Preserve the installed HTTPX trust_env=False trust
+profile by using its explicit create_ssl_context constructor (certifi roots).
+The existing model harness's five-second per-send pacing remains inside each
+original request allowance. Construct transport allowances from the remaining
+request and turn time after pacing, and pass the original absolute turn cap to
+all SDK cleanup observation. Never dispatch after admission closes or replace
+an unsettled original transport.
+
+Known settled network/deadline and bounded decoding refusals can enter NMR's
+existing endpoint retry/fallback policy. Unknown local exceptions, certificate
+verification failures and independent or unconfirmed retirement do not gain
+retry permission. Keep the actual SDK exceptions for protected diagnostics.
+Rejected alternatives: a cleanup Task being done is not proof of resource
+closure; logging cleanup failure and proceeding can overlap billed requests;
+a fresh cleanup duration on each observation extends the original deadline;
+using system roots silently changes the installed HTTPX certificate profile.
+
+2026-10-29 historical journal authority cut
+------------------------------------------
+
+The old journal remains a private historical format, not an alternate live
+provider implementation. Keep its exact v1/v2 serialization, byte fingerprints,
+held evidence, frozen-generation resolution, offline inspection and explicit
+closed-Attempt archive. Freeze only the historical terminal body and hold-field
+validation needed to read those bytes. Remove old START binding, replay/restart
+policy, request signing, HTTP clients and operation classifiers from this path.
+
+A pure historical validator belongs with the existing private record codec. It
+must preserve the old complete/fail closed field sets, canonical base64/body,
+result and text limits, and hold code/action/text profiles. This is deliberately
+independent of the SDK's evolving live wire contract. The historical API namespace
+hash keeps its original domain and canonical bytes because existing journal
+volume labels depend on it. Do not retain the old endpoint decoder/materializer
+or a second credential parser merely to compute that identity.
+
+Rejected alternatives: leaving an unused publisher/replay engine packaged makes
+parallel authority available again; interpreting old records through the newest
+live SDK schema can change archival acceptance; deleting all old-format evidence
+would abandon retained obligations. Tests construct historical records as data
+and continue to prove canonical bytes, the fixed v1 digest, held evidence and
+storage/archival integrity; they do not exercise retired live recovery policy.
+
+Pre-commit adoption qualification
+---------------------------------
+The maintained Python 3.12.16 test base acquired published SDK 0.5.1 normally;
+its wheel and both issuer profiles matched the published release artifacts.
+The remaining lanes passed 443 unit, 23 integration, six historical contract and six
+model-harness tests. An added real durable-inbox capacity witness also passed:
+both original controllers retained their reports and live claims during actual
+DeliveryFull, stopped admission with idle science, and handed off their exact
+original scientific bytes after space returned. That expands integration to 24.
+No producer sent COMPLETE or FAIL directly.
+
+The broader run caught an original-SCI observation race that focused timing had
+hidden. A deterministic barrier forced its failed Future to finish after caller
+cancellation but before analysis retirement (RED). RunnerSession now requires
+its existing observed-Future identity for quiescence and subsequent submission;
+physical completion alone is insufficient. Sixteen analysis checks passed after
+the correction, including independent late failure and completed-but-unobserved
+replacement refusal. No analysis-level mirrored flag or replacement executor
+was added (joint D144).
+
+The real HTTP fixture also exposed Python 3.12 Server.wait_closed ordering:
+accepted peer handlers must settle before waiting for server closure. Safe task
+stacks showed the model had returned and no SDK exchange remained; only fixture
+barriers were held. Both scientific lanes' actual-SDK fallback/repair checks
+passed after correcting that fixture owner. This is not a production SDK defect.
+
+At this checkpoint canonical image contexts still require the coherent source
+commit. The repository check comparing committed context to the dirty manifest
+is expected to refuse until that commit; it was not weakened or bypassed.
+Canonical image build and installed native/runtime qualification remain required.
+
+Final request-budget correction
+-------------------------------
+The maintained default lane passed all 443 unit checks but exposed one timeout
+fixture assumption during concurrent image builds: an adapter retry attempt is
+not proof that a request was observed by the HTTP peer. The integration witness
+now records pre-send attempts separately, bounds observed primary requests and
+still requires the final fallback, source fidelity and bounded retry policy.
+It does not renew a deadline or claim that an unobserved send had no effect.
+
+A further causal check delayed HTTP request construction for 30ms under a 10ms
+request allowance. The old placement created that allowance after serialization
+and incorrectly returned a model result (RED). The original absolute request
+cap is now created before constructing JSON, checked before pacing, and used to
+derive the transport's remaining work allowance. The turn cap still owns retry,
+backoff and retirement. Nineteen real-wire model adapter checks passed after
+this correction; an independent critical source audit found no blocker.
+
+Final canonical qualification (2026-10-29)
+-----------------------------------------
+The historical local source cut and request-budget correction passed the
+maintained default lane with all 521 checks: 444
+unit, six historical contract, 24 integration, six model harness and 41 repository.
+The committed-context refusal described above is closed without weakening it.
+Critical Luna-medium audits found no remaining actionable blocker.
+
+All three canonical images built through their ordinary published SDK 0.5.1
+acquisition path. Installed readback confirms Python 3.12.16 and a single system
+interpreter in each role. HF and CHF contain the native profile without HTTPX,
+cryptography, CFFI or http_sf. The provider image included the request-budget
+correction; native images retained their earlier unchanged inputs.
+Committed image contexts were rematerialized after the evidence-only commit;
+all three input identities matched the successfully built images. The published
+SDK wheel, API/native installation profiles and source constraint remain pinned
+in the maintained dependency files. Raw logs, local image inventories, temporary
+harnesses and operational identifiers are omitted from this note for privacy.
+
+Each canonical runner loaded its released checkpoint read-only. Two oversized
+inputs were rejected, then a short input admitted with the same scientific boot
+and original native operation. Both retirements confirmed scratch release; the
+observed native receipt is owner_lost, returncode -15, with no OOM or restart.
+This establishes warm validation/tokenization and retirement, not generation or
+a causal crash diagnosis. The separate twelve bounded CPU generation comparisons
+in note 009 remain the numerical evidence.
+
+The final canonical provider also exercised the actual temporary SDK API route
+against a disposable TLS inventory fixture. Hostname and explicit CA verification,
+SDK signing headers, complete empty inventory after route retirement, unchanged
+source credential and exact temporary-route cleanup passed. This fixture does
+not cryptographically verify signatures. Neither journals nor incumbent services
+were changed. These are local qualification results; no NMRPeak push, release or
+production deployment was performed.

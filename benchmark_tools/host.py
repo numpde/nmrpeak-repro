@@ -103,8 +103,8 @@ def image_spec(role, input_id, revision):
     return LocalImageSpec(f"numpde/nmrpeak-{lane}-runner", input_id,
                          (("io.numpde.nmrpeak.runner.ref", role),
                           ("io.numpde.nmrpeak.runner.target", "cpu-x86_64")),
-                         ("python", "-m", f"models.{role}.runner.owner_session_supervisor", "5", "5", "--",
-                          "python", "-m", f"models.{role}.runner.worker"))
+                         ("/usr/local/bin/python3.12", "-P", "-m",
+                          "nmrpeak_provider.native_launcher", role, f"models.{role}.runner.worker"))
 
 
 @contextmanager

@@ -7,30 +7,26 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .attempt_journal import ActiveAttempt, LocalExecutionPhase, StartPending, TerminalOperation, TerminalPending
+from .attempt_journal import ActiveAttempt, StartPending, TerminalOperation, TerminalPending
 from .attempt_journal_store import AttemptJournalStateRejected, AttemptJournalStore
-from .attempt_lifecycle import terminal_recovery_facts
 from .canonical_json import canonical_json_bytes, parse_canonical_json_bytes
 from .inspection_document import validate_inspection_document
-from .provider_config import JOURNAL_MAXIMUM_RECORDS, JOURNAL_PATH
+from .attempt_journal_store import JOURNAL_MAXIMUM_RECORDS
+from .provider_config import JOURNAL_PATH
 
 
 def _record_facts(record):
     facts = {"job_ref": record.job_ref, "provider_attempt_key": record.provider_attempt_key,
-             "frozen_generation_id": record.frozen_generation_id, "next_actor": "provider_operator"}
+             "frozen_generation_id": record.frozen_generation_id, "next_actor": "provider_operator",
+             "restart_behavior": "Provider startup stays blocked while this record from an earlier provider version remains unresolved."}
     if type(record) is StartPending:
         return facts | {"phase": "start_pending", "delivery": "unconfirmed",
-            "restart_behavior": "Reuse the retained start intent after validating the owning frozen generation.",
-            "next_action": "Restore the owning deployment configuration and credentials before restarting."}
+            "next_action": "Preserve this record. Ask the API operator and provider maintainer to reconcile the retained START intent and plan its migration."}
     facts["execution_attempt_ref"] = record.execution_attempt_ref
     if type(record) is ActiveAttempt:
-        behavior = ("Read current Attempt state and resume only the retained pre-execution phase."
-                    if record.local_phase is LocalExecutionPhase.PRE_EXECUTION else
-                    "Read current Attempt state; report interrupted execution if still active, without rerunning analysis.")
         return facts | {"phase": "active", "local_phase": record.local_phase.value,
-                        "latest_diagnostic": _diagnostic_facts(record.latest_diagnostic),
-                        "restart_behavior": behavior,
-                        "next_action": "Preserve this record and restart the owning deployment to reconcile its Attempt."}
+            "latest_diagnostic": _diagnostic_facts(record.latest_diagnostic),
+            "next_action": "Preserve this record. Ask the API operator and provider maintainer to confirm this Attempt's state and plan migration of the retained obligation."}
     if type(record) is not TerminalPending:
         raise TypeError("Unsupported journal record for inspection")
     facts |= {"operation": record.terminal_operation.value, "delivery": "unconfirmed",
@@ -40,23 +36,29 @@ def _record_facts(record):
     if record.terminal_operation is TerminalOperation.FAIL:
         command = parse_canonical_json_bytes(record.terminal_request_body)
         facts["retained_failure"] = {
-            "failure_code": command["failure_code"],
-            "failure_message": command["failure_message"],
+            "failure_code": command["failure_code"], "failure_message": command["failure_message"],
         }
     if record.terminal_hold_action is None:
         return facts | {"phase": "terminal_pending",
-            "restart_behavior": "Read current Attempt state and recover the exact retained command; do not recompute it.",
-            "next_action": "Restore service access and restart the owning deployment; preserve the exact command."}
-    recovery = terminal_recovery_facts(record)
-    return facts | {"phase": "terminal_reconciling" if record.terminal_reconciling else "terminal_hold",
-        "recovery": {key: value for key, value in recovery.items()
-                     if key not in {"automatic_reads", "automatic_resends", "new_work_for_attempt", "next_actor", "next_action"}},
-        "on_restart": {key: recovery[key] for key in
-                       ("automatic_reads", "automatic_resends", "new_work_for_attempt", "next_actor", "next_action")},
-        "restart_behavior": ("Retry only the Attempt read with backoff; publication remains paused."
-                             if record.terminal_reconciling else "Keep publication and reads stopped; retain the command for operator reconciliation."),
-        "next_action": ("Restore API read access, then restart the owning deployment."
-                        if record.terminal_reconciling else recovery["next_action"])}
+            "next_action": "Preserve the exact command and record. Ask the API operator and provider maintainer to reconcile report delivery and plan migration of the retained obligation."}
+    if record.terminal_reconciling:
+        action = "Preserve the exact command and record. Ask the API operator and provider maintainer to reconcile this Attempt and plan migration."
+    else:
+        action = "Run make provider/deployment/journal/archive-closed with this record's digest, frozen generation and an investigation reason. The command reads the API to confirm closure before archiving; report delivery remains unconfirmed."
+    return facts | {
+        "phase": "terminal_reconciling" if record.terminal_reconciling else "terminal_hold",
+        "recovery": {
+            "job_ref": record.job_ref, "execution_attempt_ref": record.execution_attempt_ref,
+            "operation": record.terminal_operation.value, "command_fingerprint": record.terminal_request_fingerprint,
+            "command_retained": True, "delivery": "unconfirmed", "action": record.terminal_hold_action,
+            "description": record.terminal_hold_description, "code": record.terminal_hold_code,
+            "detail": record.terminal_hold_detail, "request_id": record.terminal_hold_request_id,
+            "observed_state": record.terminal_observed_state,
+        },
+        "on_restart": {"automatic_reads": "stopped", "automatic_resends": "stopped_including_restart",
+                       "new_work_for_attempt": "stopped", "next_actor": "provider_operator", "next_action": action},
+        "next_action": action,
+    }
 
 
 def _diagnostic_facts(diagnostic):
@@ -81,7 +83,7 @@ def inspect_journal(root: Path, execution_attempt_ref: str | None = None) -> byt
                    if execution_attempt_ref is None or getattr(record, "execution_attempt_ref", None) == execution_attempt_ref]
         diagnostics = journal.diagnostics(execution_attempt_ref)
         omitted = journal.diagnostic_count() - len(diagnostics)
-    document = {"schema_id": "nmrpeak.journal_inspection.v3",
+    document = {"schema_id": "nmrpeak.journal_inspection.v4", "api_observation": "not_performed",
         "current_automation": "stopped", "observed_at": datetime.now(UTC).isoformat(),
         "stage_counts": dict(Counter(record["phase"] for record in records)), "records": records,
         "diagnostics": diagnostics, "diagnostics_omitted": omitted}
@@ -90,7 +92,7 @@ def inspect_journal(root: Path, execution_attempt_ref: str | None = None) -> byt
 
 
 def main(arguments: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Inspect a stopped provider's retained obligations without sending requests.")
+    parser = argparse.ArgumentParser(description="Inspect records from an earlier provider version without changing them or sending requests. These records block provider startup until explicitly resolved.")
     parser.add_argument("--execution-attempt-ref", help="Show one Attempt's full retained diagnostic history")
     options = parser.parse_args(arguments)
     try:

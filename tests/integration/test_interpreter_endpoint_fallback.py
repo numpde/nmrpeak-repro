@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import httpx
+from tests.fakes.model_http import LoopbackHTTP, Reply, reply
 
 from nmrpeak_provider.input_interpreter import _InterpretationCapability, _value_schema_for
 from nmrpeak_provider.interpreter import (
@@ -78,84 +78,87 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
         capability = _InterpretationCapability(lane)
         expected = capability.construct_interpretation(value)
         requests: list[tuple[str, dict[str, object]]] = []
-        responses: list[httpx.Response] = []
         failures = []
+        self.send_attempts = []
 
-        async def handle(request: httpx.Request) -> httpx.Response:
+        async def before_send(request):
             body = json.loads(request.content)
-            host = request.url.host
+            self.send_attempts.append(body['model'])
+
+        async def handle(request, _index):
+            body = json.loads(request.content)
+            primary = body['model'] == 'primary-model'
+            host = 'primary.example.test' if primary else 'fallback.example.test'
             requests.append((host, body))
-            primary = host == "primary.example.test"
-            if behavior == "all_unavailable" or (primary and behavior == "unavailable"):
-                raise httpx.ConnectError("private connection detail", request=request)
-            if primary and behavior == "timeout":
-                await asyncio.Event().wait()
-            if primary and behavior == "busy":
-                response = httpx.Response(429, json={"error": {"message": "private busy detail"}})
-                responses.append(response)
-                return response
-            if primary and behavior == "reported":
-                response = httpx.Response(200, json=_completion(value, tool="report_input_problem"))
-            elif primary and behavior == "constructor" and len(requests) == 1:
+            if behavior == 'all_unavailable' or (primary and behavior == 'unavailable'):
+                return Reply(disconnect=True)
+            if primary and behavior == 'timeout':
+                return Reply(wait_for=asyncio.Event())
+            if primary and behavior == 'busy':
+                return reply({'error': {'message': 'private busy detail'}}, status=429)
+            if primary and behavior == 'reported':
+                return reply(_completion(value, tool='report_input_problem'))
+            if primary and behavior == 'constructor' and len(requests) == 1:
                 invalid = deepcopy(value)
-                invalid["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "unsupported-private-label"
-                response = httpx.Response(200, json=_completion(invalid))
-            elif primary and behavior == "protocol":
-                response = httpx.Response(200, json={"choices": [{"message": {
-                    "role": "assistant", "content": None,
-                    "reasoning_content": "Private fixture reasoning.",
-                    "tool_calls": [{"id": "fixture-call", "type": "function", "function": {
-                        "name": "submit_interpretation", "arguments": "not JSON",
+                invalid['model_input']['spectra']['1H']['peaks'][0]['multiplicity'] = 'unsupported-private-label'
+                return reply(_completion(invalid))
+            if primary and behavior == 'protocol':
+                return reply({'choices': [{'message': {
+                    'role': 'assistant', 'content': None,
+                    'reasoning_content': 'Private fixture reasoning.',
+                    'tool_calls': [{'id': 'fixture-call', 'type': 'function', 'function': {
+                        'name': 'submit_interpretation', 'arguments': 'not JSON',
                     }}],
                 }}]})
-            else:
-                response = httpx.Response(200, json=_completion(value))
-            responses.append(response)
-            return response
+            return reply(_completion(value))
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for filename, name in (("10-fallback.toml", "fallback"), ("05-primary.toml", "primary")):
-                (root / filename).write_text(
-                    f'id = "{name}"\nbase_url = "https://{name}.example.test/v1"\n'
-                    f'api_key = "fixture-only"\nmodel = "{name}-model"\n',
-                    encoding="utf-8",
+        servers = {name: await LoopbackHTTP([handle]*10).start() for name in ('primary', 'fallback')}
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for filename, name in (("10-fallback.toml", "fallback"), ("05-primary.toml", "primary")):
+                    (root / filename).write_text(
+                        f'id = "{name}"\nbase_url = "{servers[name].base_url}"\n'
+                        f'api_key = "fixture-only"\nmodel = "{name}-model"\n',
+                        encoding="utf-8",
+                    )
+                specs = load_openai_chat_endpoint_specs(root)
+                self.assertEqual([spec.configuration_id for spec in specs], ["primary", "fallback"])
+                endpoints = bind_openai_chat_endpoints(
+                    specs, OpenAIChatCallPolicy(
+                        request_timeout_seconds=0.02 if behavior == "timeout" else 1,
+                        turn_timeout_seconds=3,
+                    ),
+                    before_send=before_send,
+                    submit_interpretation_description="Copy source-supported values.",
+                    submit_interpretation_value_schema=_value_schema_for(lane),
+                    report_input_problem_description="Report source evidence only.",
                 )
-            specs = load_openai_chat_endpoint_specs(root)
-            self.assertEqual([spec.configuration_id for spec in specs], ["primary", "fallback"])
-            async with httpx.AsyncClient(transport=httpx.MockTransport(handle), trust_env=False) as client:
-                with patch("nmrpeak_provider.openai_chat_interpreter.asyncio.sleep", return_value=None):
-                    endpoints = bind_openai_chat_endpoints(
-                        specs, OpenAIChatCallPolicy(
-                            request_timeout_seconds=0.02 if behavior == "timeout" else 1,
-                            turn_timeout_seconds=3,
-                        ),
-                        http_client=client,
-                        submit_interpretation_description="Copy source-supported values.",
-                        submit_interpretation_value_schema=_value_schema_for(lane),
-                        report_input_problem_description="Report source evidence only.",
+
+                async def admit(candidate):
+                    return candidate
+
+                async def run():
+                    return await interpret(
+                        source_text=UserProvidedText(source),
+                        capability=capability,
+                        endpoints=endpoints.endpoints,
+                        interpretation_timeout_seconds=10,
+                        report_endpoint_failure=failures.append,
+                        admit_interpretation=admit,
                     )
 
-                    async def admit(candidate):
-                        return candidate
+                try:
+                    yield run, expected, requests, failures
+                finally:
+                    await endpoints.retire()
+                    self.assertTrue(endpoints._transport.retirement_confirmed)
+                    self.assertTrue(requests)
+                    self.assertEqual(requests[0][1]["messages"][2]["content"], source)
 
-                    async def run():
-                        return await interpret(
-                            source_text=UserProvidedText(source),
-                            capability=capability,
-                            endpoints=endpoints.endpoints,
-                            interpretation_timeout_seconds=10,
-                            report_endpoint_failure=failures.append,
-                            admit_interpretation=admit,
-                        )
-
-                    try:
-                        yield run, expected, requests, failures
-                    finally:
-                        await endpoints.join_response_releases()
-                        self.assertTrue(all(response.is_closed for response in responses))
-                        self.assertTrue(requests)
-                        self.assertEqual(requests[0][1]["messages"][2]["content"], source)
+        finally:
+            for server in servers.values():
+                await server.close()
 
     async def test_constructor_repair_preserves_reasoning_and_source_fidelity(self):
         for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
@@ -200,10 +203,15 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                         result = await run()
                         self.assertEqual(result.admitted, expected)
                         self.assertEqual(result.attempted_configuration_ids, ("primary", "fallback"))
-                        self.assertEqual(
-                            [host for host, _ in requests],
-                            ["primary.example.test", "primary.example.test", "fallback.example.test"],
-                        )
+                        self.assertEqual(self.send_attempts, ['primary-model', 'primary-model', 'fallback-model'])
+                        observed = [host for host, _ in requests]
+                        if behavior == 'busy':
+                            self.assertEqual(observed, ['primary.example.test']*2 + ['fallback.example.test'])
+                        else:
+                            # Timeout can precede the peer's observation of a send.
+                            self.assertLessEqual(observed.count('primary.example.test'), 2)
+                            self.assertEqual(observed[-1], 'fallback.example.test')
+                            self.assertEqual(observed.count('fallback.example.test'), 1)
                         self.assertEqual(len(failures), 1)
                         self.assertEqual(requests[-1][1]["messages"], requests[0][1]["messages"])
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from tests.fakes.runner import admit_fake_session
+
 import importlib.util
 from pathlib import Path
+from concurrent.futures import Future
 import socket
 from threading import Thread
 import unittest
@@ -84,8 +87,8 @@ CORRELATION = AttemptCorrelation(BOOT, "request:" + "6" * 32, ATTEMPT_REF, ATTEM
 DEADLINES = RunnerDeadlines(1, 1, 1, 1, 1)
 
 
-class ChfWorkerTests(unittest.TestCase):
-    def test_worker_loads_the_verified_descriptor_before_publishing_ready(self) -> None:
+class ChfWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_loads_the_verified_descriptor_before_publishing_ready(self) -> None:
         checkpoint = object()
         runtime = RecordingRuntime(candidates=["CCO"])
         connection = object()
@@ -133,18 +136,19 @@ class ChfWorkerTests(unittest.TestCase):
         load_runtime.assert_called_once_with(checkpoint)
         self.assertEqual(served, [(connection, runtime, READY, CHF_RUNNER_CODEC)])
 
-    def test_loaded_worker_completes_the_provider_session_and_retires(self) -> None:
+    async def test_loaded_worker_completes_the_provider_session_and_retires(self) -> None:
         runtime = RecordingRuntime(candidates=["CCO", "OCC"])
         with (
             self.assertLogs("nmrpeak_runner.worker", level="INFO") as logs,
             WorkerHarness(runtime) as harness,
         ):
-            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
-            validated = validate(session)
+            session = await self.enterAsyncContext(admit_fake_session(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC))
+            validated = await session.join_science(validate(session))
             self.assertIsInstance(validated, ValidatedRunnerRequest)
             assert isinstance(validated, ValidatedRunnerRequest)
-            generated = session.generate(validated)
-            session.retire()
+            generated = await session.join_science(session.generate(validated))
+            harness.retire_science()
+            await session.retire()
 
         self.assertEqual(generated.value, ["CCO", "OCC"])
         self.assertEqual(runtime.validated, [MODEL_INPUT])
@@ -157,11 +161,11 @@ class ChfWorkerTests(unittest.TestCase):
         self.assertIn("Model result sent to provider", rendered)
         self.assertIn("Runner retired", rendered)
 
-    def test_deterministic_rejection_keeps_the_loaded_boot_reusable(self) -> None:
+    async def test_deterministic_rejection_keeps_the_loaded_boot_reusable(self) -> None:
         runtime = RecordingRuntime(rejections=1, candidates=["CCO"])
         with WorkerHarness(runtime) as harness:
-            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
-            rejection = validate(session)
+            session = await self.enterAsyncContext(admit_fake_session(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC))
+            rejection = await session.join_science(validate(session))
             self.assertIsInstance(rejection, RunnerInputRejected)
             assert isinstance(rejection, RunnerInputRejected)
             self.assertEqual(rejection.token_count, 512)
@@ -169,17 +173,18 @@ class ChfWorkerTests(unittest.TestCase):
                 rejection.message,
                 runner_rejection_diagnostic(RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512),
             )
-            validated = validate(session)
+            validated = await session.join_science(validate(session))
             self.assertIsInstance(validated, ValidatedRunnerRequest)
             assert isinstance(validated, ValidatedRunnerRequest)
-            self.assertEqual(session.generate(validated).value, ["CCO"])
-            session.retire()
+            self.assertEqual((await session.join_science(session.generate(validated))).value, ["CCO"])
+            harness.retire_science()
+            await session.retire()
 
         self.assertEqual(runtime.validated, [MODEL_INPUT, MODEL_INPUT])
         self.assertEqual(runtime.generated, [MODEL_INPUT])
         self.assertEqual(harness.result, 0)
 
-    def test_generate_and_retire_require_the_current_validated_request(self) -> None:
+    async def test_generate_and_retire_require_the_current_validated_request(self) -> None:
         commands = (
             GenerateFrame(CORRELATION),
             RetireFrame("boot:" + "f" * 32),
@@ -193,7 +198,7 @@ class ChfWorkerTests(unittest.TestCase):
 
             self.assertIsInstance(harness.failure, RunnerProtocolError)
 
-    def test_retire_rejects_the_current_boot_while_a_request_is_pending(self) -> None:
+    async def test_retire_rejects_the_current_boot_while_a_request_is_pending(self) -> None:
         with WorkerHarness(RecordingRuntime()) as harness:
             receive_ready(harness.provider)
             harness.provider.sendall(
@@ -207,25 +212,27 @@ class ChfWorkerTests(unittest.TestCase):
 
         self.assertIsInstance(harness.failure, RunnerProtocolError)
 
-    def test_unexpected_runtime_failures_terminate_the_worker(self) -> None:
+    async def test_unexpected_runtime_failures_terminate_the_worker(self) -> None:
         validation_failure = RuntimeError("validation failed")
         with WorkerHarness(
             RecordingRuntime(validation_failure=validation_failure)
         ) as harness:
-            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
+            session = await self.enterAsyncContext(admit_fake_session(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC))
             with self.assertRaisesRegex(RunnerSessionRetired, "validation failed"):
-                validate(session)
+                await session.join_science(validate(session))
+            await session.retire()
         self.assertIs(harness.failure, validation_failure)
 
         generation_failure = RuntimeError("generation failed")
         with WorkerHarness(
             RecordingRuntime(generation_failure=generation_failure)
         ) as harness:
-            session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
-            validated = validate(session)
+            session = await self.enterAsyncContext(admit_fake_session(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC))
+            validated = await session.join_science(validate(session))
             assert isinstance(validated, ValidatedRunnerRequest)
             with self.assertRaisesRegex(RunnerSessionRetired, "generation failed"):
-                session.generate(validated)
+                await session.join_science(session.generate(validated))
+            await session.retire()
         self.assertIs(harness.failure, generation_failure)
 
 
@@ -285,6 +292,12 @@ class WorkerHarness:
         self.thread.start()
         return self
 
+    def retire_science(self):
+        self.provider.sendall(CHF_RUNNER_CODEC.encode(RetireFrame(BOOT)))
+        self.thread.join(timeout=1)
+        if self.thread.is_alive():
+            raise AssertionError("Scientific worker did not finish its RETIRE frame")
+
     def __exit__(self, *_error: object) -> None:
         self.provider.close()
         self.thread.join(timeout=1)
@@ -308,7 +321,7 @@ class WorkerHarness:
 
 def validate(
     session: RunnerSession,
-) -> ValidatedRunnerRequest | RunnerInputRejected:
+) -> Future[ValidatedRunnerRequest | RunnerInputRejected]:
     return session.validate(
         execution_attempt_ref=ATTEMPT_REF,
         provider_attempt_key=ATTEMPT_KEY,

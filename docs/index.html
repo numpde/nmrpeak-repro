@@ -45,7 +45,7 @@ make test</code></pre>
     <p>This command checks the committed evidence and regenerates the report offline using Python's standard library. It does not require Docker, model weights, or GPUs, and does not repeat inference.</p>
 
     <h2>Deploy the provider</h2>
-    <p>Deployment requires Docker with Compose, built provider and model images, installed model weights, an NMR API provider credential, and a configured OpenAI-compatible language-model endpoint for interpreting input text. The model processes run on CPU in separate containers without network access; the provider communicates with the API and the interpreter endpoint.</p>
+    <p>Deployment requires Docker with Compose, built provider and model images, installed model weights, an NMR API provider credential, and a configured OpenAI-compatible language-model endpoint for interpreting input text. The provider and both model processes use Python 3.12. The model processes run on CPU in separate containers without network access. Select a shared deployment binding for the API credential, trust, route and delivery socket; the provider uses its captured API socket and sends terminal reports to shared delivery. Configure the interpreter endpoint separately.</p>
     <p>After cloning, run <code>make help</code> for checkpoint preparation, image builds, deployment setup, and start/stop commands, including their required arguments. The <a href="https://github.com/numpde/nmrpeak-repro/blob/main/Makefile">Makefile</a> also lists these commands online. The test commands above do not start a deployment.</p>
 
     <h2>Monitor the deployment</h2>

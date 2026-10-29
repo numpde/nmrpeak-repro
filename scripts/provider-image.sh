@@ -80,5 +80,5 @@ readonly image_id="$(<"$image_id_file")"
     fail "built provider image does not use its fixed entrypoint: $image_id"
 
 docker run --rm --network none --entrypoint python "$image_id" \
-    -P -c 'import cryptography; import nmrpeak_provider.provider_main'
+    -P -c 'import cryptography; import provider_core.controller; import nmrpeak_provider.provider_main'
 printf 'Built %s from %s as %s\n' "$image" "$image_input_id" "$image_id"

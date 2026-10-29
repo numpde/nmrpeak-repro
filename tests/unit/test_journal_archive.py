@@ -1,3 +1,4 @@
+import asyncio
 from base64 import b64decode
 from dataclasses import replace
 from hashlib import sha256
@@ -6,7 +7,45 @@ import unittest
 from unittest.mock import patch
 from nmrpeak_provider.attempt_journal import LatestDiagnostic, journal_record_name
 from nmrpeak_provider.attempt_journal_store import AttemptJournalStore
-from tests.unit.test_attempt_lifecycle import (journal_directory, terminal_pending, TerminalOperation, persist_terminal, generation_runtime, CapturingApi, success_response, attempt_snapshot)
+from tests.fakes.retained_journal import journal_directory, terminal_pending, persist_terminal, generation_runtime, attempt_snapshot
+from nmrpeak_provider.attempt_journal import TerminalOperation
+from nmrpeak_provider.journal_archive import archive_closed as archive_closed_async
+from provider_core.api import ProviderAPI
+from provider_core.signing import SigningIdentity
+from provider_core.transport import HttpResponse
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+
+def archive_closed(**arguments):
+    return asyncio.run(archive_closed_async(**arguments))
+
+
+class SnapshotTransport:
+    exchange_seconds = 1.0
+    retirement_seconds = 1.0
+    retirement_confirmed = True
+    pending_owner = None
+
+    def __init__(self, snapshot):
+        self.snapshot = snapshot
+        self.requests = []
+
+    async def exchange(self, request, *, maximum_bytes, owner=None):
+        self.requests.append(request)
+        return HttpResponse(200, ((b'nmr-api-topology', b'web'), (b'cache-control', b'no-store'),
+                                  (b'content-type', b'application/json')),
+                            json.dumps(self.snapshot).encode())
+
+    async def retire(self, *, owner=None):
+        pass
+
+
+def snapshot_api(snapshot):
+    transport = SnapshotTransport(snapshot)
+    api = ProviderAPI(SigningIdentity('https://api.example', 'credential:fixture', Ed25519PrivateKey.generate()),
+                      transport, expected_topology='web')
+    api.requests = transport.requests
+    return api
 
 class ArchiveTests(unittest.TestCase):
     def test_v2_held_archive_preserves_exact_original_and_diagnostic(self):
@@ -38,12 +77,9 @@ class ArchiveTests(unittest.TestCase):
         return record
 
     def call(self, store, record, digest, state='expired'):
-        from nmrpeak_provider.journal_archive import archive_closed
-        api = CapturingApi(success_response(attempt_snapshot(execution_attempt_ref=record.execution_attempt_ref, job_ref=record.job_ref, state=state, job_state='closed')))
-        from types import SimpleNamespace
-        api.endpoint = SimpleNamespace(origin='https://api.example', expected_topology='fixture')
+        api = snapshot_api(attempt_snapshot(execution_attempt_ref=record.execution_attempt_ref, job_ref=record.job_ref, state=state, job_state='closed'))
         self.last_api = api
-        result = archive_closed(journal=store, api=api, runtime=generation_runtime(), owner={'origin':'https://api.example', 'topology':'fixture', 'authority_id':'sha256:'+'a'*64, 'provider_ref':'provider:nmrpeak'}, execution_attempt_ref=record.execution_attempt_ref, expected_record_digest=digest, reason='Investigated retained failure.')
+        result = archive_closed(journal=store, api=api, runtime=generation_runtime(), owner={'origin':'https://api.example', 'topology':'web', 'authority_id':'sha256:'+'a'*64, 'provider_ref':'provider:nmrpeak'}, execution_attempt_ref=record.execution_attempt_ref, expected_record_digest=digest, reason='Investigated retained failure.')
         self.assertEqual(len(api.requests), 1)
         return result
 
@@ -136,7 +172,6 @@ class ArchiveTests(unittest.TestCase):
                     self.assertEqual(self.last_api.requests, [])
 
     def test_unsafe_reason_read_only_and_unavailable_reads_never_retire(self):
-        from nmrpeak_provider.journal_archive import archive_closed
         from types import SimpleNamespace
         from unittest.mock import Mock
         for reason, readonly in [('', False), ('line\nbreak',False), ('x'*2049,False), ('investigated',True), ('investigated',False)]:
@@ -144,20 +179,20 @@ class ArchiveTests(unittest.TestCase):
                 with AttemptJournalStore(root, maximum_records=2) as store:
                     record = self.seed(store)
                     raw = store.record_bytes(record)
-                api = Mock(endpoint=SimpleNamespace(origin='https://api.example', expected_topology='fixture'))
-                api.send.side_effect = OSError('API unavailable')
+                api = Mock(origin='https://api.example', expected_topology='web')
+                from unittest.mock import AsyncMock
+                api.read_attempt = AsyncMock(side_effect=OSError('API unavailable'))
                 with AttemptJournalStore(root, maximum_records=2, read_only=readonly) as store:
                     with self.assertRaises((ValueError, RuntimeError, OSError)):
                         archive_closed(journal=store, api=api, runtime=generation_runtime(),
-                            owner={'origin':'https://api.example', 'topology':'fixture', 'authority_id':'sha256:'+'a'*64, 'provider_ref':'provider:nmrpeak'},
+                            owner={'origin':'https://api.example', 'topology':'web', 'authority_id':'sha256:'+'a'*64, 'provider_ref':'provider:nmrpeak'},
                             execution_attempt_ref=record.execution_attempt_ref,
                             expected_record_digest='sha256:'+sha256(raw).hexdigest(), reason=reason)
                     if reason != 'investigated' or readonly:
-                        api.send.assert_not_called()
+                        api.read_attempt.assert_not_called()
                     self.assertEqual(store.record_bytes(record), raw)
 
     def test_malformed_wrong_identity_and_unknown_snapshot_preserve_obligation(self):
-        from nmrpeak_provider.journal_archive import archive_closed
         from types import SimpleNamespace
         for changes in ({'execution_attempt_ref':'execution_attempt:sha256:'+'0'*64},
                         {'job_ref':'job:wrong'}, {'state':'invented'}, {'schema_id':'invented'}):
@@ -168,39 +203,32 @@ class ArchiveTests(unittest.TestCase):
                     snapshot = attempt_snapshot(execution_attempt_ref=record.execution_attempt_ref,
                                                 job_ref=record.job_ref, state='expired', job_state='closed')
                     snapshot.update(changes)
-                    api = CapturingApi(success_response(snapshot))
-                    api.endpoint = SimpleNamespace(origin='https://api.example', expected_topology='fixture')
-                    with self.assertRaises(ValueError):
+                    api = snapshot_api(snapshot)
+                    with self.assertRaises((ValueError, RuntimeError)):
                         archive_closed(journal=store, api=api, runtime=generation_runtime(),
-                            owner={'origin':'https://api.example', 'topology':'fixture', 'authority_id':'sha256:'+'a'*64, 'provider_ref':'provider:nmrpeak'},
+                            owner={'origin':'https://api.example', 'topology':'web', 'authority_id':'sha256:'+'a'*64, 'provider_ref':'provider:nmrpeak'},
                             execution_attempt_ref=record.execution_attempt_ref,
                             expected_record_digest='sha256:'+sha256(raw).hexdigest(), reason='Investigated.')
                     self.assertEqual(len(api.requests), 1)
                     self.assertEqual(store.record_bytes(record), raw)
 
-    def test_cli_rejects_authority_and_provider_drift_before_api_construction(self):
+    def test_cli_rejects_provider_drift_before_api_or_identity_effect(self):
         from nmrpeak_provider.journal_archive import main
-        from nmrpeak_provider.provider_config import ProviderEndpointConfig, server_a_authority_id
         from types import SimpleNamespace
-        from contextlib import ExitStack
-        endpoint = ProviderEndpointConfig('https://api.example', 'web', 1.0, 1.0, None)
-        # Use the already validated endpoint type; topology validation is authoritative.
-        for authority, provider in [('sha256:'+'0'*64, 'provider:nmrpeak'),
-                                    (server_a_authority_id(endpoint), 'provider:wrong')]:
-            with self.subTest(authority=authority, provider=provider), ExitStack() as stack:
-                stack.enter_context(patch('nmrpeak_provider.provider_main._read_regular_file', return_value=b'fixture'))
-                stack.enter_context(patch('nmrpeak_provider.provider_config.decode_provider_runtime_config', return_value=SimpleNamespace(endpoint=endpoint)))
-                stack.enter_context(patch('nmrpeak_provider.frozen_generation.load_frozen_generation', return_value=SimpleNamespace(runtime=generation_runtime())))
-                stack.enter_context(patch('nmrpeak_provider.provider_credential.parse_provider_signing_credential', return_value=SimpleNamespace(provider_ref='provider:nmrpeak')))
-                api_constructor = stack.enter_context(patch('nmrpeak_provider.provider_api.ProviderApiClient'))
-                stack.enter_context(patch('sys.stderr'))
-                with self.assertRaises(SystemExit) as raised:
-                    main(['--execution-attempt-ref','execution_attempt:sha256:'+'a'*64,
-                          '--record-digest','sha256:'+'b'*64, '--reason','Investigated.',
-                          '--frozen-generation',generation_runtime().frozen_generation_id,
-                          '--expected-authority-id',authority,'--expected-provider-ref',provider])
-                self.assertEqual(raised.exception.code, 2)
-                api_constructor.assert_not_called()
+        with patch('nmrpeak_provider.frozen_generation.load_frozen_generation',
+                   return_value=SimpleNamespace(runtime=generation_runtime())), \
+             patch('nmrpeak_provider.journal_api.load_journal_api') as api_factory, \
+             patch('nmrpeak_provider.provider_identity_lock.ProviderIdentityLock.acquire') as acquire, \
+             patch('sys.stderr'):
+            status = main(['--execution-attempt-ref', 'execution_attempt:sha256:' + 'a'*64,
+                           '--record-digest', 'sha256:' + 'b'*64, '--reason', 'Investigated.',
+                           '--frozen-generation', generation_runtime().frozen_generation_id,
+                           '--expected-authority-id', 'sha256:' + 'c'*64,
+                           '--expected-provider-ref', 'provider:wrong',
+                           '--binding', 'selected', '--proxy-socket', '/route/api.sock'])
+        self.assertEqual(status, 2)
+        api_factory.assert_not_called()
+        acquire.assert_not_called()
 
     def test_archive_keeps_generation_reference_without_active_replay(self):
         from nmrpeak_provider.journal_inventory import journal_generation_inventory

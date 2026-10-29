@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import fcntl
 from hashlib import sha256
 import json
@@ -35,14 +35,13 @@ from deployment.provider_volumes import (
     remove_provider_journal_volume,
 )
 from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
+from nmrpeak_provider.local_input import LocalInputSnapshotError, read_bounded_regular_file
+from nmrpeak_provider.provider_config import (
+    CONFIG_PATH, api_input_target, decode_provider_template,
+    render_provider_runtime_config, runtime_config_id,
+)
 from nmrpeak_provider.inspection_document import validate_inspection_document
 from nmrpeak_provider.archive_document import validate_archive_document
-from nmrpeak_provider.attempt_inventory import (
-    AttemptInventory,
-    AttemptInventoryReadFailed,
-    AttemptInventoryRejected,
-    read_attempt_inventory,
-)
 from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
@@ -55,18 +54,6 @@ from nmrpeak_provider.frozen_generation import (
 from nmrpeak_provider.interpreter_policy import (
     MAX_INTERPRETER_CONFIG_BYTES,
     MAX_INTERPRETER_ENDPOINTS,
-)
-from nmrpeak_provider.provider_config import (
-    ProviderEndpointConfig,
-    ProviderRuntimeConfig,
-    decode_provider_runtime_config,
-    server_a_authority_id,
-)
-from nmrpeak_provider.provider_api import ProviderApiClient
-from nmrpeak_provider.provider_credential import (
-    PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES,
-    ProviderSigningCredential,
-    parse_provider_signing_credential,
 )
 from repository_checks.chf_checkpoint import (
     checkpoint_volume_name as chf_volume_name,
@@ -100,7 +87,7 @@ _TEMPLATES = {
 _DOCKER = Path("/usr/bin/docker")
 _SETFACL = Path("/usr/bin/setfacl")
 _GETFACL = Path("/usr/bin/getfacl")
-_MAX_FILE_BYTES = 262_144
+_MAX_FILE_BYTES = 1_048_576
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _PRIVATE_DIRECTORY_ACL = ("user::rwx", "group::---", "other::---")
 _PROVIDER_DIRECTORY_ACL = (
@@ -128,26 +115,20 @@ _PROVIDER_WRITABLE_FILE_ACL = (
 )
 _PROVIDER_ENTRYPOINT = ("python", "-m", "nmrpeak_provider.provider_main")
 _HF_ENTRYPOINT = (
-    "python",
-    "-m",
-    "models.nmrpeak_hf_v1.runner.owner_session_supervisor",
-    "5",
-    "5",
-    "--",
-    "python",
-    "-m",
-    "models.nmrpeak_hf_v1.runner.worker",
+    '/usr/local/bin/python3.12',
+    '-P',
+    '-m',
+    'nmrpeak_provider.native_launcher',
+    'nmrpeak_hf_v1',
+    'models.nmrpeak_hf_v1.runner.worker',
 )
 _CHF_ENTRYPOINT = (
-    "python",
-    "-m",
-    "models.nmrpeak_chf_v1.runner.owner_session_supervisor",
-    "5",
-    "5",
-    "--",
-    "python",
-    "-m",
-    "models.nmrpeak_chf_v1.runner.worker",
+    '/usr/local/bin/python3.12',
+    '-P',
+    '-m',
+    'nmrpeak_provider.native_launcher',
+    'nmrpeak_chf_v1',
+    'models.nmrpeak_chf_v1.runner.worker',
 )
 
 
@@ -164,6 +145,8 @@ class DeploymentPlan:
     releases: DeploymentReleases
     provider_ref: str
     runtime_config_id: str
+    runtime_files: dict[str, bytes] = field(repr=False)
+    binding_projection: dict = field(repr=False)
 
 
 def initialize_deployment(repository: Path, deployment: str) -> Path:
@@ -225,162 +208,279 @@ def initialize_deployment(repository: Path, deployment: str) -> Path:
     return destination
 
 
+def _read_capture_source(path: Path, *, secret: bool) -> bytes:
+    """Keep source ownership/privacy intact while taking a bounded snapshot."""
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid not in {0, os.geteuid()}:
+            raise DeploymentOperationRejected(f"Cannot capture startup input {path}: expected a regular file owned by root or operator UID {os.geteuid()}; found UID {metadata.st_uid} and mode {stat.S_IMODE(metadata.st_mode):04o}")
+        if secret:
+            access = _read_acl(path, "Captured private startup input")
+            if metadata.st_uid != os.geteuid() or (stat.S_IMODE(metadata.st_mode), access) not in {
+                (0o600, _PRIVATE_WRITABLE_FILE_ACL), (0o400, _PRIVATE_READONLY_FILE_ACL),
+                (0o440, _PROVIDER_READONLY_FILE_ACL), (0o640, _PROVIDER_WRITABLE_FILE_ACL),
+            }:
+                raise DeploymentOperationRejected(f"Cannot capture private startup input {path}: UID {metadata.st_uid}, mode {stat.S_IMODE(metadata.st_mode):04o} and its ACL must match operator-private or provider-read-only access")
+        elif metadata.st_mode & 0o022:
+            raise DeploymentOperationRejected(f"Cannot capture public startup input {path}: mode {stat.S_IMODE(metadata.st_mode):04o} permits group or other users to change it")
+        return read_bounded_regular_file(path, maximum_bytes=1048576)
+    except (OSError, LocalInputSnapshotError) as cause:
+        raise DeploymentOperationRejected(f"Cannot capture startup input {path}: its bounded regular-file read failed; preserve the source and inspect its permissions") from cause
+
+
+def _contained_binding_projection(docker, image, definition, binding_name, namespace, *, input_sources):
+    """Run SDK binding/route admission as the source operator, without networking."""
+    with TemporaryDirectory() as temporary:
+        source = Path(temporary) / "bindings.toml"
+        source.write_bytes(definition)
+        source.chmod(0o600)
+        mappings = tuple(value for path, captured in sorted(input_sources.items())
+                         for value in ("--input-source", path, captured))
+        result = _docker_command(docker, (
+            "run", "--pull", "never", "--rm", "--network", "none", "--read-only",
+            "--user", f"{os.geteuid()}:{os.getegid()}", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges:true", "--pids-limit", "64",
+            "--cpus", "1", "--memory", "256m", "--env", "PROVIDER_CORE_IN_CONTAINER=1",
+            "--mount", f"type=bind,source={source},target=/binding/definition.toml,readonly",
+            "--entrypoint", "/usr/local/bin/python3.12", image,
+            "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", "project",
+            "--definition", "/binding/definition.toml", "--binding", binding_name,
+            "--image", image, "--namespace", namespace, *mappings,
+        ), timeout=60)
+    document = _json_output(result.stdout, "Contained API binding projection")
+    if type(document) is not dict:
+        raise DeploymentOperationRejected("Contained API binding projection must be an object")
+    return document
+
+
+def _capture_interpreter_inputs(state_root):
+    """Snapshot the existing bounded endpoint inventory without parsing its format."""
+    root = state_root / "openai-chat-completions.d"
+    try:
+        metadata = root.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise DeploymentOperationRejected("Interpreter endpoint directory must be a regular operator-owned directory")
+        files = {}
+        for entry in root.iterdir():
+            if len(files) == MAX_INTERPRETER_ENDPOINTS or entry.suffix != ".toml":
+                raise DeploymentOperationRejected("Interpreter endpoint inventory exceeds its limit or contains a non-TOML entry")
+            raw = _read_capture_source(entry, secret=True)
+            if len(raw) > MAX_INTERPRETER_CONFIG_BYTES:
+                raise DeploymentOperationRejected("Interpreter endpoint input exceeds its configured byte limit")
+            files["interpreter/" + entry.name] = raw
+        if not files:
+            raise DeploymentOperationRejected("Interpreter endpoint inventory must contain at least one TOML input")
+        return files
+    except OSError as cause:
+        raise DeploymentOperationRejected("Cannot capture the interpreter endpoint directory") from cause
+
+
+def _validate_captured_runtime(docker, image, files, *, arguments=("validate",)):
+    """Validate the exact private snapshot as the runtime UID before installation."""
+    with TemporaryDirectory() as temporary:
+        parent = Path(temporary)
+        captured = _publish_retained_tree(parent, runtime_config_id(files), files)
+        result = _docker_command(docker, (
+            "run", "--pull", "never", "--rm", "--network", "none", "--read-only",
+            "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+            "--pids-limit", "64", "--cpus", "1", "--memory", "256m",
+            "--env", "PROVIDER_CORE_IN_CONTAINER=1",
+            "--mount", f"type=bind,source={captured},target={CONFIG_PATH.parent},readonly",
+            "--entrypoint", "/usr/local/bin/python3.12", image,
+            "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", *arguments,
+        ), timeout=60)
+    document = _json_output(result.stdout, "Contained captured runtime validation")
+    if type(document) is not dict:
+        raise DeploymentOperationRejected("Contained captured runtime validation must be an object")
+    return document
+
+
+def _journal_binding(repository, deployment, docker, image, provider_ref, *, namespace):
+    policy = decode_provider_template(_read_regular_file(
+        repository / "config/deployments" / deployment / "provider.toml"))
+    definition = _read_capture_source(policy.binding_definition, secret=False)
+    projection = _contained_binding_projection(docker, image.image_id, definition,
+                                               policy.binding_name, namespace, input_sources={})
+    if projection["provider_ref"] != provider_ref:
+        raise DeploymentOperationRejected("Selected API binding belongs to another journal provider")
+    return policy, definition, projection
+
+
+def _cleanup_maintenance_route(docker, repository, deployment, projection):
+    """Consume this invocation's original SDK grant through the existing teardown owner."""
+    route = projection["api_route"]["compose"]
+    volumes = tuple(item["name"] for item in route["volumes"].values())
+    services = _inspect_project_containers(docker, repository, deployment, roles=frozenset(route["services"]))
+    for role, record in services.items():
+        expected = route["services"][role]
+        labels = record["Config"]["Labels"]
+        if record.get("Image") != expected["image"] or any(labels.get(key) != value for key, value in expected["labels"].items()):
+            raise DeploymentOperationRejected("Maintenance API route no longer matches its original SDK image and labels")
+    observed = _api_route_volumes(deployment, services)
+    if not set(observed).issubset(volumes):
+        raise DeploymentOperationRejected("Maintenance API route mounts differ from this invocation's original grant")
+    _inspect_project_resources(docker, deployment, services, route_volumes=volumes, scientific_sessions=False)
+    _run_compose_down(docker, repository, deployment, route_volumes=volumes, api_route=route)
+    remaining = _inspect_project_containers(docker, repository, deployment, roles=frozenset(route["services"]))
+    resources = _inspect_project_resources(docker, deployment, remaining, route_volumes=volumes, scientific_sessions=False)
+    if remaining or resources:
+        raise DeploymentOperationRejected("Maintenance API route teardown left owned resources; preserve the journal")
+
+
+@contextmanager
+def _held_maintenance_api_route(docker, repository, deployment, image, provider_ref, authority_id):
+    """Capture API inputs and own the exact temporary route through bounded teardown."""
+    invocation = "maintenance-" + secrets.token_hex(16)
+    namespace = "nmrpeak-" + invocation
+    policy, definition, projection = _journal_binding(repository, deployment, docker, image,
+                                                      provider_ref, namespace=namespace)
+    if projection["journal_authority_id"] != authority_id:
+        raise DeploymentOperationRejected("Selected API namespace changed before maintenance capture; preserve the journal")
+    files = {"bindings.toml": definition}
+    for source in projection["input_paths"]:
+        leaf = api_input_target(source).relative_to(CONFIG_PATH.parent).as_posix()
+        files[leaf] = _read_capture_source(Path(source), secret=source == projection["credential_file"])
+    with TemporaryDirectory() as temporary:
+        captured = _publish_retained_tree(Path(temporary), runtime_config_id(files), files)
+        sources = {source: str(captured / api_input_target(source).relative_to(CONFIG_PATH.parent))
+                   for source in projection["input_paths"]}
+        projection = _contained_binding_projection(docker, image.image_id, definition,
+                       policy.binding_name, namespace, input_sources=sources)
+        socket = projection["api_route"]["client_socket"]
+        validated = _validate_captured_runtime(docker, image.image_id, files,
+                    arguments=("validate-binding", "--binding", policy.binding_name, "--proxy-socket", socket))
+        expected = {key: projection[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")}
+        if validated != expected | {"proxy_socket": socket}:
+            raise DeploymentOperationRejected("Maintenance API capture differs from its selected SDK binding")
+        compose = Path(temporary) / "api-route.json"
+        compose.write_bytes(canonical_json_bytes(projection["api_route"]["compose"]))
+        prefix = ("compose", "--env-file", "/dev/null", "--project-directory", str(repository),
+                  "--project-name", namespace, "--file", str(compose))
+        primary = None
+        try:
+            _docker_command(docker, (*prefix, "up", "--detach", "--wait", "--wait-timeout", "60",
+                                     "--no-build", "--pull", "never"), timeout=80)
+            yield policy, projection, captured
+        except BaseException as cause:
+            primary = cause
+            raise
+        finally:
+            try:
+                _cleanup_maintenance_route(docker, repository, invocation, projection)
+            except BaseException as cleanup:
+                cause = cleanup if primary is None or cleanup is primary else BaseExceptionGroup(
+                    "Maintenance operation and API route teardown failed", [primary, cleanup])
+                raise DeploymentOperationRejected(
+                    f"Cannot confirm maintenance route {namespace} was removed; preserve the journal and inspect that exact project before retrying") from cause
+
+
+def _compose_binding_route(document, projection):
+    """Merge the exact SDK projection and grant its client/delivery endpoints."""
+    route = projection["api_route"]
+    for field in ("services", "networks", "volumes"):
+        fragment = route["compose"][field]
+        if document[field].keys() & fragment.keys():
+            raise DeploymentOperationRejected("SDK API route collides with an existing deployment role or resource")
+        document[field].update(fragment)
+    delivery = projection["delivery"]
+    document["volumes"]["delivery-ipc"] = {"external": True, "name": delivery["ipc_volume"]}
+    provider = document["services"]["provider"]
+    provider.setdefault("volumes", []).extend((route["client_mount"], {
+        "type": "volume", "source": "delivery-ipc", "target": str(Path(delivery["socket_path"]).parent),
+        "read_only": True,
+    }))
+    provider["depends_on"] = route["client_depends_on"]
+    provider["group_add"] = [str(delivery["socket_group_id"])]
+    return document
+
+
 def render_deployment_plan(
     repository: Path,
     deployment: str,
     *,
-    localhost_ca_certificate: Path | None = None,
     docker: Path = _DOCKER,
 ) -> DeploymentPlan:
-    """Resolve exact local artifacts and validate the effective Compose plan."""
-
+    """Freeze selected inputs and admit their actual contained runtime composition."""
     root = repository.resolve(strict=True)
     if root != repository or not root.is_dir():
-        raise DeploymentOperationRejected(
-            "Deployment repository must be one resolved directory"
-        )
+        raise DeploymentOperationRejected("Deployment repository must be one resolved directory")
     _require_deployment_name(deployment)
     _require_clean_checkout(root)
-    localhost_ca = _admit_localhost_ca_certificate(localhost_ca_certificate)
     config_root = root / "config/deployments" / deployment
     try:
         if config_root.resolve(strict=True) != config_root or not config_root.is_dir():
-            raise DeploymentOperationRejected(
-                "Deployment config root must be a non-symlink directory"
-            )
-    except OSError as error:
-        raise DeploymentOperationRejected(
-            f"Deployment is not initialized: {deployment}"
-        ) from error
+            raise DeploymentOperationRejected("Deployment config root must be a non-symlink directory")
+    except OSError as cause:
+        raise DeploymentOperationRejected(f"Deployment is not initialized: {deployment}") from cause
     selection = load_named_deployment(config_root / "deployment.toml")
-    provider_template = _read_regular_file(config_root / "provider.toml")
-    _admit_server_a_endpoint(
-        decode_provider_runtime_config(provider_template).endpoint,
-        localhost=localhost_ca is not None,
-    )
-    upstream_revision = read_nmrpeak_source_revision(
-        root / "families/nmrpeak/source-closure.paths"
-    )
-    hf_declaration = _release_declaration(
-        root / "models/nmrpeak_hf_v1/releases",
-        selection.hf.release_name,
-    )
-    chf_declaration = _release_declaration(
-        root / "models/nmrpeak_chf_v1/releases",
-        selection.chf.release_name,
-    )
+    policy = decode_provider_template(_read_regular_file(config_root / "provider.toml"))
+    definition = _read_capture_source(policy.binding_definition, secret=False)
+    upstream_revision = read_nmrpeak_source_revision(root / "families/nmrpeak/source-closure.paths")
     releases = admit_deployment_releases(
         selection,
-        hf_release_declaration=hf_declaration,
-        chf_release_declaration=chf_declaration,
+        hf_release_declaration=_release_declaration(root / "models/nmrpeak_hf_v1/releases", selection.hf.release_name),
+        chf_release_declaration=_release_declaration(root / "models/nmrpeak_chf_v1/releases", selection.chf.release_name),
         upstream_revision=upstream_revision,
     )
     revision = _committed_revision(root)
     input_ids = _image_input_ids(root, revision)
     local_images = _local_images(docker, input_ids)
-    checkpoints = DeploymentCheckpoints(
-        releases.hf.checkpoint_sha256,
-        releases.chf.checkpoint_sha256,
-    )
-    images = DeploymentImages(
-        local_images["provider"].image_id,
-        input_ids["provider"],
-        local_images["hf"].image_id,
-        input_ids["hf"],
-        local_images["chf"].image_id,
-        input_ids["chf"],
-    )
+    images = DeploymentImages(local_images["provider"].image_id, input_ids["provider"],
+                              local_images["hf"].image_id, input_ids["hf"],
+                              local_images["chf"].image_id, input_ids["chf"])
+    checkpoints = DeploymentCheckpoints(releases.hf.checkpoint_sha256, releases.chf.checkpoint_sha256)
+    namespace = "nmrpeak-" + deployment
+    projection = _contained_binding_projection(docker, images.provider, definition, policy.binding_name,
+                                               namespace, input_sources={})
+    if projection["provider_ref"] != selection.provider_ref:
+        raise DeploymentOperationRejected("Selected API binding belongs to another named provider generation")
+    if policy.runner.ready_seconds > 600:
+        raise DeploymentOperationRejected("Runner ready timeout exceeds the Compose health start window")
     state_root = root / "secrets/deployments" / deployment
+    runtime_files = {"bindings.toml": definition, **_capture_interpreter_inputs(state_root)}
+    for path in projection["input_paths"]:
+        leaf = api_input_target(path).relative_to(CONFIG_PATH.parent).as_posix()
+        runtime_files[leaf] = _read_capture_source(Path(path), secret=path == projection["credential_file"])
     environment = _compose_environment(
-        root,
-        deployment,
-        selection.provider_ref,
-        images,
-        checkpoints,
+        root, deployment, selection.provider_ref, images, checkpoints,
         provider_config=state_root / "runtime-configs/pending/provider.toml",
         frozen_generation=state_root / "generations/pending/frozen",
-        localhost_ca_certificate=localhost_ca,
     )
-    provisional_compose = _render_compose(
-        root,
-        deployment,
-        environment,
-        docker,
-        localhost=localhost_ca is not None,
-    )
-    topology = project_deployment_topology(
-        provisional_compose,
-        images,
-        checkpoints,
-        private_ca=localhost_ca is not None,
-    )
+    provisional = _render_compose(root, deployment, environment, docker, binding_projection=projection)
+    topology = project_deployment_topology(provisional, images, checkpoints, binding_projection=projection)
     generation = render_generation(
-        selection,
-        releases,
-        provider_config_template=provider_template,
-        hf_image_input_id=images.hf_input,
-        chf_image_input_id=images.chf_input,
-        hf_hello=_read_regular_file(
-            root / "models/nmrpeak_hf_v1/provider/hello.txt"
-        ),
-        chf_hello=_read_regular_file(
-            root / "models/nmrpeak_chf_v1/provider/hello.txt"
-        ),
-        topology=topology,
+        selection, releases, hf_image_input_id=images.hf_input, chf_image_input_id=images.chf_input,
+        hf_hello=_read_regular_file(root / "models/nmrpeak_hf_v1/provider/hello.txt"),
+        chf_hello=_read_regular_file(root / "models/nmrpeak_chf_v1/provider/hello.txt"), topology=topology,
     )
-    configured = decode_provider_runtime_config(generation.provider_config)
-    _admit_server_a_endpoint(
-        configured.endpoint,
-        localhost=localhost_ca is not None,
+    runtime_files["provider.toml"] = render_provider_runtime_config(
+        policy, frozen_generation_id=generation.frozen_generation_id,
+        api_proxy_socket=projection["api_route"]["client_socket"],
     )
-    if configured.runner.ready_seconds > 600:
-        raise DeploymentOperationRejected(
-            "Runner ready timeout exceeds the Compose health start window"
-        )
-    runtime_config_id = _runtime_config_id(generation.provider_config)
+    identity = runtime_config_id(runtime_files)
+    runtime_root = state_root / "runtime-configs" / _retained_identity_name(identity)
+    sources = {path: str(runtime_root / api_input_target(path).relative_to(CONFIG_PATH.parent))
+               for path in projection["input_paths"]}
+    # Both passes use the same captured definition bytes. The second only
+    # relocates selected route inputs to their immutable retained destinations.
+    projection = _contained_binding_projection(docker, images.provider, definition, policy.binding_name,
+                                               namespace, input_sources=sources)
+    validated = _validate_captured_runtime(docker, images.provider, runtime_files)
+    expected = {"provider_ref": selection.provider_ref, "api_origin": projection["api_origin"],
+                "api_topology": projection["api_topology"], "journal_authority_id": projection["journal_authority_id"],
+                "frozen_generation_id": generation.frozen_generation_id,
+                "proxy_socket": projection["api_route"]["client_socket"]}
+    if validated != expected:
+        raise DeploymentOperationRejected("Captured runtime admission differs from its selected binding and frozen generation")
     environment = _compose_environment(
-        root,
-        deployment,
-        selection.provider_ref,
-        images,
-        checkpoints,
-        provider_config=(
-            state_root
-            / "runtime-configs"
-            / _retained_identity_name(runtime_config_id)
-            / "provider.toml"
-        ),
-        frozen_generation=(
-            state_root
-            / "generations"
-            / _retained_identity_name(generation.frozen_generation_id)
-            / "frozen"
-        ),
-        localhost_ca_certificate=localhost_ca,
+        root, deployment, selection.provider_ref, images, checkpoints,
+        provider_config=runtime_root / "provider.toml",
+        frozen_generation=state_root / "generations" / _retained_identity_name(generation.frozen_generation_id) / "frozen",
     )
-    compose = _render_compose(
-        root,
-        deployment,
-        environment,
-        docker,
-        localhost=localhost_ca is not None,
-    )
-    if project_deployment_topology(
-        compose,
-        images,
-        checkpoints,
-        private_ca=localhost_ca is not None,
-    ) != topology:
-        raise DeploymentOperationRejected(
-            "Final retained paths changed the effective deployment topology"
-        )
-    return DeploymentPlan(
-        compose,
-        generation,
-        releases,
-        selection.provider_ref,
-        runtime_config_id,
-    )
+    compose = _render_compose(root, deployment, environment, docker, binding_projection=projection)
+    if project_deployment_topology(compose, images, checkpoints, binding_projection=projection) != topology:
+        raise DeploymentOperationRejected("Final operational grants changed the frozen scientific topology")
+    return DeploymentPlan(compose, generation, releases, selection.provider_ref, identity, runtime_files, projection)
 
 
 def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
@@ -389,7 +489,7 @@ def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
     if type(plan) is not DeploymentPlan:
         raise TypeError("Deployment preview requires one resolved plan")
     try:
-        provider_config = plan.generation.provider_config.decode("utf-8")
+        provider_config = plan.runtime_files["provider.toml"].decode("utf-8")
         files = [
             {"path": frozen_file.path, "content": frozen_file.content.decode("utf-8")}
             for frozen_file in plan.generation.files
@@ -407,6 +507,9 @@ def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
             "compose": plan.compose,
             "artifacts": {
                 "provider.toml": provider_config,
+                "runtime_files": [{"path": path, "byte_length": len(raw),
+                                   "sha256": "sha256:" + sha256(raw).hexdigest()}
+                                  for path, raw in sorted(plan.runtime_files.items())],
                 "frozen/manifest.json": parse_canonical_json_bytes(
                     plan.generation.manifest
                 ),
@@ -441,7 +544,6 @@ def start_deployment(
     deployment: str,
     *,
     expected_plan_sha256: str,
-    localhost_ca_certificate: Path | None = None,
     docker: Path = _DOCKER,
 ) -> DeploymentPlan:
     """Start one exact plan and prove all three durable services are ready."""
@@ -464,7 +566,6 @@ def start_deployment(
         plan = render_deployment_plan(
             root,
             deployment,
-            localhost_ca_certificate=localhost_ca_certificate,
             docker=docker,
         )
         _validate_deployment_plan(plan)
@@ -477,8 +578,6 @@ def start_deployment(
                 f"rendered SHA-256 {actual_plan_sha256}"
             )
         _materialize_locked(state_root, plan)
-        _admit_installed_credential(state_root, plan.provider_ref)
-        _admit_interpreter_configs(state_root)
         verify_hf_checkpoint(root, plan.releases.hf, docker_binary=docker)
         verify_chf_checkpoint(root, plan.releases.chf, docker_binary=docker)
         ensure_provider_state_volumes(
@@ -486,9 +585,7 @@ def start_deployment(
             root,
             deployment,
             plan.provider_ref,
-            server_a_authority_id(
-                decode_provider_runtime_config(plan.generation.provider_config).endpoint
-            ),
+            plan.binding_projection["journal_authority_id"],
         )
         _inspect_project_containers(docker, root, deployment)
         _run_compose_plan(docker, root, deployment, plan)
@@ -512,7 +609,7 @@ def deployment_status_bytes(
     _require_deployment_name(deployment)
     services = _inspect_project_containers(docker, root, deployment)
     records: list[dict[str, object]] = []
-    for service in ("provider", "hf-runner", "chf-runner"):
+    for service in ("provider", "hf-runner", "chf-runner", "api", "api-init"):
         record = services.get(service)
         if record is None:
             continue
@@ -548,68 +645,6 @@ def deployment_status_bytes(
             "services": records,
         }
     )
-
-
-def install_provider_credential(
-    repository: Path,
-    deployment: str,
-    nmr_api_v1: Path,
-    *,
-    replace: bool = False,
-    docker: Path = _DOCKER,
-) -> Path:
-    """Install the one API-issued credential matching a named deployment."""
-
-    root = repository.resolve(strict=True)
-    if root != repository or not root.is_dir():
-        raise DeploymentOperationRejected(
-            "Deployment repository must be one resolved directory"
-        )
-    _require_deployment_name(deployment)
-    config_root = root / "config/deployments" / deployment
-    try:
-        if config_root.resolve(strict=True) != config_root or not config_root.is_dir():
-            raise DeploymentOperationRejected(
-                f"Deployment is not initialized: {deployment}"
-            )
-    except OSError as error:
-        raise DeploymentOperationRejected(
-            f"Deployment is not initialized: {deployment}"
-        ) from error
-    provider_ref = load_named_deployment(
-        config_root / "deployment.toml"
-    ).provider_ref
-    credential_bytes, _ = _select_api_credential(
-        nmr_api_v1,
-        provider_ref,
-    )
-    state_root = _ensure_deployment_state_root(root, deployment)
-    destination = state_root / "signing.private.json"
-    with _locked_deployment_state(state_root):
-        if destination.exists() or destination.is_symlink():
-            installed_bytes, installed = _read_owned_private_credential(
-                destination,
-                "Installed provider signing credential",
-            )
-            if installed.provider_ref != provider_ref:
-                raise DeploymentOperationRejected(
-                    "Installed provider signing credential belongs to another provider"
-                )
-            if installed_bytes == credential_bytes:
-                _grant_provider_file_access(destination, owner_write=True)
-                return destination
-            if not replace:
-                raise DeploymentOperationRejected(
-                    "Deployment already has a different provider signing credential; "
-                    "set REPLACE=1 to replace it"
-                )
-            _require_stopped_project(docker, root, deployment)
-        _publish_private_credential(
-            destination,
-            credential_bytes,
-            replace=destination.exists(),
-        )
-    return destination
 
 
 def show_provider_logs(
@@ -692,15 +727,11 @@ def remove_frozen_generation(
         provider_ref = load_named_deployment(
             root / "config/deployments" / deployment / "deployment.toml"
         ).provider_ref
+        image = _resolve_provider_image(docker, root)
+        _policy, _definition, binding = _journal_binding(root, deployment, docker, image,
+                                      provider_ref, namespace="nmrpeak-" + deployment)
         references = _journal_generation_ids(
-            docker,
-            root,
-            deployment,
-            provider_ref,
-            server_a_authority_id(
-                _runtime_config(root, deployment).endpoint
-            ),
-            services,
+            docker, root, deployment, provider_ref, binding["journal_authority_id"], services,
         )
         if frozen_generation in references:
             raise DeploymentOperationRejected(
@@ -733,12 +764,13 @@ def inspect_provider_journal(
         selection = load_named_deployment(
             root / "config/deployments" / deployment / "deployment.toml"
         )
+        image = _resolve_provider_image(docker, root)
+        _policy, _definition, binding = _journal_binding(root, deployment, docker, image,
+                                  selection.provider_ref, namespace="nmrpeak-" + deployment)
         journal = _admitted_journal_volume(
-            docker, deployment, selection.provider_ref,
-            server_a_authority_id(_runtime_config(root, deployment).endpoint), services,
+            docker, deployment, selection.provider_ref, binding["journal_authority_id"], services,
         )
         lock = inspect_provider_identity_lock_volume(docker, selection.provider_ref)
-        image = _resolve_provider_image(docker, root)
         with _held_provider_identity_lock(docker, lock, selection.provider_ref, image):
             arguments = ("--execution-attempt-ref", execution_attempt_ref) if execution_attempt_ref else ()
             output = _run_journal_reader(
@@ -754,9 +786,40 @@ def inspect_provider_journal(
         return output
 
 
+def _run_journal_api_client(docker, image, projection, captured, module, arguments, *, mounts=()):
+    """Run one bounded network-isolated reader with the SDK's captured client grant."""
+    route = projection["api_route"]
+    client = route["client_mount"]
+    volume = route["compose"]["volumes"][client["source"]]["name"]
+    token = secrets.token_hex(16)
+    name = "nmrpeak-journal-archive-" + token
+    grants = ("--mount", f"type=bind,src={captured},dst={CONFIG_PATH.parent},readonly",
+              "--mount", f"type=volume,src={volume},dst={client['target']},readonly,volume-nocopy")
+    try:
+        return _docker_command(docker, (
+            "run", "--rm", "--name", name, "--label", "io.nmrpeak.archive=" + token,
+            "--pull", "never", "--network", "none", "--read-only", "--user", "65532:65532",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "32",
+            "--memory", "128m", "--memory-swap", "128m", "--log-driver", "none",
+            "--env", "PROVIDER_CORE_IN_CONTAINER=1", *grants, *mounts,
+            "--entrypoint", "/usr/local/bin/python3.12", image.image_id,
+            "-I", "-B", "-m", module, *arguments,
+        ), timeout=60).stdout
+    except BaseException as original:
+        try:
+            _remove_archive_invocation(docker, name, token)
+        except BaseException as cleanup:
+            raise DeploymentOperationRejected(
+                f"Journal maintenance result and cleanup are unconfirmed; preserve the journal and inspect name={name}, label=io.nmrpeak.archive={token} before retrying"
+            ) from BaseExceptionGroup("Maintenance invocation and cleanup failed", [original, cleanup])
+        raise DeploymentOperationRejected(
+            "Journal maintenance result is unconfirmed; invocation stopped. Preserve and inspect the journal and archive before retrying"
+        ) from original
+
+
 def archive_provider_journal(repository: Path, deployment: str, *, execution_attempt_ref: str,
                              record_digest: str, reason: str, frozen_generation: str,
-                             localhost_ca_certificate: Path | None = None, docker: Path = _DOCKER) -> bytes:
+                             docker: Path = _DOCKER) -> bytes:
     """Retire one reviewed held record using its authenticated retained generation."""
     root = repository.resolve(strict=True)
     if root != repository or not root.is_dir():
@@ -768,55 +831,29 @@ def archive_provider_journal(repository: Path, deployment: str, *, execution_att
         services = _inspect_project_containers(docker, root, deployment)
         _require_stopped_services(services, "Provider journal archival")
         selection = load_named_deployment(root / "config/deployments" / deployment / "deployment.toml")
-        configured = _runtime_config(root, deployment)
-        ca = _admit_localhost_ca_certificate(localhost_ca_certificate)
-        _admit_server_a_endpoint(configured.endpoint, localhost=ca is not None)
-        authority = server_a_authority_id(configured.endpoint)
+        image = _resolve_provider_image(docker, root)
+        _policy, _definition, binding = _journal_binding(root, deployment, docker, image,
+                                  selection.provider_ref, namespace="nmrpeak-" + deployment)
+        authority = binding["journal_authority_id"]
         journal = _admitted_journal_volume(docker, deployment, selection.provider_ref, authority, services)
         lock = inspect_provider_identity_lock_volume(docker, selection.provider_ref)
-        _, credential = _read_owned_private_credential(state_root / "signing.private.json",
-                            "Provider journal archival credential", require_provider_access=True)
         frozen_root = state_root / "generations" / _retained_identity_name(frozen_generation) / "frozen"
         if frozen_root.resolve(strict=True) != frozen_root:
             raise DeploymentOperationRejected("Archive generation must be a retained non-symlink directory")
         frozen = load_frozen_generation(frozen_root, expected_frozen_generation_id=frozen_generation)
-        if credential.provider_ref != selection.provider_ref or frozen.runtime.hf.generation.provider_ref != selection.provider_ref:
-            raise DeploymentOperationRejected("Archive credential or frozen generation belongs to another provider")
-        image = _resolve_provider_image(docker, root)
-        token = secrets.token_hex(16)
-        name = "nmrpeak-journal-archive-" + token
+        if frozen.runtime.hf.generation.provider_ref != selection.provider_ref:
+            raise DeploymentOperationRejected("Archive frozen generation belongs to another provider")
         mounts = ("--mount", f"type=volume,src={journal},dst=/var/lib/nmrpeak-provider",
                   "--mount", f"type=volume,src={lock},dst=/run/nmrpeak-provider-lock,readonly",
-                  "--mount", f"type=bind,src={root / 'config/deployments' / deployment / 'provider.toml'},dst=/run/config/nmrpeak-provider/provider.toml,readonly",
-                  "--mount", f"type=bind,src={state_root / 'signing.private.json'},dst=/run/secrets/nmrpeak-provider/signing.private.json,readonly",
                   "--mount", f"type=bind,src={frozen_root},dst=/run/nmrpeak-provider/frozen,readonly")
-        networking = ("--add-host", "nmr.localhost:host-gateway") if ca is not None else ()
-        if ca is not None:
-            mounts += ("--mount", f"type=bind,src={ca},dst=/run/config/nmrpeak-provider/server-a-ca.crt,readonly")
-        try:
-            output = _docker_command(docker, (
-                "run", "--rm", "--name", name, "--label", "io.nmrpeak.archive=" + token,
-                "--pull", "never", "--read-only", "--user", "65532:65532", "--cap-drop", "ALL",
-                "--security-opt", "no-new-privileges:true", "--pids-limit", "32", "--memory", "128m",
-                "--memory-swap", "128m", "--log-driver", "none", *networking, *mounts,
-                "--entrypoint", "python", image.image_id, "-m", "nmrpeak_provider.journal_archive",
-                "--execution-attempt-ref", execution_attempt_ref, "--record-digest", record_digest,
-                "--reason", reason, "--frozen-generation", frozen_generation,
-                "--expected-provider-ref", selection.provider_ref, "--expected-authority-id", authority,
-            ), timeout=60).stdout
-        except (Exception, KeyboardInterrupt) as original:
-            try:
-                _remove_archive_invocation(docker, name, token)
-            except (Exception, KeyboardInterrupt) as cleanup:
-                raise DeploymentOperationRejected(
-                    f"Archive result unconfirmed ({original}); cleanup unconfirmed ({cleanup}). "
-                    f"Operator must inspect name={name}, label=io.nmrpeak.archive={token}, verify both and "
-                    "remove only that container ID before inspecting retained journal/archive state or restarting."
-                ) from original
-            raise DeploymentOperationRejected(
-                f"Archive result unconfirmed ({original}); invocation stopped. Operator must inspect "
-                "the retained journal and archive before retrying or restarting; preserve both."
-            ) from original
+        with _held_maintenance_api_route(docker, root, deployment, image, selection.provider_ref, authority) as (policy, projection, captured):
+            output = _run_journal_api_client(docker, image, projection, captured,
+                "nmrpeak_provider.journal_archive", (
+                    "--execution-attempt-ref", execution_attempt_ref, "--record-digest", record_digest,
+                    "--reason", reason, "--frozen-generation", frozen_generation,
+                    "--expected-provider-ref", selection.provider_ref, "--expected-authority-id", authority,
+                    "--binding", policy.binding_name, "--proxy-socket", projection["api_route"]["client_socket"],
+                ), mounts=mounts)
         try:
             if len(output) > 16385 or not output.endswith(b"\n"):
                 raise ValueError("Invalid framing")
@@ -876,16 +913,10 @@ def retire_provider_journal(
         selection = load_named_deployment(
             root / "config/deployments" / deployment / "deployment.toml"
         )
-        configured = _journal_runtime_config(root, deployment)
-        authority_id = server_a_authority_id(configured.endpoint)
-        _, credential = _read_owned_private_credential(
-            state_root / "signing.private.json",
-            "Provider journal retirement credential",
-        )
-        if credential.provider_ref != selection.provider_ref:
-            raise DeploymentOperationRejected(
-                "Provider journal retirement credential belongs to another provider"
-            )
+        provider_image = _resolve_provider_image(docker, root)
+        _policy, _definition, binding = _journal_binding(root, deployment, docker, provider_image,
+                                   selection.provider_ref, namespace="nmrpeak-" + deployment)
+        authority_id = binding["journal_authority_id"]
         admitted_journal, attachments = inspect_provider_journal_volume(
             docker,
             deployment,
@@ -900,39 +931,24 @@ def retire_provider_journal(
             docker,
             selection.provider_ref,
         )
-        provider_image = _resolve_provider_image(docker, root)
         with _held_provider_identity_lock(
             docker,
             lock_volume,
             selection.provider_ref,
             provider_image,
         ):
-            api = ProviderApiClient(
-                configured.endpoint.materialize(),
-                credential.credential_ref,
-                credential.private_key,
-            )
-            try:
-                inventory = read_attempt_inventory(
-                    api=api,
-                    maximum_pages=configured.process.inventory_maximum_pages,
-                )
-            except AttemptInventoryRejected as error:
-                raise DeploymentOperationRejected(
-                    "Provider journal retirement could not prove a complete Attempt inventory"
-                ) from error
-            if type(inventory) is AttemptInventoryReadFailed:
-                raise DeploymentOperationRejected(
-                    "Provider journal retirement could not read a complete Attempt inventory"
-                )
-            if type(inventory) is not AttemptInventory:
-                raise DeploymentOperationRejected(
-                    "Provider journal retirement received an invalid Attempt inventory"
-                )
-            if inventory.attempts:
-                raise DeploymentOperationRejected(
-                    "Provider journal retirement found in-progress Attempts"
-                )
+            with _held_maintenance_api_route(docker, root, deployment, provider_image,
+                      selection.provider_ref, authority_id) as (policy, projection, captured):
+                output = _run_journal_api_client(docker, provider_image, projection, captured,
+                    "nmrpeak_provider.journal_api", (
+                        "--binding", policy.binding_name, "--proxy-socket", projection["api_route"]["client_socket"],
+                        "--expected-provider-ref", selection.provider_ref,
+                        "--expected-authority-id", authority_id,
+                        "--maximum-pages", str(policy.process.inventory_maximum_pages),
+                    ))
+                if output != b"complete-empty\n":
+                    raise DeploymentOperationRejected("Provider journal retirement did not prove a complete empty Attempt inventory")
+            # Teardown must also succeed before the parent-held lock permits deletion.
             return remove_provider_journal_volume(
                 docker,
                 deployment,
@@ -958,10 +974,11 @@ def stop_deployment(
     state_root = _existing_deployment_state_root(root, deployment)
     with _locked_deployment_state(state_root):
         services = _inspect_project_containers(docker, root, deployment)
-        _inspect_project_resources(docker, deployment, services)
-        _run_compose_down(docker, root, deployment)
+        route_volumes = _api_route_volumes(deployment, services)
+        _inspect_project_resources(docker, deployment, services, route_volumes=route_volumes)
+        _run_compose_down(docker, root, deployment, route_volumes=route_volumes)
         remaining = _inspect_project_containers(docker, root, deployment)
-        resources = _inspect_project_resources(docker, deployment, remaining)
+        resources = _inspect_project_resources(docker, deployment, remaining, route_volumes=route_volumes)
         if remaining or resources:
             raise DeploymentOperationRejected(
                 "Provider teardown left unresolved project resources"
@@ -971,7 +988,7 @@ def stop_deployment(
 def _validate_deployment_plan(plan: DeploymentPlan) -> None:
     if type(plan) is not DeploymentPlan:
         raise TypeError("Deployment materialization requires one resolved plan")
-    if _runtime_config_id(plan.generation.provider_config) != plan.runtime_config_id:
+    if runtime_config_id(plan.runtime_files) != plan.runtime_config_id:
         raise DeploymentOperationRejected(
             "Deployment runtime config identity does not match its bytes"
         )
@@ -992,7 +1009,7 @@ def _materialize_locked(
     runtime_config = _publish_retained_tree(
         runtime_root,
         plan.runtime_config_id,
-        {"provider.toml": plan.generation.provider_config},
+        plan.runtime_files,
     )
     frozen_files = {"frozen/manifest.json": plan.generation.manifest}
     frozen_files.update(
@@ -1009,198 +1026,6 @@ def _materialize_locked(
     return runtime_config, frozen_generation
 
 
-def _admit_installed_credential(state_root: Path, provider_ref: str) -> None:
-    path = state_root / "signing.private.json"
-    _, credential = _read_owned_private_credential(
-        path,
-        "Provider signing credential",
-    )
-    if credential.provider_ref != provider_ref:
-        raise DeploymentOperationRejected(
-            "Provider signing credential belongs to another provider"
-        )
-    _grant_provider_file_access(path, owner_write=True)
-    _read_owned_private_credential(
-        path,
-        "Provider signing credential",
-        require_provider_access=True,
-    )
-
-
-def _admit_interpreter_configs(state_root: Path) -> None:
-    root = state_root / "openai-chat-completions.d"
-    try:
-        metadata = root.stat(follow_symlinks=False)
-        entries = tuple(root.iterdir())
-    except OSError as error:
-        raise DeploymentOperationRejected(
-            f"Cannot read the interpreter endpoint directory: {root}"
-        ) from error
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise DeploymentOperationRejected(
-            f"Cannot admit interpreter endpoints from {root}: expected a non-symlink "
-            "directory"
-        )
-    if metadata.st_uid != os.geteuid():
-        raise DeploymentOperationRejected(
-            f"Cannot admit interpreter endpoints from {root}: the directory must be "
-            f"owned by operator UID {os.geteuid()}, found UID {metadata.st_uid}"
-        )
-    if not 1 <= len(entries) <= MAX_INTERPRETER_ENDPOINTS:
-        raise DeploymentOperationRejected(
-            f"Cannot admit interpreter endpoints from {root}: found {len(entries)} "
-            f"entries; expected one to {MAX_INTERPRETER_ENDPOINTS} .toml files"
-        )
-    for path in entries:
-        try:
-            entry = path.stat(follow_symlinks=False)
-        except OSError as error:
-            raise DeploymentOperationRejected(
-                f"Cannot inspect interpreter endpoint file: {path}"
-            ) from error
-        if path.suffix != ".toml":
-            raise DeploymentOperationRejected(
-                f"Cannot admit interpreter endpoint file {path}: the filename must end "
-                "in .toml"
-            )
-        if not stat.S_ISREG(entry.st_mode):
-            raise DeploymentOperationRejected(
-                f"Cannot admit interpreter endpoint file {path}: expected a non-symlink "
-                "regular file"
-            )
-        if entry.st_uid != os.geteuid():
-            raise DeploymentOperationRejected(
-                f"Cannot admit interpreter endpoint file {path}: it must be owned by "
-                f"operator UID {os.geteuid()}, found UID {entry.st_uid}"
-            )
-        if entry.st_size > MAX_INTERPRETER_CONFIG_BYTES:
-            raise DeploymentOperationRejected(
-                f"Cannot admit interpreter endpoint file {path}: its {entry.st_size} "
-                f"bytes exceed the {MAX_INTERPRETER_CONFIG_BYTES}-byte limit"
-            )
-        access = _read_acl(path, "Interpreter endpoint configuration")
-        if access not in {
-            _PRIVATE_WRITABLE_FILE_ACL,
-            _PROVIDER_READONLY_FILE_ACL,
-        }:
-            raise DeploymentOperationRejected(
-                f"Cannot admit interpreter endpoint file {path}: its permissions match "
-                "neither an operator-installed mode-0600 file nor the admitted "
-                "provider-read-only ACL. Reinstall it through the documented endpoint "
-                f"step as a non-symlink regular file owned by operator UID {os.geteuid()}; "
-                "startup will grant provider read access"
-            )
-    _grant_provider_tree_access(root)
-
-
-def _read_owned_private_credential(
-    path: Path,
-    operation: str,
-    *,
-    require_provider_access: bool = False,
-) -> tuple[bytes, ProviderSigningCredential]:
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    except OSError as error:
-        raise DeploymentOperationRejected(
-            f"{operation} is unavailable"
-        ) from error
-    try:
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or metadata.st_size > PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES
-        ):
-            raise DeploymentOperationRejected(
-                f"{operation} must be operator-owned with exact private access"
-            )
-        mode = stat.S_IMODE(metadata.st_mode)
-        access = _read_acl(path, operation)
-        private_access = mode == 0o600 and access == _PRIVATE_WRITABLE_FILE_ACL
-        provider_access = (
-            mode == 0o640 and access == _PROVIDER_WRITABLE_FILE_ACL
-        )
-        if (
-            (require_provider_access and not provider_access)
-            or (
-                not require_provider_access
-                and not (private_access or provider_access)
-            )
-        ):
-            raise DeploymentOperationRejected(
-                f"{operation} must be operator-owned with exact private access"
-            )
-        raw = os.read(descriptor, PROVIDER_SIGNING_CREDENTIAL_MAX_BYTES + 1)
-        if len(raw) != metadata.st_size:
-            raise DeploymentOperationRejected(
-                f"{operation} changed while it was read"
-            )
-    finally:
-        os.close(descriptor)
-    try:
-        credential = parse_provider_signing_credential(raw)
-    except ValueError as error:
-        raise DeploymentOperationRejected(
-            f"{operation} is invalid"
-        ) from error
-    return raw, credential
-
-
-def _select_api_credential(
-    nmr_api_v1: Path,
-    provider_ref: str,
-) -> tuple[bytes, ProviderSigningCredential]:
-    try:
-        api_root = nmr_api_v1.resolve(strict=True)
-    except OSError as error:
-        raise DeploymentOperationRejected(
-            "NMR API checkout is unavailable"
-        ) from error
-    if api_root != nmr_api_v1 or not api_root.is_dir():
-        raise DeploymentOperationRejected(
-            "NMR API checkout must be one resolved non-symlink directory"
-        )
-    provider_id = provider_ref.removeprefix("provider:")
-    credential_root = api_root / "secrets"
-    candidates = sorted(
-        credential_root.glob(f"*/providers/{provider_id}/signing.private.json")
-    )
-    admitted: list[tuple[bytes, ProviderSigningCredential]] = []
-    for candidate in candidates:
-        relative = candidate.relative_to(credential_root)
-        if len(relative.parts) != 4 or candidate.resolve(strict=True) != candidate:
-            raise DeploymentOperationRejected(
-                "API-issued provider signing credential path is invalid"
-            )
-        raw, credential = _read_owned_private_credential(
-            candidate,
-            "API-issued provider signing credential",
-        )
-        if (
-            credential.profile != relative.parts[0]
-            or credential.provider_ref != provider_ref
-        ):
-            raise DeploymentOperationRejected(
-                "API-issued provider signing credential identity does not match its path"
-            )
-        admitted.append((raw, credential))
-    if len(admitted) != 1:
-        raise DeploymentOperationRejected(
-            "NMR API checkout must contain exactly one matching provider credential"
-        )
-    return admitted[0]
-
-
-def _require_stopped_project(
-    docker: Path,
-    repository: Path,
-    deployment: str,
-) -> None:
-    services = _inspect_project_containers(docker, repository, deployment)
-    _require_stopped_services(services, "Provider credential replacement")
-
-
 def _require_stopped_services(
     services: dict[str, dict[str, object]],
     operation: str,
@@ -1211,35 +1036,6 @@ def _require_stopped_services(
             raise DeploymentOperationRejected(
                 f"{operation} requires a proved-stopped deployment"
             )
-
-
-def _runtime_config(
-    repository: Path,
-    deployment: str,
-) -> ProviderRuntimeConfig:
-    try:
-        configured = decode_provider_runtime_config(
-            _read_regular_file(
-                repository / "config/deployments" / deployment / "provider.toml"
-            )
-        )
-    except (OSError, TypeError, ValueError) as error:
-        raise DeploymentOperationRejected(
-            "Deployment runtime config is invalid"
-        ) from error
-    return configured
-
-
-def _journal_runtime_config(
-    repository: Path,
-    deployment: str,
-) -> ProviderRuntimeConfig:
-    configured = _runtime_config(repository, deployment)
-    if configured.endpoint.ca_file is not None:
-        raise DeploymentOperationRejected(
-            "Provider journal retirement does not support a container-only private CA"
-        )
-    return configured
 
 
 @contextmanager
@@ -1683,60 +1479,6 @@ def _remove_retained_generation(
         ) from error
 
 
-def _publish_private_credential(
-    destination: Path,
-    content: bytes,
-    *,
-    replace: bool,
-) -> None:
-    parent_fd = os.open(
-        destination.parent,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-    )
-    stage = f".{destination.name}.{secrets.token_hex(16)}.staging"
-    published = False
-    try:
-        _write_new_file(parent_fd, stage, content)
-        _grant_provider_file_access(destination.parent / stage, owner_write=True)
-        if replace:
-            os.rename(
-                stage,
-                destination.name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            published = True
-        else:
-            try:
-                os.link(
-                    stage,
-                    destination.name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                    follow_symlinks=False,
-                )
-            except FileExistsError as error:
-                raise DeploymentOperationRejected(
-                    "Provider signing credential appeared during installation"
-                ) from error
-            published = True
-            os.unlink(stage, dir_fd=parent_fd)
-        os.fsync(parent_fd)
-    except (DeploymentOperationRejected, OSError) as error:
-        try:
-            os.unlink(stage, dir_fd=parent_fd)
-        except FileNotFoundError:
-            pass
-        if published:
-            raise DeploymentOperationRejected(
-                "Provider credential publication did not complete durably; "
-                "installed state may have changed"
-            ) from error
-        raise
-    finally:
-        os.close(parent_fd)
-
-
 def _run_compose_plan(
     docker: Path,
     repository: Path,
@@ -1784,15 +1526,25 @@ def _run_compose_down(
     docker: Path,
     repository: Path,
     deployment: str,
+    *,
+    route_volumes: tuple[str, ...],
+    api_route=None,
 ) -> None:
     try:
-        teardown = _read_committed_template(
+        teardown = canonical_json_bytes(api_route) if api_route is not None else _read_committed_template(
             repository,
             Path("compose/provider-teardown.yml"),
         )
         with TemporaryDirectory() as temporary:
             compose = Path(temporary) / "provider-teardown.yml"
             compose.write_bytes(teardown)
+            route_overlay = Path(temporary) / "route-volumes.json"
+            route_overlay.write_bytes(canonical_json_bytes({
+                "services": {role: {"volumes": [{"type": "volume", "source": name, "target": "/route"}
+                                                for name in route_volumes]}
+                             for role in ("api", "api-init")},
+                "volumes": {name: {"name": name} for name in route_volumes},
+            }))
             prefix = (
                 "compose",
                 "--env-file",
@@ -1802,25 +1554,15 @@ def _run_compose_down(
                 "--project-name",
                 f"nmrpeak-{deployment}",
                 "--file",
-                str(compose),
+                str(compose), "--file", str(route_overlay),
             )
-            _docker_command(
-                docker,
-                (*prefix, "stop", "--timeout", "600", "provider"),
-                timeout=660,
-            )
-            _docker_command(
-                docker,
-                (
-                    *prefix,
-                    "stop",
-                    "--timeout",
-                    "20",
-                    "hf-runner",
-                    "chf-runner",
-                ),
-                timeout=80,
-            )
+            if api_route is None:
+                _docker_command(
+                    docker, (*prefix, "stop", "--timeout", "600", "provider"), timeout=660,
+                )
+                _docker_command(
+                    docker, (*prefix, "stop", "--timeout", "20", "hf-runner", "chf-runner"), timeout=80,
+                )
             _docker_command(
                 docker,
                 (
@@ -1828,7 +1570,6 @@ def _run_compose_down(
                     "down",
                     "--timeout",
                     "20",
-                    "--remove-orphans",
                     "--volumes",
                 ),
                 timeout=80,
@@ -1846,6 +1587,8 @@ def _inspect_project_containers(
     docker: Path,
     repository: Path,
     deployment: str,
+    *,
+    roles=frozenset({"provider", "hf-runner", "chf-runner", "api", "api-init"}),
 ) -> dict[str, dict[str, object]]:
     project = f"nmrpeak-{deployment}"
     inventory = _docker_command(
@@ -1890,7 +1633,7 @@ def _inspect_project_containers(
         if (
             record.get("Id") not in inventory
             or type(service) is not str
-            or service not in {"provider", "hf-runner", "chf-runner"}
+            or service not in roles
             or service in services
             or labels.get("com.docker.compose.project") != project
             or labels.get("com.docker.compose.oneoff") != "False"
@@ -1903,17 +1646,56 @@ def _inspect_project_containers(
     return services
 
 
+def _api_route_volumes(deployment, services):
+    """Retain original SDK role mount evidence for this teardown transaction."""
+    names = set()
+    bindings = set()
+    for role, sdk_role in (("api", "proxy"), ("api-init", "initializer")):
+        if role not in services:
+            continue
+        record = services[role]
+        labels = record["Config"]["Labels"]
+        binding = labels.get("org.nmr-provider-tools.binding")
+        if (labels.get("org.nmr-provider-tools.route") != "nmrpeak-" + deployment
+                or labels.get("org.nmr-provider-tools.route-role") != sdk_role
+                or type(binding) is not str or not binding):
+            raise DeploymentOperationRejected("API route container does not retain its original SDK ownership labels")
+        mounts = record.get("Mounts")
+        if type(mounts) is not list:
+            raise DeploymentOperationRejected("API route container has no inspectable original mounts")
+        if any(type(mount) is not dict for mount in mounts):
+            raise DeploymentOperationRejected("API route container mount inspection contains an invalid record")
+        selected = [mount for mount in mounts if mount.get("Destination") == "/route"]
+        if (len(selected) != 1 or selected[0].get("Type") != "volume"
+                or selected[0].get("RW") is not True
+                or type(selected[0].get("Name")) is not str or not selected[0]["Name"]):
+            raise DeploymentOperationRejected("API route container does not grant exactly one writable route volume")
+        names.add(selected[0]["Name"])
+        bindings.add(binding)
+    if len(names) > 1 or len(bindings) > 1:
+        raise DeploymentOperationRejected("API proxy and initializer retain different original route grants")
+    return tuple(sorted(names))
+
+
 def _inspect_project_resources(
     docker: Path,
     deployment: str,
     services: dict[str, dict[str, object]],
+    *,
+    route_volumes: tuple[str, ...],
+    scientific_sessions=True,
 ) -> tuple[str, ...]:
     project = f"nmrpeak-{deployment}"
     project_container_ids = {record["Id"] for record in services.values()}
     expected_volumes = {
         f"{project}_hf-session": "hf-session",
         f"{project}_chf-session": "chf-session",
-    }
+    } if scientific_sessions else {}
+    if set(route_volumes) & expected_volumes.keys():
+        raise DeploymentOperationRejected("An API route reuses a scientific session volume")
+    expected_volumes.update({name: name for name in route_volumes})
+    route_container_ids = {record["Id"] for role, record in services.items()
+                           if role in {"provider", "api", "api-init"}}
     volume_names = _docker_command(
         docker,
         (
@@ -1951,16 +1733,20 @@ def _inspect_project_resources(
                 )
             name = record.get("Name")
             labels = record.get("Labels")
+            options = record.get("Options")
+            if name in route_volumes:
+                if options not in (None, {}):
+                    raise DeploymentOperationRejected("API route volume has unexpected driver options")
+            elif options != {
+                "device": "tmpfs",
+                "o": "size=1m,uid=65532,gid=65532,mode=0700",
+                "type": "tmpfs",
+            }:
+                raise DeploymentOperationRejected("Scientific session volume options have drifted")
             if (
                 name not in volume_names
                 or type(labels) is not dict
                 or record.get("Driver") != "local"
-                or record.get("Options")
-                != {
-                    "device": "tmpfs",
-                    "o": "size=1m,uid=65532,gid=65532,mode=0700",
-                    "type": "tmpfs",
-                }
                 or labels.get("com.docker.compose.project") != project
                 or labels.get("com.docker.compose.volume")
                 != expected_volumes[name]
@@ -1983,7 +1769,7 @@ def _inspect_project_resources(
             if any(
                 re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in attachments
-            ) or not set(attachments).issubset(project_container_ids):
+            ) or not set(attachments).issubset(route_container_ids if name in route_volumes else project_container_ids):
                 raise DeploymentOperationRejected(
                     "Provider project session volume has a foreign attachment"
                 )
@@ -2054,27 +1840,26 @@ def _require_ready_project(
 ) -> None:
     services = _inspect_project_containers(docker, repository, deployment)
     expected_services = plan.compose["services"]
-    if set(services) != {"provider", "hf-runner", "chf-runner"}:
+    if set(services) != set(expected_services):
         raise DeploymentOperationRejected(
-            "Provider startup did not leave exactly three durable services"
+            "Provider startup did not leave the exact declared service roles"
         )
     for service, record in services.items():
         expected = expected_services[service]
         state = record.get("State")
-        if (
-            type(expected) is not dict
-            or record.get("Image") != expected.get("image")
-            or type(state) is not dict
-            or state.get("Status") != "running"
-        ):
-            raise DeploymentOperationRejected(
-                f"Provider startup did not prove the selected {service} image running"
-            )
-        if service == "provider":
+        if type(expected) is not dict or type(state) is not dict or record.get("Image") != expected.get("image"):
+            raise DeploymentOperationRejected(f"Provider startup did not prove the selected {service} image")
+        if service == "api-init":
+            if state.get("Status") != "exited" or state.get("ExitCode") != 0:
+                raise DeploymentOperationRejected("API route initializer did not finish successfully")
+            continue
+        if state.get("Status") != "running":
+            raise DeploymentOperationRejected(f"Provider startup did not prove the selected {service} image running")
+        if service in {"provider", "api"}:
             health = state.get("Health")
             if type(health) is not dict or health.get("Status") != "healthy":
                 raise DeploymentOperationRejected(
-                    "Provider startup did not prove provider readiness"
+                    f"Provider startup did not prove {service} readiness"
                 )
 
 
@@ -2149,13 +1934,6 @@ def _release_declaration(directory: Path, release_name: str) -> bytes:
     if candidate.parent != directory:
         raise DeploymentOperationRejected("Checkpoint release name escapes its lane")
     return _read_regular_file(candidate)
-
-
-def _runtime_config_id(provider_config: bytes) -> str:
-    if type(provider_config) is not bytes:
-        raise TypeError("Runtime config identity requires exact bytes")
-    digest = sha256(b"nmrpeak.provider_runtime_config.v1\0" + provider_config)
-    return f"sha256:{digest.hexdigest()}"
 
 
 def _ensure_deployment_state_root(repository: Path, deployment: str) -> Path:
@@ -2509,51 +2287,6 @@ def _read_regular_file(path: Path) -> bytes:
         os.close(descriptor)
 
 
-def _admit_localhost_ca_certificate(path: Path | None) -> Path | None:
-    if path is None:
-        return None
-    if not isinstance(path, Path) or not path.is_absolute():
-        raise DeploymentOperationRejected(
-            "Localhost CA certificate must be an absolute path"
-        )
-    try:
-        resolved = path.resolve(strict=True)
-    except OSError as error:
-        raise DeploymentOperationRejected(
-            "Localhost CA certificate is unavailable"
-        ) from error
-    if resolved != path:
-        raise DeploymentOperationRejected(
-            "Localhost CA certificate must be a resolved non-symlink path"
-        )
-    if not _read_regular_file(path):
-        raise DeploymentOperationRejected(
-            "Localhost CA certificate must not be empty"
-        )
-    return path
-
-
-def _admit_server_a_endpoint(
-    endpoint: ProviderEndpointConfig,
-    *,
-    localhost: bool,
-) -> None:
-    if localhost:
-        if (
-            endpoint.origin != "https://nmr.localhost:10443"
-            or endpoint.expected_topology != "dev-local"
-            or endpoint.ca_file is None
-        ):
-            raise DeploymentOperationRejected(
-                "Localhost deployment requires the dev-local nmr.localhost origin "
-                "and private Server A CA"
-            )
-    elif endpoint.ca_file is not None:
-        raise DeploymentOperationRejected(
-            "Public deployment config cannot select a private Server A CA"
-        )
-
-
 def _committed_revision(repository: Path) -> str:
     result = subprocess.run(
         ("git", "-C", str(repository), "rev-parse", "--verify", "HEAD"),
@@ -2655,7 +2388,6 @@ def _compose_environment(
     *,
     provider_config: Path,
     frozen_generation: Path,
-    localhost_ca_certificate: Path | None,
 ) -> dict[str, str]:
     state_root = repository / "secrets/deployments" / deployment
     environment = {
@@ -2666,11 +2398,7 @@ def _compose_environment(
         "PROVIDER_IMAGE_REF": images.provider,
         "HF_RUNNER_IMAGE_REF": images.hf,
         "CHF_RUNNER_IMAGE_REF": images.chf,
-        "PROVIDER_CONFIG_PATH": str(provider_config),
-        "PROVIDER_CREDENTIAL_PATH": str(state_root / "signing.private.json"),
-        "INTERPRETER_CONFIG_PATH": str(
-            state_root / "openai-chat-completions.d"
-        ),
+        "PROVIDER_RUNTIME_DIRECTORY": str(provider_config.parent),
         "FROZEN_GENERATION_PATH": str(frozen_generation),
         "PROVIDER_IDENTITY_LOCK_VOLUME": provider_identity_lock_volume_name(
             provider_ref
@@ -2683,10 +2411,6 @@ def _compose_environment(
         "HF_RUNNER_IMAGE_INPUT_ID": images.hf_input,
         "CHF_RUNNER_IMAGE_INPUT_ID": images.chf_input,
     }
-    if localhost_ca_certificate is not None:
-        environment["LOCALHOST_CA_CERTIFICATE_PATH"] = str(
-            localhost_ca_certificate
-        )
     return environment
 
 
@@ -2696,40 +2420,38 @@ def _render_compose(
     environment: dict[str, str],
     docker: Path,
     *,
-    localhost: bool,
+    binding_projection: dict,
 ) -> dict[str, object]:
     project = f"nmrpeak-{deployment}"
     compose_files = [
         "--file",
         str(repository / "compose/provider.yml"),
     ]
-    if localhost:
-        compose_files.extend(
-            (
-                "--file",
-                str(repository / "compose/provider-localhost.yml"),
-            )
-        )
     try:
-        result = subprocess.run(
-            (
-                str(docker),
-                "compose",
-                "--env-file",
-                "/dev/null",
-                "--project-name",
-                project,
-                *compose_files,
-                "config",
-                "--format",
-                "json",
-            ),
-            cwd=repository,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=60,
-        )
+        with TemporaryDirectory() as temporary:
+            overlay = Path(temporary) / "api-route.json"
+            fragment = _compose_binding_route({"services": {"provider": {}}, "networks": {}, "volumes": {}}, binding_projection)
+            overlay.write_bytes(canonical_json_bytes(fragment))
+            compose_files.extend(("--file", str(overlay)))
+            result = subprocess.run(
+                (
+                    str(docker),
+                    "compose",
+                    "--env-file",
+                    "/dev/null",
+                    "--project-name",
+                    project,
+                    *compose_files,
+                    "config",
+                    "--format",
+                    "json",
+                ),
+                cwd=repository,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise DeploymentOperationRejected(
             "Docker Compose could not normalize the deployment topology: " + exception_diagnostic(error)
@@ -2873,7 +2595,6 @@ def main(arguments: list[str] | None = None) -> int:
         "operation",
         choices=(
             "config",
-            "credential-install",
             "down",
             "generation-remove",
             "init",
@@ -2886,28 +2607,17 @@ def main(arguments: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("deployment")
-    parser.add_argument("--nmr-api-v1", type=Path)
-    parser.add_argument("--replace", action="store_true")
     parser.add_argument("--frozen-generation")
     parser.add_argument("--confirm")
     parser.add_argument("--execution-attempt-ref")
     parser.add_argument("--record-digest")
     parser.add_argument("--reason")
-    parser.add_argument("--localhost-ca-certificate", type=Path)
     parser.add_argument("--expected-plan-sha256")
     options = parser.parse_args(arguments)
     _validate_operation_options(parser, options)
     repository = Path(__file__).resolve().parents[1]
     try:
-        if options.operation == "credential-install":
-            installed = install_provider_credential(
-                repository,
-                options.deployment,
-                options.nmr_api_v1,
-                replace=options.replace,
-            )
-            print(f"Installed provider credential: {installed}")
-        elif options.operation == "generation-remove":
+        if options.operation == "generation-remove":
             remove_frozen_generation(
                 repository,
                 options.deployment,
@@ -2924,8 +2634,7 @@ def main(arguments: list[str] | None = None) -> int:
         elif options.operation == "journal-archive-closed":
             print(archive_provider_journal(repository, options.deployment,
                   execution_attempt_ref=options.execution_attempt_ref, record_digest=options.record_digest,
-                  reason=options.reason, frozen_generation=options.frozen_generation,
-                  localhost_ca_certificate=options.localhost_ca_certificate).decode("utf-8"), end="")
+                  reason=options.reason, frozen_generation=options.frozen_generation).decode("utf-8"), end="")
         elif options.operation == "journal-retire":
             removed = retire_provider_journal(
                 repository,
@@ -2944,7 +2653,6 @@ def main(arguments: list[str] | None = None) -> int:
             plan = render_deployment_plan(
                 repository,
                 options.deployment,
-                localhost_ca_certificate=options.localhost_ca_certificate,
             )
             print(deployment_plan_bytes(plan).decode("utf-8"))
         elif options.operation == "up":
@@ -2952,7 +2660,6 @@ def main(arguments: list[str] | None = None) -> int:
                 repository,
                 options.deployment,
                 expected_plan_sha256=options.expected_plan_sha256,
-                localhost_ca_certificate=options.localhost_ca_certificate,
             )
             print(
                 "Provider deployment ready: "
@@ -2990,11 +2697,7 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 _OPERATION_OPTION_POLICY = {
-    "config": (frozenset(), frozenset({"localhost_ca_certificate"})),
-    "credential-install": (
-        frozenset({"nmr_api_v1"}),
-        frozenset({"nmr_api_v1", "replace"}),
-    ),
+    "config": (frozenset(), frozenset()),
     "down": (frozenset(), frozenset()),
     "generation-remove": (
         frozenset({"frozen_generation", "confirm"}),
@@ -3003,26 +2706,22 @@ _OPERATION_OPTION_POLICY = {
     "init": (frozenset(), frozenset()),
     "journal-inspect": (frozenset(), frozenset({"execution_attempt_ref"})),
     "journal-archive-closed": (frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation"}),
-        frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation", "localhost_ca_certificate"})),
+        frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation"})),
     "journal-retire": (frozenset({"confirm"}), frozenset({"confirm"})),
     "logs": (frozenset(), frozenset()),
     "status": (frozenset(), frozenset()),
-    "up": (frozenset({"expected_plan_sha256"}), frozenset({"localhost_ca_certificate", "expected_plan_sha256"})),
+    "up": (frozenset({"expected_plan_sha256"}), frozenset({"expected_plan_sha256"})),
 }
 _OPTION_NAMES = {
-    "nmr_api_v1": "--nmr-api-v1",
-    "replace": "--replace",
     "frozen_generation": "--frozen-generation",
     "confirm": "--confirm",
     "execution_attempt_ref": "--execution-attempt-ref",
     "record_digest": "--record-digest",
     "reason": "--reason",
-    "localhost_ca_certificate": "--localhost-ca-certificate",
     "expected_plan_sha256": "--expected-plan-sha256",
 }
 _OPERATION_FAILURE_HEADLINES = {
     "config": "Provider deployment preview failed",
-    "credential-install": "Provider credential installation failed",
     "down": "Provider deployment shutdown failed",
     "generation-remove": "Frozen deployment generation removal failed",
     "init": "Provider deployment initialization failed",
@@ -3073,4 +2772,3 @@ def _render_deployment_failure(
 
 if __name__ == "__main__":
     raise SystemExit(main())
-    admit_deployment_releases,

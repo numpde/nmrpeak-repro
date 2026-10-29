@@ -17,7 +17,6 @@
 !models/
 !models/nmrpeak_chf_v1/
 !models/nmrpeak_chf_v1/runner/
-!models/nmrpeak_chf_v1/runner/owner_session_supervisor.py
 !models/nmrpeak_chf_v1/runner/runtime.py
 !models/nmrpeak_chf_v1/runner/worker.py
 !nmrpeak-upstream/
@@ -36,7 +35,8 @@
 !nmrpeak_provider/failure_message.py
 !nmrpeak_provider/nmrpeak_binding.py
 !nmrpeak_provider/owner_session_endpoint.py
-!nmrpeak_provider/owner_session_supervisor.py
+!nmrpeak_provider/native_launcher.py
+!nmrpeak_provider/native_policy.py
 !nmrpeak_provider/product.py
 !nmrpeak_provider/process_logging.py
 !nmrpeak_provider/product_decode.py
@@ -49,3 +49,7 @@
 !unicore-upstream/LICENSE
 !unicore-upstream/unicore/
 !unicore-upstream/unicore/**
+!requirements-native.lock
+!dependencies/
+!dependencies/provider-core-native.lock
+!dependencies/provider-core-source.txt

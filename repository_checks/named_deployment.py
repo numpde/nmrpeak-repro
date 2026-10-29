@@ -24,7 +24,6 @@ from nmrpeak_provider.product_result import (
     HF_RESULT_IDENTITY,
     ProviderResultFacts,
 )
-from nmrpeak_provider.provider_config import decode_provider_runtime_config
 from nmrpeak_provider.run_generation import (
     CreatedAtWindow,
     RunGenerationIdentity,
@@ -74,7 +73,6 @@ class RenderedGeneration:
     frozen_generation_id: str
     manifest: bytes
     files: tuple[FrozenFile, ...]
-    provider_config: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +126,6 @@ def render_generation(
     selection: NamedDeployment,
     releases: DeploymentReleases,
     *,
-    provider_config_template: bytes,
     hf_image_input_id: str,
     chf_image_input_id: str,
     hf_hello: bytes,
@@ -187,26 +184,7 @@ def render_generation(
     )
     manifest = render_frozen_generation_manifest(runtime, files)
     identity = frozen_generation_id(manifest)
-    provider_config = render_provider_config(provider_config_template, identity)
-    return RenderedGeneration(identity, manifest, files, provider_config)
-
-
-def render_provider_config(template: bytes, identity: str) -> bytes:
-    """Replace the sole generated field and prove the provider consumes it."""
-
-    if type(template) is not bytes:
-        raise TypeError("Provider config template must be exact bytes")
-    marker = f'frozen_generation_id = "{GENERATED_FROZEN_ID}"'.encode()
-    if template.count(marker) != 1:
-        raise NamedDeploymentRejected(
-            "Provider config must contain the single generated frozen identity"
-        )
-    rendered = template.replace(
-        marker,
-        f'frozen_generation_id = "{identity}"'.encode(),
-    )
-    decode_provider_runtime_config(rendered)
-    return rendered
+    return RenderedGeneration(identity, manifest, files)
 
 
 def _require_topology_generation(

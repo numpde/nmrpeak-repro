@@ -111,6 +111,8 @@ def _require_complete_provider_inputs(
         Path("containers/provider/Dockerfile.dockerignore"),
         Path("pyproject.toml"),
         Path("requirements.lock"),
+        Path("dependencies/provider-core-api.lock"),
+        Path("dependencies/provider-core-source.txt"),
     }
     if set(selected_paths) != required_paths:
         raise ImageInputRejected(

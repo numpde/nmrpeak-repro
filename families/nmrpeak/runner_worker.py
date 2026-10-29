@@ -81,20 +81,21 @@ def serve_loaded_nmrpeak_runtime(
                     command.correlation.attempt_ref,
                     rejection.reason.value,
                 )
-                connection.sendall(
-                    codec.encode(
-                        RejectedFrame(
-                            command.correlation, rejection.reason,
-                            str(rejection), rejection.token_count,
-                        )
-                    )
-                )
-                continue
+                response = codec.encode(RejectedFrame(
+                    command.correlation, rejection.reason,
+                    str(rejection), rejection.token_count,
+                ))
             except BaseException as error:
                 _report_failure(connection, codec, command.correlation, "validate", error)
                 raise
-            pending = command
-            connection.sendall(codec.encode(ValidatedFrame(command.correlation)))
+            else:
+                pending = command
+                response = codec.encode(ValidatedFrame(command.correlation))
+            if pending is None:
+                # Leave the caught rejection's traceback and decoded input
+                # behind before its reply permits another Attempt to reuse us.
+                command = None
+            connection.sendall(response)
             continue
         if type(command) is GenerateFrame:
             if pending is None or command.correlation != pending.correlation:
@@ -109,14 +110,16 @@ def serve_loaded_nmrpeak_runtime(
             except BaseException as error:
                 _report_failure(connection, codec, command.correlation, "generate", error)
                 raise
-            # A partial write cannot be followed by another trustworthy frame.
+            # The reply releases this request for warm reuse. Drop its input
+            # before the owner can observe that completion; a partial write
+            # cannot be followed by another trustworthy frame.
+            pending = None
             connection.sendall(response)
             _LOG.info(
                 'Model result sent to provider; attempt=%s elapsed_seconds=%.3f',
                 command.correlation.attempt_ref,
                 time.monotonic() - started_at,
             )
-            pending = None
             continue
         if type(command) is RetireFrame:
             if pending is not None or command.boot_generation != ready.boot_generation:

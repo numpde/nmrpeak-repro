@@ -513,21 +513,18 @@ async def _run(
     checks = failures = executed = behavior_failures = reviews = unexecuted = 0
     runs = tuple(_evaluation_runs(evaluations, repeats))
     async with AsyncExitStack() as stack:
-        client = await stack.enter_async_context(httpx.AsyncClient(
-            event_hooks={"request": [pace_request]}, trust_env=False,
-        ))
         endpoints = bind_openai_chat_endpoints(
             load_openai_chat_endpoint_specs(config_dir),
             OpenAIChatCallPolicy(
                 request_timeout_seconds=request_timeout_seconds,
                 turn_timeout_seconds=turn_timeout_seconds,
             ),
-            http_client=client,
+            before_send=pace_request,
             submit_interpretation_description=_SUBMIT_DESCRIPTION,
             submit_interpretation_value_schema=_value_schema_for(_LANES[lane_name]),
             report_input_problem_description=_REPORT_DESCRIPTION,
         )
-        stack.push_async_callback(endpoints.join_response_releases)
+        stack.push_async_callback(endpoints.retire)
         for endpoint in endpoints.endpoints:
             checks += 1
             check_reason = await _check_endpoint(endpoint)

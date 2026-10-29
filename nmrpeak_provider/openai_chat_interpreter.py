@@ -12,7 +12,6 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import InitVar, dataclass, field, replace
 import json
-import logging
 from pathlib import Path
 import re
 import tomllib
@@ -21,8 +20,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from provider_core.diagnostics import failure_evidence
+from provider_core.decoded_body import DecodedBodyRejected
+from provider_core.network import network_availability
+from provider_core.transport import ExchangeFailed, HttpTransport
+
 from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
-from nmrpeak_provider.http_response import best_effort_release_response
 from nmrpeak_provider.interpreter import (
     InterpreterEndpoint,
     InterpreterEndpointFailure,
@@ -45,7 +48,6 @@ from nmrpeak_provider.local_input import (
 )
 
 
-_LOG = logging.getLogger(__name__)
 _MAX_CONFIG_DIRECTORY_ENTRIES = 32
 _MAX_MODEL_BYTES = 256
 _MAX_RESPONSE_BYTES = 256 * 1024
@@ -83,30 +85,92 @@ class OpenAIChatEndpointSpec:
         object.__setattr__(self, "url", url)
 
 
+class _EndpointUnavailable(RuntimeError):
+    """A settled SDK network or request-deadline failure permits policy retry."""
+
+
 class OpenAIChatEndpoints:
-    """Ordered generic endpoints plus the response releases they initiate."""
+    """Retain the actual HTTP owner across ordered endpoint calls and retirement."""
 
-    __slots__ = ("_pending_response_releases", "endpoints")
+    __slots__ = ("_transport", "_closed", "_trust", "_before_send", "endpoints")
 
-    def __init__(
-        self,
-        endpoints: tuple[InterpreterEndpoint, ...],
-        pending_response_releases: set[asyncio.Task[None]],
-    ) -> None:
-        self.endpoints = endpoints
-        self._pending_response_releases = pending_response_releases
+    def __init__(self, *, before_send):
+        self._transport = None
+        self._closed = False
+        self._before_send = before_send
+        self._trust = httpx.create_ssl_context(trust_env=False)
+        self.endpoints = ()
 
-    async def join_response_releases(self) -> None:
-        """Prove every scheduled response release has reached a terminal state."""
+    async def retire(self):
+        """Close admission before observing the same original transport's cleanup."""
+        self._closed = True
+        if self._transport is not None:
+            await self._transport.retire(owner=self)
 
-        while self._pending_response_releases:
-            await asyncio.gather(*tuple(self._pending_response_releases))
+    async def post(self, request, *, request_deadline, deadline, secrets):
+        loop = asyncio.get_running_loop()
+        if self._closed:
+            raise RuntimeError("Cannot send interpreter request: this Attempt's endpoint owner is retiring")
+        if loop.time() >= request_deadline:
+            raise TimeoutError("Interpreter request deadline expired before HTTP dispatch")
+        if self._before_send is not None:
+            async with asyncio.timeout_at(request_deadline):
+                await self._before_send(request)
+        now = loop.time()
+        remaining = request_deadline - now
+        if remaining <= 0:
+            raise TimeoutError("Interpreter request deadline expired before HTTP dispatch")
+        if self._closed:
+            raise RuntimeError("Cannot send interpreter request: this Attempt's endpoint owner is retiring")
+        if self._transport is not None and not self._transport.retirement_confirmed:
+            raise ExchangeFailed("Cannot send interpreter request: the original HTTP owner remains unsettled")
+        transport = HttpTransport(trust=self._trust, exchange_seconds=remaining,
+                                  retirement_seconds=deadline-now, allow_http=True)
+        self._transport = transport
+        primary = None
+        try:
+            try:
+                response = await transport.exchange_decoded(
+                    request, maximum_bytes=_MAX_RESPONSE_BYTES,
+                    error_maximum_bytes=_MAX_ERROR_RESPONSE_BYTES, owner=self, not_after=deadline,
+                )
+            except BaseException as cause:
+                primary = cause
+                raise
+            finally:
+                try:
+                    await transport.retire(owner=self)
+                except BaseException as cleanup:
+                    if primary is not None and cleanup is not primary:
+                        raise BaseExceptionGroup("Interpreter HTTP exchange and retirement failed", [primary, cleanup]) from None
+                    raise
+        except ExchangeFailed as failure:
+            if (not transport.retirement_confirmed or failure.cleanup_failures
+                    or failure.caller_interruption is not None):
+                raise
+            head = failure.response_head
+            if type(failure.primary) is DecodedBodyRejected:
+                request_id = None if head is None else httpx.Headers(head.headers).get("x-request-id")
+                if head is not None and head.status != 200:
+                    return head.status, None, request_id, str(failure.primary)
+                if head is not None and failure.primary.reason == "size_limit":
+                    return head.status, None, request_id, None
+                raise _EndpointUnavailable("Interpreter response decoding failed after confirmed retirement") from failure
+            if (network_availability(failure.primary, failure.network_io, network_failure=failure.network_failure)
+                    or type(failure.primary) is TimeoutError and loop.time() >= request_deadline):
+                if head is not None and head.status != 200:
+                    return head.status, None, httpx.Headers(head.headers).get("x-request-id"), (
+                        "Error body could not be read: "
+                        + json.dumps(failure_evidence(failure, secrets=secrets), ensure_ascii=True)
+                    )
+                raise _EndpointUnavailable("Interpreter network request failed after confirmed retirement") from failure
+            raise
+        return response.status, response.body, httpx.Headers(response.headers).get("x-request-id"), None
 
 
 class _OpenAIChatCall:
     __slots__ = (
-        "_http_client",
-        "_pending_response_releases",
+        "_http_owner",
         "_policy",
         "_spec",
         "_tools",
@@ -119,14 +183,12 @@ class _OpenAIChatCall:
         spec: OpenAIChatEndpointSpec,
         policy: OpenAIChatCallPolicy,
         *,
-        http_client: httpx.AsyncClient,
-        pending_response_releases: set[asyncio.Task[None]],
+        http_owner: OpenAIChatEndpoints,
         tools: tuple[dict[str, object], dict[str, object]],
         secrets: tuple[str, ...],
         report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None,
     ) -> None:
-        self._http_client = http_client
-        self._pending_response_releases = pending_response_releases
+        self._http_owner = http_owner
         self._policy = policy
         self._spec = spec
         self._tools = tools
@@ -136,9 +198,8 @@ class _OpenAIChatCall:
     async def __call__(self, prompt: InterpreterPrompt) -> InterpreterTurn:
         """Return a normalized turn; classify expected failures without content.
 
-        All HTTP attempts and retry delays share the turn deadline. Any acquired
-        response that cannot be released synchronously remains process-owned
-        for bounded shutdown cleanup.
+        All attempts, pacing, retries and retirement share the original turn
+        deadline. Unconfirmed HTTP retirement escapes retry and fallback.
         """
 
         request_body: dict[str, object] = {
@@ -158,20 +219,13 @@ class _OpenAIChatCall:
                 for attempt in range(self._policy.maximum_attempts):
                     final_attempt = attempt + 1 == self._policy.maximum_attempts
                     try:
-                        # A stalled request must leave time for the promised
-                        # retry. The enclosing turn deadline remains the owner
-                        # of both attempts, their backoff, and cleanup.
-                        async with asyncio.timeout(
-                            self._policy.request_timeout_seconds
-                        ):
-                            status, response_body, request_id, detail_problem = await self._post_once(
-                                request_body,
-                                deadline=deadline,
-                            )
-                    except (httpx.TransportError, TimeoutError) as error:
+                        status, response_body, request_id, detail_problem = await self._post_once(
+                            request_body, deadline=deadline,
+                        )
+                    except (_EndpointUnavailable, TimeoutError) as error:
                         if final_attempt:
                             raise
-                        self._record_retry({"explanation": exception_diagnostic(error, secrets=self._secrets)})
+                        self._record_retry({"explanation": json.dumps(failure_evidence(error, secrets=self._secrets), ensure_ascii=True)})
                     else:
                         if status == 200:
                             if response_body is None:
@@ -195,9 +249,9 @@ class _OpenAIChatCall:
                     # of OpenAI-specific operational failures. The sleep and
                     # all attempts remain inside the one advertised deadline.
                     await asyncio.sleep(self._policy.retry_delay_seconds)
-        except (httpx.TransportError, TimeoutError) as error:
+        except (_EndpointUnavailable, TimeoutError) as error:
             raise InterpreterTransportError(
-                "endpoint_unavailable", explanation=exception_diagnostic(error, secrets=self._secrets)
+                "endpoint_unavailable", explanation=json.dumps(failure_evidence(error, secrets=self._secrets), ensure_ascii=True)
             ) from None
 
         try:
@@ -212,7 +266,7 @@ class _OpenAIChatCall:
             return turn
         except (UnicodeError, ValueError, RecursionError) as error:
             raise InterpreterTransportError(
-                "invalid_response_envelope", explanation=exception_diagnostic(error, secrets=self._secrets)
+                "invalid_response_envelope", explanation=json.dumps(failure_evidence(error, secrets=self._secrets), ensure_ascii=True)
             ) from None
 
     def _record_retry(self, facts: dict[str, str], *, http_status: int | None = None) -> None:
@@ -222,146 +276,12 @@ class _OpenAIChatCall:
                 failure_reason="endpoint_retry", http_status=http_status, **facts,
             ))
 
-    async def _post_once(
-        self,
-        body: dict[str, object],
-        *,
-        deadline: float,
-    ) -> tuple[int, bytes | None, str | None, str | None]:
-        request = self._http_client.build_request(
-            "POST",
-            self._spec.url,
-            headers={"Authorization": f"Bearer {self._spec.api_key}"},
-            json=body,
-            # __call__ owns one aggregate deadline across retry and backoff.
-            # Client per-phase defaults would add a hidden, shorter timeout.
-            timeout=None,
-        )
-        response: httpx.Response | None = None
-        detail_problem: str | None = None
-        try:
-            response = await self._http_client.send(request, stream=True)
-            status = response.status_code
-            request_id = response.headers.get("x-request-id")
-            if status != 200:
-                try:
-                    # Optional error detail never outranks the received status.
-                    response_body = await _read_bounded_response(
-                        response, limit=_MAX_ERROR_RESPONSE_BYTES
-                    )
-                except Exception as error:
-                    detail_problem = "Error body could not be read: " + exception_diagnostic(error, secrets=self._secrets, limit=2048)
-                    response_body = None
-                    # Iteration can mark the response closed before its stream
-                    # close succeeds. Retry the stream directly under the
-                    # existing turn deadline.
-                    self._schedule_response_release(response, deadline=deadline)
-            else:
-                response_body = await _read_bounded_response(response)
-        except asyncio.CancelledError:
-            if response is not None:
-                self._schedule_response_release(response, deadline=deadline)
-            raise
-        except (httpx.TransportError, httpx.DecodingError) as error:
-            if response is not None:
-                release = self._schedule_response_release(
-                    response,
-                    deadline=deadline,
-                )
-                await asyncio.shield(release)
-            raise httpx.TransportError("response delivery failed") from error
-        except Exception as error:
-            if response is not None:
-                release = self._schedule_response_release(
-                    response,
-                    deadline=deadline,
-                )
-                await asyncio.shield(release)
-                if response.is_closed:
-                    # httpx closes after stream exhaustion, before its byte
-                    # iterator declares the body complete. A close exception
-                    # is therefore an incomplete delivery at this boundary,
-                    # not a trustworthy model result followed by housekeeping.
-                    raise httpx.TransportError("response close failed") from error
-            # Do not disguise an adapter or invariant defect as endpoint
-            # unavailability; generic fallback is only for operational errors.
-            raise
-        except BaseException:
-            if response is not None:
-                release = self._schedule_response_release(
-                    response,
-                    deadline=deadline,
-                )
-                await asyncio.shield(release)
-            raise
-
-        try:
-            # The enclosing turn timeout already owns this deadline. A nested
-            # timeout at the same instant would make cancellation ownership
-            # depend on asyncio's internal cancellation-count ordering.
-            await response.aclose()
-        except asyncio.CancelledError:
-            self._schedule_response_release(response, deadline=deadline)
-            raise
-        except Exception as error:
-            detail_problem = (detail_problem or "") + " Response release failed: " + exception_diagnostic(error, secrets=self._secrets, limit=1024)
-            # This path is reachable for statuses whose body we deliberately
-            # ignore. Preserve that authoritative status while retrying the
-            # raw stream release in the background.
-            self._schedule_response_release(response, deadline=deadline)
-        return status, response_body, request_id, detail_problem
-
-    def _schedule_response_release(
-        self,
-        response: httpx.Response,
-        *,
-        deadline: float,
-    ) -> asyncio.Task[None]:
-        """Release an acquired response without delaying caller cancellation."""
-
-        release = asyncio.create_task(
-            self._release_response(response, deadline=deadline),
-            name="interpreter-response-release",
-        )
-        self._pending_response_releases.add(release)
-        release.add_done_callback(self._pending_response_releases.discard)
-        return release
-
-
-    async def _release_response(self, response: httpx.Response, *, deadline: float) -> None:
-        error = await best_effort_release_response(response, deadline=deadline)
-        if error is None:
-            return
-        explanation = exception_diagnostic(error, secrets=self._secrets)
-        try:
-            if self._report_endpoint_failure is not None:
-                self._report_endpoint_failure(InterpreterEndpointFailure(
-                    configuration_id=self._spec.configuration_id, failure_kind="cleanup",
-                    failure_reason="response_release_failed", failure_state="cleanup_unconfirmed",
-                    explanation=explanation,
-                ))
-        except Exception as retention_error:
-            error.add_note("Cleanup diagnostic retention is unconfirmed: " + exception_diagnostic(retention_error, secrets=self._secrets))
-        _LOG.warning("Endpoint %s response cleanup is unconfirmed: %s",
-                     self._spec.configuration_id, exception_diagnostic(error, secrets=self._secrets))
-
-
-async def _read_bounded_response(
-    response: httpx.Response, *, limit: int = _MAX_RESPONSE_BYTES
-) -> bytes | None:
-    body = bytearray()
-    remaining = limit + 1
-    async for chunk in response.aiter_bytes():
-        if not chunk:
-            continue
-        # Bound our buffer even when content decoding yields one oversized
-        # chunk; the sentinel byte is enough to classify the response.
-        if len(chunk) >= remaining:
-            body.extend(chunk[:remaining])
-            return None
-        body.extend(chunk)
-        remaining -= len(chunk)
-    return bytes(body)
+    async def _post_once(self, body, *, deadline):
+        request_deadline = min(deadline, asyncio.get_running_loop().time() + self._policy.request_timeout_seconds)
+        request = httpx.Request("POST", self._spec.url,
+                                headers={"Authorization": f"Bearer {self._spec.api_key}"}, json=body)
+        return await self._http_owner.post(request, request_deadline=request_deadline,
+                                           deadline=deadline, secrets=self._secrets)
 
 
 def load_openai_chat_endpoint_specs(
@@ -385,7 +305,7 @@ def bind_openai_chat_endpoints(
     policy: OpenAIChatCallPolicy,
     /,
     *,
-    http_client: httpx.AsyncClient,
+    before_send=None,
     submit_interpretation_description: str,
     submit_interpretation_value_schema: dict[str, object],
     report_input_problem_description: str,
@@ -398,12 +318,12 @@ def bind_openai_chat_endpoints(
         submit_interpretation_value_schema=submit_interpretation_value_schema,
         report_input_problem_description=report_input_problem_description,
     )
-    pending_response_releases: set[asyncio.Task[None]] = set()
-    endpoints = tuple(
-        _bind_endpoint(spec, policy, http_client, pending_response_releases, tools, tuple(item.api_key for item in specs), report_endpoint_failure)
+    owner = OpenAIChatEndpoints(before_send=before_send)
+    owner.endpoints = tuple(
+        _bind_endpoint(spec, policy, owner, tools, tuple(item.api_key for item in specs), report_endpoint_failure)
         for spec in specs
     )
-    return OpenAIChatEndpoints(endpoints, pending_response_releases)
+    return owner
 
 
 def _snapshot_endpoint_configs(directory: Path) -> tuple[bytes, ...]:
@@ -422,8 +342,7 @@ def _snapshot_endpoint_configs(directory: Path) -> tuple[bytes, ...]:
 def _bind_endpoint(
     spec: OpenAIChatEndpointSpec,
     policy: OpenAIChatCallPolicy,
-    http_client: httpx.AsyncClient,
-    pending_response_releases: set[asyncio.Task[None]],
+    http_owner: OpenAIChatEndpoints,
     tools: tuple[dict[str, object], dict[str, object]],
     secrets: tuple[str, ...],
     report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None,
@@ -431,8 +350,7 @@ def _bind_endpoint(
     call = _OpenAIChatCall(
         spec,
         policy,
-        http_client=http_client,
-        pending_response_releases=pending_response_releases,
+        http_owner=http_owner,
         tools=tools,
         secrets=secrets,
         report_endpoint_failure=report_endpoint_failure,

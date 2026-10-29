@@ -7,5 +7,7 @@ sha256sum \
     "$root/containers/test/Dockerfile.base" \
     "$root/containers/test/os-packages.lock" \
     "$root/requirements.lock" \
+    "$root/dependencies/provider-core-api.lock" \
+    "$root/dependencies/provider-core-source.txt" \
     "$root/scripts/test-image-key.sh" \
     | awk '{print $1}' | sha256sum | awk '{print $1}'

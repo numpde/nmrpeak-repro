@@ -20,7 +20,7 @@ This Make target uses the prepared pinned test image described in the
 [software-check instructions](../../README.md#check-the-software). It validates
 both fixture lists and runs the offline harness tests.
 
-The direct Python entry point requires Python 3.11+ and the provider dependencies
+The direct Python entry point requires Python 3.12+ and the provider dependencies
 from `requirements.lock` in its environment. With that environment prepared, use
 `--list` to validate either lane without network access, or run live against an
 explicitly supplied provider-format endpoint configuration directory:

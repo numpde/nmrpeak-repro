@@ -46,7 +46,7 @@ benchmark/verify: private export BENCHMARK_RUN := $(value RUN)
 benchmark/verify:
 	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
 
-.PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/credential/install provider/deployment/config provider/deployment/config/localhost provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/up/localhost provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
 	@printf '%s\n' \
@@ -83,9 +83,9 @@ help:
 		'  make check/source' \
 		'      Verify the pinned NMRPeak and Uni-Core source closure.' \
 		'  make upstream-contracts/check NMR_API_V1_DIR=<path> RELEASE=<revision>' \
-		'      Check the committed NMR API contract projection.' \
+		'      Check the retained historical NMR API source projection.' \
 		'  make upstream-contracts/write NMR_API_V1_DIR=<path> RELEASE=<revision>' \
-		'      Replace that projection after review of the selected API revision.' \
+		'      Replace that historical source projection after reviewing its selected revision.' \
 		'' \
 		'Prepare public checkpoints:' \
 		'  make weights/download [INTERFACE=<name>]' \
@@ -117,17 +117,11 @@ help:
 		'' \
 		'Operate a named deployment:' \
 		'  make provider/deployment/init DEPLOYMENT=<name>' \
-		'      Create the configuration and private credential scaffold without installing a credential.' \
-		'  make provider/credential/install DEPLOYMENT=<name> NMR_API_V1_DIR=<path> [REPLACE=1]' \
-		'      Install the matching API-issued private provider credential.' \
+		'      Create named configuration and a private interpreter-input directory.' \
 		'  make provider/deployment/config DEPLOYMENT=<name>' \
-		'      Validate and render a public-trust deployment without starting it.' \
+		'      Capture the selected shared binding and render the deployment for review.' \
 		'  make provider/deployment/up DEPLOYMENT=<name> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
-		'      Load the reviewed checkpoints and start signed API activity using public trust.' \
-		'  make provider/deployment/config/localhost DEPLOYMENT=<name> LOCALHOST_CA_CERTIFICATE=<path>' \
-		'      Validate and render a same-host private-CA deployment without starting it.' \
-		'  make provider/deployment/up/localhost DEPLOYMENT=<name> LOCALHOST_CA_CERTIFICATE=<path> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
-		'      Load the reviewed checkpoints and start signed API activity using the supplied private CA.' \
+		'      Start the reviewed generation with its selected shared API and delivery binding.' \
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
 		'      Report the owned provider and runner container state.' \
 		'  make provider/deployment/journal/inspect DEPLOYMENT=<name> [ATTEMPT_REF=<ref>]' \
@@ -322,7 +316,7 @@ provider/deployment/init:
 provider/deployment/config: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/config:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
-	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'LOCALHOST_CA_CERTIFICATE is accepted only by provider/deployment/config/localhost or provider/deployment/up/localhost' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust and routing in the selected shared binding instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment config "$$DEPLOYMENT_INPUT"
 
@@ -331,23 +325,10 @@ provider/deployment/up: private export EXPECTED_PLAN_SHA256_INPUT := $(value EXP
 provider/deployment/up:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin EXPECTED_PLAN_SHA256)" = command\ line || { echo 'EXPECTED_PLAN_SHA256 must be set on the make command line from the reviewed config output' >&2; exit 2; }
-	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'LOCALHOST_CA_CERTIFICATE is accepted only by provider/deployment/config/localhost or provider/deployment/up/localhost' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust and routing in the selected shared binding instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment up "$$DEPLOYMENT_INPUT" \
 		--expected-plan-sha256 "$$EXPECTED_PLAN_SHA256_INPUT"
-
-provider/deployment/config/localhost provider/deployment/up/localhost: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
-provider/deployment/config/localhost provider/deployment/up/localhost: private export LOCALHOST_CA_CERTIFICATE_INPUT := $(value LOCALHOST_CA_CERTIFICATE)
-provider/deployment/up/localhost: private export EXPECTED_PLAN_SHA256_INPUT := $(value EXPECTED_PLAN_SHA256)
-provider/deployment/config/localhost provider/deployment/up/localhost:
-	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
-	@test "$(origin LOCALHOST_CA_CERTIFICATE)" = command\ line || { echo 'LOCALHOST_CA_CERTIFICATE must be set on the make command line' >&2; exit 2; }
-	@test "$@" != provider/deployment/up/localhost || test "$(origin EXPECTED_PLAN_SHA256)" = command\ line || { echo 'EXPECTED_PLAN_SHA256 must be set on the make command line from the reviewed config output' >&2; exit 2; }
-	@operation="$(notdir $(@D))"; \
-		set -- "$$operation" "$$DEPLOYMENT_INPUT" --localhost-ca-certificate "$$LOCALHOST_CA_CERTIFICATE_INPUT"; \
-		if [ "$$operation" = up ]; then set -- "$$@" --expected-plan-sha256 "$$EXPECTED_PLAN_SHA256_INPUT"; fi; \
-	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m deployment.provider_deployment "$$@"
 
 provider/deployment/status provider/deployment/down: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/status provider/deployment/down:
@@ -360,22 +341,6 @@ provider/logs:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment logs "$$DEPLOYMENT_INPUT"
-
-provider/credential/install: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
-provider/credential/install: private export NMR_API_V1_DIR_INPUT := $(value NMR_API_V1_DIR)
-provider/credential/install: private export REPLACE_INPUT := $(value REPLACE)
-provider/credential/install:
-	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
-	@test "$(origin NMR_API_V1_DIR)" = command\ line || { echo 'NMR_API_V1_DIR must be set on the make command line' >&2; exit 2; }
-	@test "$(origin REPLACE)" = undefined -o "$(origin REPLACE)" = command\ line || { echo 'REPLACE must be set on the make command line' >&2; exit 2; }
-	@replace_flag=''; \
-	if test -n "$$REPLACE_INPUT"; then \
-		test "$$REPLACE_INPUT" = 1 || { echo 'REPLACE must be 1 when supplied' >&2; exit 2; }; \
-		replace_flag=--replace; \
-	fi; \
-	PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
-		$(PYTHON) -m deployment.provider_deployment credential-install \
-		"$$DEPLOYMENT_INPUT" --nmr-api-v1 "$$NMR_API_V1_DIR_INPUT" $$replace_flag
 
 provider/identity-lock/remove: private export PROVIDER_REF_INPUT := $(value PROVIDER_REF)
 provider/identity-lock/remove: private export CONFIRM_INPUT := $(value CONFIRM)
@@ -413,13 +378,12 @@ provider/deployment/journal/archive-closed: private export ATTEMPT_REF_INPUT := 
 provider/deployment/journal/archive-closed: private export RECORD_DIGEST_INPUT := $(value RECORD_DIGEST)
 provider/deployment/journal/archive-closed: private export ARCHIVE_REASON_INPUT := $(value REASON)
 provider/deployment/journal/archive-closed: private export FROZEN_GENERATION_INPUT := $(value FROZEN_GENERATION)
-provider/deployment/journal/archive-closed: private export LOCALHOST_CA_INPUT := $(value LOCALHOST_CA_CERTIFICATE)
 provider/deployment/journal/archive-closed:
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust and routing in the selected shared binding instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
 	@cd "$(CURDIR)" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(CURDIR)" \
 		$(PYTHON) -m deployment.provider_deployment journal-archive-closed "$$DEPLOYMENT_INPUT" \
 		--execution-attempt-ref "$$ATTEMPT_REF_INPUT" --record-digest "$$RECORD_DIGEST_INPUT" \
-		--reason "$$ARCHIVE_REASON_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT" \
-		$${LOCALHOST_CA_INPUT:+--localhost-ca-certificate "$${LOCALHOST_CA_INPUT}"}
+		--reason "$$ARCHIVE_REASON_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT"
 
 provider/deployment/journal/retire: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/journal/retire: private export CONFIRM_INPUT := $(value CONFIRM)
@@ -475,14 +439,3 @@ checkpoint/recover:
 	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/checkpoint-volume.sh" \
 		recover "$$VOLUME_INPUT" "$$CONFIRM_INPUT"
-
-# Current shared failure interpretation has its own source and API revisions;
-# the historical RELEASE projection above keeps its original meaning.
-.PHONY: provider-client/check provider-client/write
-provider-client/check provider-client/write: private export NMR_API_V1_DIR_INPUT := $(value NMR_API_V1_DIR)
-provider-client/check provider-client/write:
-	@test "$(origin NMR_API_V1_DIR)" = command\ line || { echo 'NMR_API_V1_DIR must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) "$$NMR_API_V1_DIR_INPUT/clients/provider_python/project.py" "$(@F)" \
-		--api-repository "$$NMR_API_V1_DIR_INPUT" \
-		--package "$(REPOSITORY_ROOT)/nmrpeak_provider" \
-		--manifest "$(REPOSITORY_ROOT)/contracts/upstream/provider_client.json"

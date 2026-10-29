@@ -9,8 +9,6 @@ import logging
 from pathlib import Path
 import unicodedata
 
-import httpx
-
 from .diagnostic_text import diagnostic_text, exception_diagnostic
 from .canonical_json import canonical_json_bytes
 from .interpreter import (
@@ -49,7 +47,7 @@ from .text_provenance import UserProvidedText
 
 
 INTERPRETER_CONFIG_DIRECTORY = Path(
-    "/run/secrets/nmrpeak-provider/openai-chat-completions.d"
+    "/run/config/nmrpeak-provider/interpreter"
 )
 MAX_FREEFORM_INPUT_BYTES = 16_384
 _PROMPT_DIRECTORY = Path(__file__).with_name("prompts")
@@ -163,21 +161,75 @@ class InputInterpreter:
     ) -> ValidatedRunnerRequest:
         """Interpret prose and return the runner capability that admitted it."""
 
+        async def validate_input(runner_input):
+            return session.validate(
+                execution_attempt_ref=execution_attempt_ref,
+                provider_attempt_key=provider_attempt_key,
+                model_input=runner_input,
+            )
+
+        return asyncio.run(self.validate_freeform_input_async(
+            source=source, lane=lane, validate_input=validate_input,
+            execution_attempt_ref=execution_attempt_ref,
+            record_diagnostic=record_diagnostic,
+        ))
+
+    def new_session(self):
+        """Adopt a per-Attempt interpretation owner before HTTP admission."""
+        return InterpretationSession(self)
+
+    async def validate_freeform_input_async(self, **arguments):
+        """Settle an isolated convenience call within this explicit boundary."""
+        session = self.new_session()
+        primary = None
+        try:
+            return await session.validate_freeform_input_async(**arguments)
+        except BaseException as cause:
+            primary = cause
+            raise
+        finally:
+            try:
+                await session.retire()
+            except BaseException as cleanup:
+                if primary is not None and cleanup is not primary:
+                    raise BaseExceptionGroup("Interpretation and HTTP retirement failed", [primary, cleanup]) from None
+                raise
+
+
+class InterpretationSession:
+    """Retain one Attempt's interpreter HTTP owner through its final retirement."""
+
+    def __init__(self, configured):
+        self._configured = configured
+        self._endpoints = None
+        self._closed = False
+
+    @property
+    def diagnostic_secrets(self):
+        return self._configured.diagnostic_secrets
+
+    async def retire(self):
+        self._closed = True
+        if self._endpoints is not None:
+            await self._endpoints.retire()
+
+    async def validate_freeform_input_async(
+        self, *, source, lane, validate_input, execution_attempt_ref,
+        record_diagnostic=None,
+    ):
+        """Interpret prose while the owning session awaits each runner admission."""
+        if self._closed:
+            raise RuntimeError("Cannot interpret input: this Attempt's interpretation session is retiring")
         source_text = _admit_source_text(source)
         _LOG.info(
             'Interpreting input text; attempt=%s endpoints=%d',
             execution_attempt_ref,
-            len(self.endpoint_specs),
+            len(self._configured.endpoint_specs),
         )
-        return asyncio.run(
-            self._validate_freeform_input(
-                source_text=source_text,
-                lane=lane,
-                session=session,
-                execution_attempt_ref=execution_attempt_ref,
-                provider_attempt_key=provider_attempt_key,
-                record_diagnostic=record_diagnostic,
-            )
+        return await self._validate_freeform_input(
+            source_text=source_text, lane=lane, validate_input=validate_input,
+            execution_attempt_ref=execution_attempt_ref,
+            record_diagnostic=record_diagnostic,
         )
 
     async def _validate_freeform_input(
@@ -185,9 +237,8 @@ class InputInterpreter:
         *,
         source_text: UserProvidedText,
         lane: LifecycleLane,
-        session: RunnerSession,
+        validate_input,
         execution_attempt_ref: str,
-        provider_attempt_key: str,
         record_diagnostic: Callable[[str], None] | None = None,
     ) -> ValidatedRunnerRequest:
         capability = _InterpretationCapability(lane, self.diagnostic_secrets)
@@ -196,11 +247,7 @@ class InputInterpreter:
             model_input: object,
         ) -> ValidatedRunnerRequest:
             runner_input = lane.bind_runner_input(model_input)
-            outcome = session.validate(
-                execution_attempt_ref=execution_attempt_ref,
-                provider_attempt_key=provider_attempt_key,
-                model_input=runner_input,
-            )
+            outcome = await validate_input(runner_input)
             if type(outcome) is RunnerInputRejected:
                 _LOG.info(
                     'Interpretation rejected by runner; attempt=%s reason=runner_input_rejected',
@@ -227,44 +274,41 @@ class InputInterpreter:
                 record_diagnostic=record_diagnostic,
             )
 
-        async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
-            endpoints = bind_openai_chat_endpoints(
-                self.endpoint_specs,
-                self.policy.call_policy,
-                http_client=client,
+        if self._endpoints is None:
+            self._endpoints = bind_openai_chat_endpoints(
+                self._configured.endpoint_specs,
+                self._configured.policy.call_policy,
                 submit_interpretation_description=_SUBMIT_DESCRIPTION,
                 submit_interpretation_value_schema=_value_schema_for(lane),
                 report_input_problem_description=_REPORT_DESCRIPTION,
                 report_endpoint_failure=report_endpoint_failure,
             )
-            try:
-                result = await interpret(
-                    source_text=source_text,
-                    capability=capability,
-                    endpoints=endpoints.endpoints,
-                    interpretation_timeout_seconds=(
-                        self.policy.interpretation_timeout_seconds
-                    ),
-                    report_endpoint_failure=report_endpoint_failure,
-                    admit_interpretation=admit_interpretation,
-                )
-            except InterpreterUnavailable as unavailable:
-                _LOG.warning(
-                    "%s",
-                    render_provider_event(InterpreterRoute(
-                        execution_attempt_ref=execution_attempt_ref,
-                        disposition=unavailable.reason.value,
-                        configuration_id=None,
-                        attempted_configuration_ids=unavailable.attempted_configuration_ids,
-                    )),
-                )
-                exported = InterpreterUnavailable(unavailable.reason, unavailable.attempted_configuration_ids)
-                exported.add_note(exception_diagnostic(
-                    unavailable, secrets=self.diagnostic_secrets, limit=8192,
-                ))
-                raise exported from None
-            finally:
-                await endpoints.join_response_releases()
+        try:
+            result = await interpret(
+                source_text=source_text,
+                capability=capability,
+                endpoints=self._endpoints.endpoints,
+                interpretation_timeout_seconds=(
+                    self._configured.policy.interpretation_timeout_seconds
+                ),
+                report_endpoint_failure=report_endpoint_failure,
+                admit_interpretation=admit_interpretation,
+            )
+        except InterpreterUnavailable as unavailable:
+            _LOG.warning(
+                "%s",
+                render_provider_event(InterpreterRoute(
+                    execution_attempt_ref=execution_attempt_ref,
+                    disposition=unavailable.reason.value,
+                    configuration_id=None,
+                    attempted_configuration_ids=unavailable.attempted_configuration_ids,
+                )),
+            )
+            exported = InterpreterUnavailable(unavailable.reason, unavailable.attempted_configuration_ids)
+            exported.add_note(exception_diagnostic(
+                unavailable, secrets=self.diagnostic_secrets, limit=8192,
+            ))
+            raise exported from None
         _LOG.info("%s", render_provider_event(InterpreterRoute(
             execution_attempt_ref=execution_attempt_ref,
             disposition="accepted",

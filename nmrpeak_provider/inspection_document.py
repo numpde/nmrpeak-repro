@@ -3,8 +3,7 @@ from collections import Counter
 from datetime import datetime
 import re
 
-from ._nmr_api_failure_contract import CONFLICT_RECOVERY, EVIDENCE
-from ._nmr_api_failures import _text as admitted_evidence_text
+from .journal_evidence import CONFLICT_RECOVERY, EVIDENCE, admitted_evidence_text
 from .attempt_journal import LatestDiagnostic
 from .failure_message import is_failure_message
 from .attempt_diagnostic import validate_diagnostics
@@ -29,11 +28,18 @@ def validate_inspection_document(document):
     """Reject unknown fields, payloads, inconsistent identities and recovery claims."""
     if type(document) is not dict:
         raise ValueError("Invalid inspection envelope")
-    extra = " diagnostics diagnostics_omitted" if document.get("schema_id") == "nmrpeak.journal_inspection.v3" else ""
+    schema = document.get("schema_id")
+    if type(schema) is not str:
+        raise ValueError("Invalid inspection envelope")
+    extra = " diagnostics diagnostics_omitted" if schema in {"nmrpeak.journal_inspection.v3", "nmrpeak.journal_inspection.v4"} else ""
+    if schema == "nmrpeak.journal_inspection.v4":
+        extra += " api_observation"
     _fields(document, "schema_id current_automation observed_at stage_counts records" + extra)
     schema = document["schema_id"]
-    if type(schema) is not str or schema not in {"nmrpeak.journal_inspection.v1", "nmrpeak.journal_inspection.v2", "nmrpeak.journal_inspection.v3"} or document["current_automation"] != "stopped":
+    if schema not in {"nmrpeak.journal_inspection.v1", "nmrpeak.journal_inspection.v2", "nmrpeak.journal_inspection.v3", "nmrpeak.journal_inspection.v4"} or document["current_automation"] != "stopped":
         raise ValueError("Invalid inspection envelope")
+    if schema == "nmrpeak.journal_inspection.v4" and document["api_observation"] != "not_performed":
+        raise ValueError("Local inspection cannot claim an API observation")
     _text(document["observed_at"], 64)
     observed = datetime.fromisoformat(document["observed_at"])
     if observed.utcoffset() is None:
@@ -42,7 +48,7 @@ def validate_inspection_document(document):
     if type(records) is not list or len(records) > 10000:
         raise ValueError("Invalid inspection records")
     for record in records:
-        _validate_record(record, version=1 if schema.endswith(".v1") else 2)
+        _validate_record(record, version=4 if schema.endswith(".v4") else 1 if schema.endswith(".v1") else 2)
     counts = document["stage_counts"]
     if (type(counts) is not dict or any(type(count) is not int or count <= 0 for count in counts.values())
             or counts != dict(Counter(record["phase"] for record in records))):
@@ -78,7 +84,7 @@ def _validate_record(record, *, version):
     if type(phase) is not str or phase not in extra:
         raise ValueError("Invalid inspection phase")
     expected = common + " " + extra[phase]
-    if version == 2 and phase != "start_pending":
+    if version >= 2 and phase != "start_pending":
         expected += " latest_diagnostic"
         if phase != "active" and record.get("operation") == "fail":
             expected += " retained_failure"
@@ -96,7 +102,7 @@ def _validate_record(record, *, version):
     if phase == "start_pending":
         return
     _identity(record["execution_attempt_ref"], r"execution_attempt:sha256:[0-9a-f]{64}")
-    if version == 2:
+    if version >= 2:
         _validate_latest_diagnostic(record["latest_diagnostic"])
     if phase == "active":
         if record["local_phase"] not in ("pre_execution", "execution_entered"):
@@ -104,7 +110,7 @@ def _validate_record(record, *, version):
         return
     if record["operation"] not in ("complete", "fail"):
         raise ValueError("Invalid terminal operation")
-    if version == 2 and record["operation"] == "fail":
+    if version >= 2 and record["operation"] == "fail":
         failure = record["retained_failure"]
         _fields(failure, "failure_code failure_message")
         _identity(failure["failure_code"], r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
@@ -115,7 +121,7 @@ def _validate_record(record, *, version):
     if type(size) is not int or not 0 < size <= 2900000:
         raise ValueError("Invalid retained command size")
     if phase != "terminal_pending":
-        _validate_recovery(record)
+        _validate_recovery(record, legacy_restart=version < 4)
 
 
 def _validate_latest_diagnostic(value):
@@ -135,7 +141,7 @@ def _validate_latest_diagnostic(value):
         raise ValueError("Invalid latest diagnostic") from error
 
 
-def _validate_recovery(record):
+def _validate_recovery(record, *, legacy_restart):
     recovery, restart = record["recovery"], record["on_restart"]
     _fields(recovery, "job_ref execution_attempt_ref operation command_fingerprint command_retained delivery action description code detail request_id observed_state")
     for name in ("job_ref", "execution_attempt_ref", "operation", "command_fingerprint", "delivery"):
@@ -161,9 +167,9 @@ def _validate_recovery(record):
     if pending != (record["phase"] == "terminal_reconciling"):
         raise ValueError("Inconsistent reconciliation phase")
     _fields(restart, "automatic_reads automatic_resends new_work_for_attempt next_actor next_action")
-    expected = {"automatic_reads": "retry_with_backoff" if pending else "stopped",
+    expected = {"automatic_reads": "retry_with_backoff" if pending and legacy_restart else "stopped",
                 "automatic_resends": "stopped_including_restart", "new_work_for_attempt": "stopped",
-                "next_actor": "provider" if pending else "provider_operator"}
+                "next_actor": "provider" if pending and legacy_restart else "provider_operator"}
     if any(restart[key] != value for key, value in expected.items()):
         raise ValueError("Inconsistent restart behavior")
     _text(restart["next_action"])

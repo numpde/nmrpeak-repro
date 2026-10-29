@@ -85,8 +85,10 @@ if [[ "$docker_base_id" != "$expected_base_id" ]]; then
     docker --context default load --input "$scratch/python-base.tar" >/dev/null
 fi
 
-mkdir -p "$scratch/context/containers/test"
+mkdir -p "$scratch/context/containers/test" "$scratch/context/dependencies"
 cp "$repo_root/requirements.lock" "$scratch/context/requirements.lock"
+cp "$repo_root/dependencies/provider-core-api.lock" "$scratch/context/dependencies/provider-core-api.lock"
+cp "$repo_root/dependencies/provider-core-source.txt" "$scratch/context/dependencies/provider-core-source.txt"
 cp "$repo_root/containers/test/os-packages.lock" "$scratch/context/containers/test/os-packages.lock"
 
 docker --context default build --pull=false --network host \

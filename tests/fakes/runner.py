@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import replace
+import time
 from enum import StrEnum
 from struct import pack
 from threading import Condition, Event
+from types import SimpleNamespace
 
 from nmrpeak_provider.runner_protocol import (
     AttemptCorrelation,
@@ -14,7 +17,6 @@ from nmrpeak_provider.runner_protocol import (
     ReadyFrame,
     RejectedFrame,
     ResultFrame,
-    RetireFrame,
     RunnerFrameCodec,
     RunnerModelInput,
     RunnerRejectionReason,
@@ -22,6 +24,50 @@ from nmrpeak_provider.runner_protocol import (
     ValidateFrame,
     ValidatedFrame,
 )
+
+
+class FakeNativeControl:
+    """Synthetic native port for frame-only tests; integration proves real processes."""
+
+    def __init__(self, channel, deadlines):
+        self.interrupted = self.stop_requested = self.closed = False
+        self.retirement = self.original_exit = None
+        self.control_connected = False
+        self.science = channel
+        self.retirement_seconds = deadlines.retire_seconds
+        self._stopped = Event()
+
+    def connect(self, *, deadline):
+        self.control_connected = True
+
+    def mark_interruption(self):
+        self.interrupted = True
+
+    def request_stop(self):
+        self.interrupted = self.stop_requested = True
+        self._stopped.set()
+
+    def observe_retirement(self, *, deadline):
+        if not self._stopped.wait(timeout=max(0, deadline - time.monotonic())):
+            raise TimeoutError("State-only native fixture did not receive stop before its deadline")
+        self.retirement = SimpleNamespace(scratch_released=True)
+
+    def close(self):
+        self.interrupted = self.closed = True
+        self.control_connected = False
+
+
+@asynccontextmanager
+async def admit_fake_session(channel, facts, deadlines, codec):
+    from nmrpeak_provider.runner_session import RunnerSession
+
+    owner = RunnerSession(None, facts, deadlines, codec, None,
+                          native=FakeNativeControl(channel, deadlines), startup_started=time.monotonic())
+    await owner.connect()
+    try:
+        yield owner
+    finally:
+        await owner.retire()
 
 
 class FakeRunnerFault(StrEnum):
@@ -32,7 +78,6 @@ class FakeRunnerFault(StrEnum):
     EOF_DURING_GENERATION = "eof_during_generation"
     TIMEOUT_DURING_GENERATION = "timeout_during_generation"
     BLOCK_GENERATION = "block_generation"
-    RETIRE_SEND_UNCERTAIN = "retire_send_uncertain"
 
 
 class FakeRunnerChannel:
@@ -81,10 +126,6 @@ class FakeRunnerChannel:
             return
         if type(frame) is GenerateFrame:
             self._accept_generate(frame)
-            return
-        if type(frame) is RetireFrame and frame.boot_generation == self._ready.boot_generation:
-            if self._fault is FakeRunnerFault.RETIRE_SEND_UNCERTAIN:
-                raise TimeoutError("fake runner RETIRE send outcome is unknown")
             return
         raise OSError("fake runner received a frame outside its session state")
 

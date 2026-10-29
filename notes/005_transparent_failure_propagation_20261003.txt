@@ -38,7 +38,7 @@ Incident that exposed the gap
 -----------------------------
 
 On 2026-10-03, Attempt
-execution_attempt:sha256:7b748e4c157d66525bb4457a72399a7f4302cd3c9ace871a38571c22bc929c2d
+execution_attempt:<historical-record-1>
 for a demo Job failed before generation. The API retained input_rejected and a
 four-sentence generic message. Provider logs contained unsupported_multiplicity.
 The parser did not retain the offending peak index or label. The freeform
@@ -934,7 +934,7 @@ superseded for deployment of the current checkout; rebuild the provider image
 and review a new exact plan before any maintenance stop. The runner input
 closures did not change in that QA revision, but both runner image IDs still
 need to be verified in the new plan. The journal-fix-only provider image input
-ID was `sha256:d1719a244572015be7c32c9bca4ebdca5161c8f35ee2e7d0e98a2d3ce452c900`;
+ID was `<historical-digest-1>`;
 the stopped-provider journal-inspection command also resolves the current
 provider image, so building and verifying it must precede the maintenance
 stop. Rebuild both runner images from the same final clean revision before
@@ -943,7 +943,7 @@ input closures, to satisfy the same-revision image gate above.
 
 Server A still stores the cited CHF Attempt as `failed` with `input_rejected`.
 Its 291-character failure-message SHA-256 is
-`9afcb8f0bc0b968184ff64562691648b6721b83980961c6b39b0a30ecb688019`,
+`<historical-digest-2>`,
 exactly matching the old four-sentence provider literal at f8055ab. This is
 read-only confirmation of the incident class; historical Attempt text must
 not be rewritten. The configured run-generation window begins 2026-08-26.
@@ -954,29 +954,29 @@ no natural Job with which to exercise a signed provider-origin smoke.
 On the local Docker host, the older NMRPeak provider and both runners remain
 running. The 31 GB pinned weight archive and `cpu-x86_64` runner lock checked
 successfully. Three new images built from the clean 628fece checkout without
-restarting them: provider `sha256:2da18e57303fe8fc33bcfa1f94c4b5efd55051e4a7b794e7d0e9dac562016c36`,
-HF runner `sha256:ec829fa5d075c264ef6dd2926bd0838507d292e66a8e71eb1fe75f343f21bb93`,
-and CHF runner `sha256:c04fed311ead831a94c55628851bb186553cd0ed9797212e63f9dcd55f6f2da8`.
+restarting them: provider `<historical-digest-3>`,
+HF runner `<historical-digest-4>`,
+and CHF runner `<historical-digest-5>`.
 The read-only deployment preview resolved all three exact images and produced
-frozen generation `sha256:384e58cf4cc1220d2c8ba28f3ec239c5d56521d9a81c4e167dce5ed4840a687e`.
+frozen generation `<historical-digest-6>`.
 Its secret-free canonical plan is retained privately at
-`/tmp/nmrpeak-deployment-plan.jymSaq.json` with SHA-256
-`0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`.
+`<private-local-artifact>` with SHA-256
+`<historical-digest-7>`.
 No provider or runner was restarted, and no Job or Attempt was created.
 
 A later read-only preview exposed local image-tag drift: the disposable GUI
 smoke had rebuilt the same provider input closure under a later, test-only
 revision label and moved its input-addressed Docker tag. That preview selected
-provider image `sha256:ef7c1ad2d3a7649638596a8edd7ac28c1c6241403fb1135b39479cd997458bec`
+provider image `<historical-digest-8>`
 and a different frozen generation, so it was not an approval basis for the
 reviewed image trio. The two provider images have the same input identity and
 installed NMRPeak package-file hash, but the original image
-`sha256:2da18e57303fe8fc33bcfa1f94c4b5efd55051e4a7b794e7d0e9dac562016c36`
+`<historical-digest-3>`
 has the same `628fece` revision label as both runners. Restoring only that
 local Docker tag changed no running container. A fresh read-only preview then
 matched the previously reviewed 13,505 bytes exactly, including SHA-256
-`0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`
-and frozen generation `sha256:384e58cf4cc1220d2c8ba28f3ec239c5d56521d9a81c4e167dce5ed4840a687e`.
+`<historical-digest-7>`
+and frozen generation `<historical-digest-6>`.
 The provider and both runners still run their older images.
 
 Before the approved maintenance stop, rerender and compare the entire preview
@@ -985,7 +985,7 @@ targets now require `EXPECTED_PLAN_SHA256`, computed over the exact
 newline-terminated `config` output. Startup independently rerenders the plan
 under the deployment lock and rejects a digest mismatch before materializing
 inputs or starting Docker services. For the earlier reviewed plan the value
-is `0b2277d4b3db65f679b6f789cf0905abc4f2cf0666d9c36622e493c932e581fd`.
+is `<historical-digest-7>`.
 Keep image builds and tag changes quiescent through startup. After stopping, inspect
 every retained journal obligation with the v1/v2 reader before starting a v2
 writer; stop for unreadable, held, execution-entered, or otherwise unresolved
@@ -1062,35 +1062,35 @@ rejection of old wire frames. The full offline suite passed after this change:
 harness, and 17 repository tests. The fake runner supplies the 640-token count
 in the TLS case; that test proves propagation, not that the fixture text itself
 tokenizes to 640. The v3 source change supersedes the previously rendered d56880c
-three-image plan and its `c6a2dbfb1fa7e582109ebe00ef120f169146914097860e9f08332ea7078324a7`
+three-image plan and its `<historical-digest-9>`
 digest. Build all three images from the final clean revision and review a new
 complete plan before any maintenance stop.
 
 Production rollout qualification (2026-10-05)
 ---------------------------------------------
 
-The operator approved the exact 13,505-byte `nmr-dapp32-com` plan with
-SHA-256 `5409f40d84f8dcdc34e9e55123142eac2f259bde0471e7f59044ebe07360fd85`.
+The operator approved the exact 13,505-byte `<deployment>` plan with
+SHA-256 `<historical-digest-10>`.
 The plan selected three images built from implementation commit
 `7ae3bff7637d492d6a3c880b0b509812fba3b03f`: provider
-`sha256:17d40b66a926d573b28084459c68565560782660909fbb5a229274df7284c815`,
+`<historical-digest-11>`,
 HF runner
-`sha256:a369c55138edb9efc60566d321089c0d0a65dbd34185c75f17527b831f8e7024`,
+`<historical-digest-12>`,
 and CHF runner
-`sha256:e5299e20ff100a129a08889f412f5cbf1cbf0e4e497c07b1b80d4da37280c34e`.
+`<historical-digest-13>`.
 A byte-for-byte rerender matched the approved plan before shutdown. The old
 deployment stopped cleanly, and stopped-writer v2 inspection found no retained
 records or unresolved obligations. Startup accepted the exact plan digest;
 the provider became healthy and both runners used the reviewed image IDs.
 
-The production demo identity `credential:user:demo:initial` owns
-`project:user-demo`. Live authority inspection confirmed current entitlement
-to every active AnalysisKind and 235 of 256 Job slots free before this smoke.
-Two persistent Jobs selected only `provider:nmrpeak-pa-a`. The complete HF
+The production client identity `credential:<historical-record-2>` owns
+`project:<historical-record-3>`. Live authority inspection confirmed current entitlement
+to every active AnalysisKind and sufficient Job capacity before this smoke.
+Two persistent Jobs selected only `provider:<historical-record-4>`. The complete HF
 input produced 1,106 tokenizer tokens and failed Attempt
-`execution_attempt:sha256:c74d534a5721ebac9012e1b1b7fb7fa7c2331c080b2072fdbe45e57bb656f3d9`.
+`execution_attempt:<historical-record-5>`.
 The complete CHF input produced 1,327 tokenizer tokens and failed Attempt
-`execution_attempt:sha256:d8dd939bee4270bdc286876022b188371138c4383524d95cfb64c5d76835bb35`.
+`execution_attempt:<historical-record-6>`.
 Both retained `input_rejected` and the reviewed direct message, including the
 measured count, the 511-token limit, the pre-generation certainty, and advice
 to preserve every measurement.
@@ -1103,7 +1103,7 @@ expected for cleanly retired terminal obligations. Restart used the same plan
 and image IDs. Signed post-restart reads returned the same Job refs, Attempt
 refs, codes, and messages; the owner-only smoke evidence file remained
 byte-identical with SHA-256
-`1588c7777114445d108bcf379c9906edad1b438831017cf22297199cfd89144a`.
+`<historical-digest-14>`.
 
 Production did not encounter an ambiguous terminal send, so this rollout does
 not claim a live crash-window replay. The local TLS receipt-loss tests and the
@@ -1177,41 +1177,41 @@ Current-harness live qualification (2026-10-06)
 ------------------------------------------------
 
 The committed opt-in harness at c479dce ran from the exact clean source
-snapshot `sha256:3a1107905cbda829fcdfe54952b724e8f7bf11ee1d323b2ecdb8d7e7cf0831af`
-against `https://nmr.dapp32.com`, signed using the configured demo credential
-for `project:user-demo`. The failure lane created one persistent Job for each
+snapshot `<historical-digest-15>`
+against `<configured API origin>`, signed using the configured client credential
+for `project:<historical-record-3>`. The failure lane created one persistent Job for each
 analysis kind and verified the exact public failure path. HF Job
-`job:b7fed036cff1f5675293f5e835e9bb1e487a3f19339b8333d3bf632de223a824`
+`job:<historical-record-7>`
 reached Attempt
-`execution_attempt:sha256:a90e45ee972071d8c09c7595be65dcfa759329b8b5a73486fdff4bb467244b1c`
+`execution_attempt:<historical-record-8>`
 with `input_rejected` and a measured 665 tokens. CHF Job
-`job:b1b188f5cdfbe191bcdab67ecb97e007342daef7733b5eb452f8d52b2a2fd461`
+`job:<historical-record-9>`
 reached Attempt
-`execution_attempt:sha256:f015427ac24232667c1254dfc2c284aa6f7ada4b2ea378cf809ae41cdab4ff1f`
+`execution_attempt:<historical-record-10>`
 with the same code and a measured 886 tokens.
 
 The positive lane then created smaller HF and CHF Jobs, waited for their exact
 Attempts, followed every Analysis Result page, and verified canonical result
 bytes and deployed provenance. HF Job
-`job:4181e623ea6b098dbf9b18d2243682f6ed2351cdc11c26129d165a3f2e0c413e`
+`job:<historical-record-11>`
 reached Attempt
-`execution_attempt:sha256:1d06e23697fe269226591c0be295c5a76c8c72c289f5cba0eaa8ef486936127c`
+`execution_attempt:<historical-record-12>`
 published Result
-`analysis_result:sha256:8486246feaf02518dc7113797f4b93307fda99a767396c53b25cfb1d2d656deb`
+`analysis_result:<historical-record-13>`
 with ten candidates. CHF Job
-`job:a24dd33893e946bac1b978b3a82a21fd0fa0322bdf8046d5ff61d4a8d9be6d76`
+`job:<historical-record-14>`
 reached Attempt
-`execution_attempt:sha256:9e0eeb00a5faef80ded7d937f89b55042a659c319e7942da4e20fd70f5fb81c5`
+`execution_attempt:<historical-record-15>`
 published Result
-`analysis_result:sha256:fb028d1199b1af9f967470e930acf9606d88b3e7fed6b31870323514c6a74d85`
+`analysis_result:<historical-record-16>`
 with ten candidates. The results matched HF checkpoint
 `sha256:abab0ff1e6787edfdf268312fba7605f090596c60335307b101357915b77d4a6`
 and image input
-`sha256:b7d2dad04d659e7e1f38d46b174f4875c8ecf94491c1b54d3970d123817074a6`,
+`<historical-digest-17>`,
 and CHF checkpoint
 `sha256:375ecd6db031300d2f301a0eb7042c3f42cbd527b17d110e3f0a3d47eecc3a02`
 and image input
-`sha256:0c0eb330b40acb297af4934b39ea6ab9f2b7d6d361ff55159fe6da4c2b228de6`.
+`<historical-digest-19>`.
 
 For these four Jobs, this demonstrates the current harness's signed create,
 selection, observation, failure, completion, result-list, result-read, and
@@ -1225,7 +1225,7 @@ Hardened-runtime rollout qualification (2026-10-06)
 The provider and both runners were rebuilt from clean commit
 `cef5c6bda687b1f190d4c0385b09237a27f8df38`, with dependency network traffic
 bound to `wlp10s0`. The reviewed deployment plan had SHA-256
-`f87719bd5453ebd2b1645dc1acbb575efd8d80025420cfd4158a104060afa599`.
+`<historical-digest-20>`.
 Independent structural review found that it changed only the provider and
 runner image identities and their derived topology, frozen-generation, and
 runtime-config identities. Checkpoints, generation scopes, contracts, endpoint,
@@ -1235,27 +1235,27 @@ controls remained unchanged.
 The operator observed a clean stop and a stopped-writer journal inspection with
 no retained records or unresolved obligations. The guarded startup accepted the
 exact reviewed plan. Its final status reported the provider healthy with image
-`sha256:61330e4f809134ae9203cec52548df2d7d9aaf0191193ebb0a6abd34678864e8`,
+`<historical-digest-21>`,
 and both runners running with HF image
-`sha256:1444cd2a44c36720b2421b89bf624e9c2c7d38c0d0500364be6e96779eb296fa`,
+`<historical-digest-22>`,
 and CHF image
-`sha256:3fa559ebba960ce5df7d1533a06ea38bc05671b86baf6f176af2668336e290ed`.
+`<historical-digest-23>`.
 The contemporaneous startup logs reported zero retained Attempts; both runners
 loaded their reviewed checkpoints and announced ready without an error. These
 shutdown, journal, health, and startup-log statements are operator observations;
 no transcript was committed.
 
 The committed live harness ran from exact clean snapshot
-`sha256:0fed8271b46a2127d088fce9d5d7888c5b988e91a309c4a2dd66aebce7d85261`.
+`<historical-digest-24>`.
 Read-only observation first reconfirmed all four pre-rollout Jobs and their
 exact public evidence. Fresh failure Jobs then exercised the new runtime. HF
-Job `job:04121dfcbc7038669986aa9556bcbe40f9d1e69cddc82525103dfc0698d4e75a`
+Job `job:<historical-record-17>`
 reached Attempt
-`execution_attempt:sha256:ca2e9fcfa85cc185e2a9b05954c2e49514bfeaf09790dab0da1df2650e2e9fe6`
+`execution_attempt:<historical-record-18>`
 with `input_rejected` and 665 measured tokens. CHF Job
-`job:d4a931a196123848f88d15a63b390efdc19d64fc4d347ad8b951928aab36db3b`
+`job:<historical-record-19>`
 reached Attempt
-`execution_attempt:sha256:6ee58540b31b473c116f5bb1a6febcf1447de3cac1cac15c390853f1d96ee8ed`
+`execution_attempt:<historical-record-20>`
 with the same code and 886 measured tokens. The provider logs used bounded,
 typed `preparation_failure_retained` events. In the inspected log window, those
 events did not expose the complete input or arbitrary exception text. This is
@@ -1263,29 +1263,33 @@ also an operator observation rather than a retained full-log assertion.
 
 Fresh positive Jobs proved both real model paths and bound the results to the
 new runner inputs. HF Job
-`job:a884ed2bda5f96d44bbc120331a068ea5d2e4a197db7334396b056a4bd6f12e3`
+`job:<historical-record-21>`
 reached Attempt
-`execution_attempt:sha256:161afdb330600c0259d9b7f8c438aae27fbdea11caaf68c8971e68a1740a6673`
+`execution_attempt:<historical-record-22>`
 and published Result
-`analysis_result:sha256:fca2631b21d1cc139a9a76e9a6e08b45e9e7564c3e9ecfb0672b569b4adf2659`.
+`analysis_result:<historical-record-23>`.
 CHF Job
-`job:e354f31a112556376e51dcbcffc35d7988e0c422eec68a96ca41da92ee21bd8d`
+`job:<historical-record-24>`
 reached Attempt
-`execution_attempt:sha256:1b781e8413f3716babe50b0c4674ede6ec83eee392886fe2e80a26a22098518e`
+`execution_attempt:<historical-record-25>`
 and published Result
-`analysis_result:sha256:676cf937d9e357368e3aa578b574717a8c9d6b1630121d5ddc4d5bc02c2c219e`.
+`analysis_result:<historical-record-26>`.
 Each Result contained ten candidates. Provenance matched HF image input
-`sha256:0a2dedab014ec43c1863cf83f2eff2d6ac078812a6b780a602cf2ba9e39006c2`
+`<historical-digest-25>`
 and CHF image input
-`sha256:66107c47c571baea66b8bb25ad3f89deb84b8f94ce6e1a6c7ffb7a3c21fbf74c`,
+`<historical-digest-26>`,
 along with the unchanged reviewed checkpoint identities. This closes the prior
 qualification caveat: the typed message-propagation runtime is now deployed and
 has processed fresh public failure and success Attempts on both lanes.
 The owner-only failure and success harness states were retained with SHA-256
-`d5772db938f89e4367d8ed96fad50236ff3c25253e7cd42a5bf27c617ef3c3dd`
-and `1b493e8789c35c4507904f06b52680160310623bbc394bc071b9d227ccf9e44e`,
+`<historical-digest-27>`
+and `<historical-digest-28>`,
 respectively. They retain the exact Job-create body bytes, including model
 inputs, extracted public evidence, and the reviewed artifact expectations used
 during successful signed observations. They contain no credential, signature,
 result body, or response transcript and do not independently prove the local
 Docker status or log observations.
+
+Privacy edit: historical operational identities, local resource digests and
+private artifact paths are omitted. Repeated placeholders preserve relationships
+within this note; they are not usable API or deployment identifiers.

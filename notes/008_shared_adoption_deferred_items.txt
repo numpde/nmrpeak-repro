@@ -1,0 +1,169 @@
+NMRPeak shared adoption: deferred qualification
+==============================================
+2026-10-29
+
+Governing decisions:
+  https://github.com/numpde/nmr-provider-tools/blob/be86898301f129c08a6116c0b62d633e846943fc/notes/014_joint_provider_refactor_decisions_20261028.txt
+  D030: shared correctness, shared adoption, then shared operations.
+
+This list separates later qualification from the current ownership replacement.
+It does not defer controller/delivery adoption or accept two-interpreter product
+images as the endpoint. The scientific and control runtimes use Python 3.12;
+shared Python 3.11 support was withdrawn.
+
+Scientific retries: deploy first
+--------------------------------
+Owner: NMRPeak's scientific lane and analysis session. The joint review records
+the proposed uniform [scientific_retry] max_retries shape and its extra-execution
+meaning. Sharing a count type is deferred; shared-package redesign requires
+coordinated discussion and explicit user approval, not peer agreement alone.
+The user approved D170's shared unresolved marker and exact held-controller check
+for implementation and qualification; that approval does not enable NMRPeak
+scientific retries or introduce a shared count type.
+That policy is not part of the installed NMRPeak runtime or its TOML schema.
+The current qualified runtime executes generation once per prepared capability.
+
+The user's later priority is deployment before retry implementation. Do not hold
+the qualified single-execution provider for a new positive-retry path. An affected
+unsupported positive selection must fail at startup with NotImplementedError,
+naming the operation and configuration key; zero must remain usable. This is an
+admission requirement for an affected retry path, not a reason to make today's
+single-execution NMRPeak startup fail or accept an ineffective positive setting.
+
+Positive NMRPeak retries remain TBD after the deployment priority is resolved;
+deployment completion alone does not select their implementation. Required work
+includes an explicit computation-failure fact separate from result construction
+and encoding, exact original retirement, a fresh admitted worker, retained exact
+model input for revalidation, and ownership of replacement workers through final
+shutdown. Do not repeat input interpretation or START. Unknown responses,
+returned-result handling errors, cancellation and unconfirmed retirement do not
+authorize another computation. Defaults, migration, shared-package integration
+and qualification must follow the final joint contract; no new numerical or live
+Job campaign is implied by this deferred work.
+
+Scientific qualification
+------------------------
+The Python 3.12 migration changes numerical dependency wheels and several direct
+pins. Exact checkpoint-backed HF/CHF output comparison against the previous
+Python 3.11 CPU images was required before accepting those image changes.
+Checkpoint-free protocol fixtures do not establish model equivalence. The
+completed bounded CPU comparison is recorded in note 009; the distinct final
+SDK/native and product image checks are summarized in note 007.
+
+Broader scientific accuracy claims remain outside this ownership replacement.
+The bounded comparison uses identical released checkpoints, decode policies and
+short/medium/long synthetic inputs, including repeated calls. It can establish
+whether those specific ordered candidate outputs changed; it cannot establish
+accuracy on experimental spectra or equivalence over all supported inputs.
+
+GPU and OOM scenarios
+--------------------
+Concern: the supported runner images are CPU x86_64. No GPU allocation or causal
+OOM attribution follows from the native child's exit status or a SIGKILL.
+Owner: the consumer introducing such a target, with provider-core for a shared
+evidence contract if actual cross-consumer requirements arise.
+Reason for deferral: no GPU runner target is being added by this refactor.
+Revisit: a concrete GPU target or a requested OOM diagnosis capability. Keep
+public worker-crash wording limited to the observed phase and exit status now.
+
+Completed adoption qualification
+--------------------------------
+The actual AnalysisSession/controller/delivery cut, shared supported runtime,
+independent scientific deadlines, refusal of unresolved legacy obligations,
+retained reports under real delivery backpressure, and deletion of journal-driven
+execution/publication authority are implemented and qualified. The maintained
+default lane passes 521 tests, including deployment reconciliation and outage
+handoff witnesses. Canonical published-SDK images, checkpoint-backed native warm
+reuse/retirement and the isolated stopped-maintenance TLS route passed the
+separate checks summarized in note 007. Native attachment
+alone was not used to establish those broader boundaries.
+
+Local image checks alone are not evidence of a deployed NMRPeak provider.
+
+Local deployment (29 October 2026)
+---------------------------------
+The user subsequently requested deployment of existing provider targets. The
+existing local development target was migrated to the current shared-binding
+configuration and started from a local pre-publication source snapshot. Its
+provider and
+API route were healthy after startup; both CPU runner containers were running,
+with provider readiness published after both runner connections and API Hello.
+The running provider used Python 3.12.16 and provider-core 0.5.2. Provider,
+route and runner containers had zero restarts and no OOM kill at inspection.
+The selected shared intake responded with zero pending items, and shared
+delivery retained its queue volume; neighboring local providers were healthy.
+The model runners have no separate container health check. No new Job was
+submitted, so this is startup and integration evidence, not scientific result
+or numerical-accuracy proof. Positive scientific retries remain TBD.
+
+Unconfirmed generation follow-up
+--------------------------------
+A mismatched generation response was exercised through the NMR analysis session,
+shared controller and local delivery inbox. The original controller failure and
+claim remained owned, the runner fixture retired, and no terminal report was
+enqueued or sent. All 25 maintained integration tests passed with this witness.
+The runner was a scripted fixture, not a real native child or a live API Job.
+One earlier run logged an asyncio InvalidStateError whose traceback was truncated;
+its owner is unconfirmed. The final run captured event-loop errors and passed
+without reproducing it, which does not establish that the earlier error was fixed.
+The event-loop error recurred in a subsequent integration run while an HTTP read
+was being cancelled; its cause remains unconfirmed. A source-level review and
+Python 3.12 reproducer point to an AnyIO readiness-callback cancellation race,
+but the reproducer did not run AnyIO itself. The shared transport owner has the
+evidence; revisit this when an upstream fix or an exact dependency reproduction
+is available. Do not suppress event-loop errors in the integration fixture.
+
+Stopped returned analysis
+-------------------------
+When a stopped execution has returned analysis, shutdown settles the original
+work and uses the shared executor's explicit suppression disposition before
+releasing the controller claim. The shared executor decides whether suppression
+is eligible; a refusal retains the claim and leaves shutdown unready while
+independent clients retire. The disposition retains the reason, not scientific
+bytes, and does not authorize another calculation. Integration fixtures exercise
+the local stop and refusal paths; they do not prove live server freshness or a
+real native worker result.
+
+First scientific submission
+---------------------------
+The shared package is pinned to the published 0.5.2 wheel from source commit
+0d6fad324233367f75dc78e57a56028fa59d36b6; both dependency locks match its
+release assets. This adoption does not enable scientific retries in NMRPeak.
+A local stop set after the shared controller's initial permission check but
+before the session starts did not prevent the first generation submission in
+provider-core 0.5.1. A bounded integration witness reached that failing
+assertion through the shared controller and scripted NMR runner. The binding
+checks the released shared phase-permission capability at each validation or
+generation submission after any intervening await. This
+does not retract already submitted work or establish a fresh server read.
+With the binding check and the released 0.5.2 wheel, the same witness
+retained the original stop failure and submitted no generation or terminal
+report. The published-wheel image passed 447 unit, 6 contract, 30 integration,
+and 41 repository tests. An earlier candidate integration run timed out both
+endpoints in the interpreter fallback fixture, which uses a 20-millisecond
+request deadline; the candidate run passed on repetition. That single failure
+does not identify its cause. The NMRPeak interpreter fixture owns follow-up if
+the timeout recurs or deadline behavior is investigated. These checks do not
+establish a live deployment.
+
+Interpreter deadline during validation
+--------------------------------------
+The aggregate interpreter deadline also covers runner validation. A bounded
+test through the interpreter, analysis session, shared controller and local
+delivery inbox held a fake runner's validation response beyond that deadline.
+Before the correction, a later interpreter response could enqueue a FAIL while
+the original validation was still unobserved. The session now retains an
+unresolved Attempt when the runner is not quiescent, before reporting an
+interpreter condition or retrying. An ordinary interpreter deadline before
+validation still follows the existing condition and retry path. The witness
+uses a gated fake runner channel, not a real native worker or live API Job.
+
+Diagnostic envelope bounding
+-----------------------------
+Joint SDK decisions D136/notes015 defer a broad renderer redesign beyond 0.5.1.
+A synthetic NMR CLI witness produced valid, redacted 3,916,504-byte JSON against
+the host's existing 1,048,576-byte output cap. This is a structural quota mismatch,
+not a live failure. Preserve the current cap and evidence boundary; do not invent
+consumer truncation, byte-slice JSON, or postpone the qualified outage/deadline
+fixes for a new diagnostic framework. A future SDK-owned bounded representation
+must declare omissions and preserve encoding/envelope validity.

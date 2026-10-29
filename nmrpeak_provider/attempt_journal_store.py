@@ -30,6 +30,7 @@ _ARCHIVE_NAME = re.compile(r"[0-9a-f]{64}\.archive\.json")
 _ARCHIVE_STAGING = re.compile(r"\.[0-9a-f]{64}\.archive\.pending")
 _DIAGNOSTIC_NAME = re.compile(r"[0-9a-f]{64}\.diagnostic\.json")
 _DIAGNOSTIC_STAGING = re.compile(r"\.[0-9a-f]{64}\.diagnostic\.json\.pending")
+JOURNAL_MAXIMUM_RECORDS = 10_000
 _DIRECTORY_MODE = 0o700
 _RECORD_MODE = 0o600
 
@@ -75,19 +76,34 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
         self._read_only = read_only
         self._lock = Lock()
         self._directory_fd = -1
+        self._close_failure: BaseException | None = None
         self._poisoned = False
         self._open()
 
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
+    def __exit__(self, exception_type, primary, traceback) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup:
+            if primary is not None and cleanup is not primary:
+                raise BaseExceptionGroup(
+                    "Journal operation and independent directory cleanup failed", [primary, cleanup],
+                ) from None
+            raise
 
     def close(self) -> None:
-        """Release this process's directory descriptor without changing records."""
+        """Attempt release once; a failed close cannot authorize descriptor reuse."""
 
         with self._lock:
+            if self._close_failure is not None:
+                raise self._close_failure
             if self._directory_fd >= 0:
-                os.close(self._directory_fd)
+                descriptor = self._directory_fd
                 self._directory_fd = -1
+                try:
+                    os.close(descriptor)
+                except BaseException as cause:
+                    self._close_failure = cause
+                    raise
 
     def records(self) -> tuple[AttemptJournalRecord, ...]:
         """Load the complete admitted record inventory in stable filename order."""
@@ -150,7 +166,7 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
     def archived_records(self) -> tuple[AttemptJournalRecord, ...]:
         """Retain archived generation provenance without admitting replay obligations."""
         from .canonical_json import parse_canonical_json_bytes
-        from .journal_archive import archived_original
+        from .journal_archive_record import archived_original
         with self._lock:
             self._require_usable()
             records = []
@@ -311,11 +327,16 @@ class AttemptJournalStore(AbstractContextManager["AttemptJournalStore"]):
                     self._record_names(),
                     prospective_records=0,
                 )
-        except (OSError, ValueError, AttemptJournalStateRejected) as error:
-            if self._directory_fd >= 0:
-                os.close(self._directory_fd)
-                self._directory_fd = -1
-            if isinstance(error, AttemptJournalStateRejected):
+        except BaseException as error:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                if cleanup is not error:
+                    raise BaseExceptionGroup(
+                        "Journal admission and independent directory cleanup failed", [error, cleanup],
+                    ) from None
+                raise
+            if isinstance(error, AttemptJournalStateRejected) or not isinstance(error, (OSError, ValueError)):
                 raise
             raise AttemptJournalStateRejected(
                 "Attempt journal directory cannot be admitted"

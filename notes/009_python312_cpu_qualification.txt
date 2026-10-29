@@ -1,0 +1,76 @@
+Python 3.12 CPU migration: results and limits
+============================================
+2026-10-29
+
+Runtime and dependency decisions
+--------------------------------
+The provider, test runtime and both scientific runners use Python 3.12.16.
+Native control and science share one interpreter; the temporary second
+interpreter and copied control prefix were removed. The CPU and CUDA benchmark
+locks were regenerated through the maintained contained compiler.
+
+The CPU runtime keeps Torch 2.3.0+cpu, RDKit 2024.9.6, Transformers 4.55.4,
+released checkpoints and decode policies. CPython 3.12 wheels required updates
+to LMDB 1.5.1, Matplotlib 3.8.4, NumPy 1.26.4, pandas 2.1.4 and SciPy 1.11.4.
+scikit-learn 1.5.0 and tqdm 4.66.3 include reviewed advisory fixes. Unrelated
+transitive pins were preserved; pandas added tzdata. The CUDA benchmark keeps
+Torch 2.10.0+cu128 and its official CP312 wheel, which adds setuptools.
+
+Checkpoint-backed CPU comparison: passed
+----------------------------------------
+The old Python 3.11.14 reference images and new Python 3.12.16 comparison images
+loaded identical released checkpoints, each verified by whole-file SHA-256 on
+the descriptor subsequently loaded. Both runtimes used the same synthetic corpus
+and decode policy, CPU float32, eight intra-operation threads and one
+inter-operation thread, with network disabled and checkpoints mounted read-only.
+
+For each HF/CHF lane, short, medium and long inputs were generated once after
+load and once on the same loaded model. All twelve candidate sequences matched
+exactly across the migration: ordering, canonical SMILES, invalid-candidate
+markers, valid counts and token counts. Repeated calls also matched within each
+runtime. The same twelve generations were repeated without the SDK/API install
+step; both lanes again matched the old references. These comparisons establish
+that the exercised scientific paths need no dependencies supplied only by the
+SDK installation. They do not establish native lifecycle behavior.
+
+Final published-package integration: passed
+-------------------------------------------
+The final canonical provider and both runner images use published provider-core
+0.5.1, acquired through the maintained ordinary installation path. Installed
+readback confirmed Python 3.12.16 and SDK 0.5.1 in the system interpreter. Both
+native runner profiles omit HTTPX, cryptography, CFFI and http_sf. Image builds,
+hash verification, dependency consistency and native imports passed.
+
+The maintained default suite passed 521 checks: 444 unit, six historical
+contract, 24 integration, six model-harness and 41 repository checks. Separate
+canonical-image probes loaded each released checkpoint, reused the same boot
+and original native operation for two oversized validation rejections and a
+short admitted input, then confirmed retirement and scratch release. These
+final probes performed validation/tokenization, not candidate generation.
+Note 007 records the distinct lifecycle and stopped-maintenance TLS checks.
+
+Retention and privacy
+---------------------
+This note retains the method, versions, results and limits. The temporary
+comparison harnesses, raw scientific outputs, build/test logs, local image and
+resource inventories, operation identifiers and local paths were removed from
+the current repository tree at the user's request. They are not relocated into
+notes or presented as retained replay evidence. Maintained runtime definitions,
+dependency pins, scientific tests and public release metadata remain their
+respective authorities. This summary records observed results; it is not a
+standalone replay bundle.
+
+Limits
+-------
+The CPU comparison concerns the interpreter/dependency bundle and the exercised
+corpus. It does not isolate Python's numerical effect, establish accuracy on
+experimental spectra, equivalence over all inputs or performance. Existing
+invalid reference candidates remain invalid. GPU execution was not validated.
+
+Dependency review is not an advisory all-clear. The unchanged offline model
+closure still matches reported advisories in remote model loading, training,
+image decoding and networking paths. The active code uses fixed local BART
+configuration and a hash-verified released checkpoint, rather than those remote,
+model-converter or Trainer paths. Scientific images pin Expat's Debian Bookworm
+security update 2.5.0-1+deb12u5. No NMRPeak push, release or production deployment
+was performed for this migration.

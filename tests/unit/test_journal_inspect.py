@@ -11,12 +11,40 @@ from unittest.mock import patch
 from nmrpeak_provider.attempt_journal import LatestDiagnostic, journal_record_bytes, journal_record_name
 from nmrpeak_provider.attempt_journal_store import AttemptJournalStateRejected, AttemptJournalStore
 from nmrpeak_provider.journal_inspect import inspect_journal
-from tests.unit.test_attempt_lifecycle import journal_directory, terminal_pending, TerminalOperation
+from tests.fakes.retained_journal import journal_directory, terminal_pending
+from nmrpeak_provider.attempt_journal import TerminalOperation
 from tests.unit.test_attempt_journal import start_pending, active_attempt
 from tests.unit.test_attempt_journal_store import filesystem_with_available_bytes
 
 
 class JournalInspectionTests(unittest.TestCase):
+    def test_current_report_keeps_legacy_restart_blocked_and_api_state_unobserved(self):
+        terminal = terminal_pending(TerminalOperation.FAIL)
+        held = replace(terminal, terminal_hold_action="do_not_resend",
+                       terminal_observed_state="expired", terminal_hold_description="Do not resend.")
+        reconciling = replace(terminal, terminal_hold_action="reconcile_state",
+                              terminal_hold_description="Read the current state.")
+        for record in (start_pending(), active_attempt(), terminal, reconciling, held):
+            with self.subTest(record=type(record).__name__), journal_directory() as root:
+                path = self._write(root, record)
+                before = path.read_bytes()
+                document = json.loads(inspect_journal(root))
+                self.assertEqual(document["schema_id"], "nmrpeak.journal_inspection.v4")
+                self.assertEqual(document["api_observation"], "not_performed")
+                item, = document["records"]
+                self.assertIn("startup stays blocked", item["restart_behavior"])
+                if "on_restart" in item:
+                    self.assertEqual(item["on_restart"]["automatic_reads"], "stopped")
+                    self.assertEqual(item["on_restart"]["automatic_resends"], "stopped_including_restart")
+                    self.assertEqual(item["on_restart"]["next_actor"], "provider_operator")
+                if record is held:
+                    self.assertIn("archive-closed", item["next_action"])
+                    self.assertIn("delivery remains unconfirmed", item["next_action"])
+                else:
+                    self.assertIn("API operator", item["next_action"])
+                    self.assertNotIn("archive-closed", item["next_action"])
+                self.assertEqual(path.read_bytes(), before)
+
     def _write(self, root, record):
         path = root / journal_record_name(record)
         path.write_bytes(journal_record_bytes(record))
@@ -35,10 +63,9 @@ class JournalInspectionTests(unittest.TestCase):
             with self.subTest(phase=phase), journal_directory() as root:
                 path = self._write(root, record)
                 before = path.read_bytes()
-                with patch("nmrpeak_provider.provider_api.ProviderApiClient.send", side_effect=AssertionError("Inspection cannot send")):
-                    raw = inspect_journal(root)
+                raw = inspect_journal(root)
                 doc = json.loads(raw)
-                self.assertEqual(doc["schema_id"], "nmrpeak.journal_inspection.v3")
+                self.assertEqual(doc["schema_id"], "nmrpeak.journal_inspection.v4")
                 self.assertEqual(doc["current_automation"], "stopped")
                 self.assertEqual(doc["stage_counts"], {phase: 1})
                 item, = doc["records"]
@@ -82,6 +109,7 @@ class JournalInspectionTests(unittest.TestCase):
             self._write(root, terminal_pending(TerminalOperation.FAIL))
             document = json.loads(inspect_journal(root))
         document["schema_id"] = "nmrpeak.journal_inspection.v1"
+        document.pop("api_observation", None)
         del document["diagnostics"]
         del document["diagnostics_omitted"]
         record, = document["records"]
@@ -157,7 +185,8 @@ class InspectionDocumentTests(unittest.TestCase):
         import copy
         cases = []
         for key, value in (("records", [None]), ("body_base64", "private"),
-                           ("stage_counts", {"terminal_pending": True})):
+                           ("stage_counts", {"terminal_pending": True}),
+                           ("schema_id", []), ("schema_id", {})):
             bad = copy.deepcopy(valid)
             bad[key] = value
             cases.append(bad)

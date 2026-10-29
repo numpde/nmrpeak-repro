@@ -25,7 +25,6 @@ from deployment.provider_deployment import (
     deployment_status_bytes,
     deployment_plan_bytes,
     initialize_deployment,
-    install_provider_credential,
     materialize_deployment_plan,
     remove_frozen_generation,
     retire_provider_journal,
@@ -33,10 +32,6 @@ from deployment.provider_deployment import (
     show_provider_logs,
     start_deployment,
     stop_deployment,
-)
-from nmrpeak_provider.attempt_inventory import (
-    AttemptInventory,
-    AttemptInventoryReadFailed,
 )
 from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
@@ -47,10 +42,9 @@ from repository_checks.chf_release import candidate_release_bytes as chf_release
 from repository_checks.hf_release import ARCHIVE_MEMBER as HF_MEMBER
 from repository_checks.hf_release import candidate_release_bytes as hf_release_bytes
 from tests.unit.test_deployment_topology import compose_document
-from tests.unit.test_provider_startup_inputs import (
-    credential_bytes,
-    credential_document,
-)
+from tests.unit.test_provider_startup_inputs import credential_bytes
+from tests.unit.test_deployment_runtime import DEFINITION
+from nmrpeak_provider.deployment_runtime import project_provider_binding
 
 
 ROOT = Path(__file__).parents[2]
@@ -146,13 +140,11 @@ class ProviderDeploymentTests(unittest.TestCase):
                 environment: dict[str, str],
                 _docker: Path,
                 *,
-                localhost: bool,
+                binding_projection: dict,
             ) -> dict[str, object]:
                 renders.append(environment)
                 return compose_for_environment(
-                    deployment,
-                    environment,
-                    localhost=localhost,
+                    deployment, environment, binding_projection=binding_projection,
                 )
 
             with (
@@ -198,30 +190,13 @@ class ProviderDeploymentTests(unittest.TestCase):
                     plan.runtime_config_id,
                 )
                 self.assertNotEqual(
-                    renders[1]["PROVIDER_CONFIG_PATH"],
-                    renders[3]["PROVIDER_CONFIG_PATH"],
+                    renders[1]["PROVIDER_RUNTIME_DIRECTORY"],
+                    renders[3]["PROVIDER_RUNTIME_DIRECTORY"],
                 )
                 self.assertEqual(
                     renders[1]["FROZEN_GENERATION_PATH"],
                     renders[3]["FROZEN_GENERATION_PATH"],
                 )
-                provider_config.write_bytes(
-                    provider_config.read_bytes().replace(
-                        b"[server_a]\n",
-                        b"[server_a]\nuse_private_ca = true\n",
-                    )
-                )
-                with (
-                    patch.object(
-                        provider_deployment,
-                        "_require_clean_checkout",
-                    ),
-                    self.assertRaisesRegex(
-                        DeploymentOperationRejected,
-                        "cannot select a private Server A CA",
-                    ),
-                ):
-                    render_deployment_plan(repository, "production")
 
             preview = parse_canonical_json_bytes(deployment_plan_bytes(plan))
             self.assertEqual(preview["kind"], "read_only_preview")
@@ -232,17 +207,18 @@ class ProviderDeploymentTests(unittest.TestCase):
             self.assertEqual(preview["runtime_config_id"], plan.runtime_config_id)
             self.assertEqual(
                 set(preview["artifacts"]),
-                {"provider.toml", "frozen/manifest.json", "frozen/files"},
+                {"provider.toml", "runtime_files", "frozen/manifest.json", "frozen/files"},
             )
             self.assertEqual(
                 Path(renders[1]["FROZEN_GENERATION_PATH"]).parent.name,
                 plan.generation.frozen_generation_id.removeprefix("sha256:"),
             )
             self.assertEqual(
-                Path(renders[1]["PROVIDER_CONFIG_PATH"]).parent.name,
+                Path(renders[1]["PROVIDER_RUNTIME_DIRECTORY"]).name,
                 plan.runtime_config_id.removeprefix("sha256:"),
             )
-            self.assertFalse((repository / "secrets").exists())
+            self.assertFalse((repository / "secrets/deployments/production/runtime-configs").exists())
+            self.assertFalse((repository / "secrets/deployments/production/generations").exists())
 
     def test_materialization_is_exact_idempotent_and_rejects_drift(self) -> None:
         with render_repository() as repository:
@@ -259,7 +235,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 first[1].parent.name,
                 plan.generation.frozen_generation_id.removeprefix("sha256:"),
             )
-            self.assertEqual(first[0].read_bytes(), plan.generation.provider_config)
+            self.assertEqual(first[0].read_bytes(), plan.runtime_files["provider.toml"])
             self.assertEqual(
                 (first[1] / "manifest.json").read_bytes(),
                 plan.generation.manifest,
@@ -300,180 +276,23 @@ class ProviderDeploymentTests(unittest.TestCase):
             ):
                 materialize_deployment_plan(repository, "production", plan)
 
-    def test_localhost_plan_grants_only_provider_host_gateway_and_ca(self) -> None:
-        with render_repository() as repository, TemporaryDirectory() as temporary:
-            provider_config = repository / "config/deployments/production/provider.toml"
-            provider_config.write_bytes(
-                provider_config.read_bytes()
-                .replace(b"https://api.example.test", b"https://nmr.localhost:10443")
-                .replace(b'topology = "web"', b'topology = "dev-local"')
-                .replace(
-                    b"[server_a]\n",
-                    b"[server_a]\nuse_private_ca = true\n",
-                )
-            )
-            certificate = Path(temporary).resolve() / "ca.crt"
-            certificate.write_text("test CA\n", encoding="ascii")
-
-            with (
-                patch.object(provider_deployment, "_require_clean_checkout"),
-                patch.object(
-                    provider_deployment,
-                    "_image_input_ids",
-                    return_value=INPUTS,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_local_images",
-                    return_value=IMAGES,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_render_compose",
-                    side_effect=lambda _, deployment, environment, __, *, localhost: (
-                        compose_for_environment(
-                            deployment,
-                            environment,
-                            localhost=localhost,
-                        )
-                    ),
-                ),
-            ):
-                plan = render_deployment_plan(
-                    repository,
-                    "production",
-                    localhost_ca_certificate=certificate,
-                )
-
-            provider = plan.compose["services"]["provider"]
-            self.assertEqual(
-                provider["extra_hosts"],
-                ["nmr.localhost=host-gateway"],
-            )
-            self.assertIn(
-                {
-                    "type": "bind",
-                    "source": str(certificate),
-                    "target": "/run/config/nmrpeak-provider/server-a-ca.crt",
-                    "read_only": True,
-                },
-                provider["volumes"],
-            )
-            for runner in ("hf-runner", "chf-runner"):
-                service = plan.compose["services"][runner]
-                self.assertEqual(service["network_mode"], "none")
-                self.assertNotIn("extra_hosts", service)
-                self.assertNotIn("server-a-ca.crt", str(service["volumes"]))
-
-    def test_localhost_ca_path_is_explicit_resolved_and_mode_matched(self) -> None:
-        with render_repository() as repository, TemporaryDirectory() as temporary:
-            directory = Path(temporary).resolve()
-            certificate = directory / "ca.crt"
-            certificate.write_text("test CA\n", encoding="ascii")
-            symlink = directory / "ca-link.crt"
-            symlink.symlink_to(certificate)
-
-            for invalid, diagnostic in (
-                (Path("relative-ca.crt"), "absolute path"),
-                (symlink, "resolved non-symlink"),
-            ):
-                with self.subTest(path=invalid), self.assertRaisesRegex(
-                    DeploymentOperationRejected,
-                    diagnostic,
-                ):
-                    render_deployment_plan(
-                        repository,
-                        "production",
-                        localhost_ca_certificate=invalid,
-                    )
-
-            with self.assertRaisesRegex(
-                DeploymentOperationRejected,
-                "requires the dev-local nmr.localhost origin",
-            ):
-                render_deployment_plan(
-                    repository,
-                    "production",
-                    localhost_ca_certificate=certificate,
-                )
-
     def test_start_admits_every_input_before_compose_and_readiness_proof(self) -> None:
         with render_repository() as repository:
             plan = test_plan(repository)
             preview_sha256 = sha256(deployment_plan_bytes(plan) + b"\n").hexdigest()
-
             events: list[str] = []
             with (
-                patch.object(
-                    provider_deployment,
-                    "render_deployment_plan",
-                    return_value=plan,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_admit_installed_credential",
-                    side_effect=lambda *_: events.append("credential"),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_admit_interpreter_configs",
-                    side_effect=lambda *_: events.append("interpreter"),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "verify_hf_checkpoint",
-                    side_effect=lambda *_args, **_kwargs: events.append("hf"),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "verify_chf_checkpoint",
-                    side_effect=lambda *_args, **_kwargs: events.append("chf"),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "ensure_provider_state_volumes",
-                    side_effect=lambda *_: events.append("provider_volumes"),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_inspect_project_containers",
-                    side_effect=({}, ready_services(plan)),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_run_compose_plan",
-                    side_effect=lambda *_: events.append("compose_up"),
-                ),
+                patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                patch.object(provider_deployment, "_materialize_locked", side_effect=lambda *_: events.append("materialize")),
+                patch.object(provider_deployment, "verify_hf_checkpoint", side_effect=lambda *_args, **_kwargs: events.append("hf")),
+                patch.object(provider_deployment, "verify_chf_checkpoint", side_effect=lambda *_args, **_kwargs: events.append("chf")),
+                patch.object(provider_deployment, "ensure_provider_state_volumes", side_effect=lambda *_: events.append("provider_volumes")),
+                patch.object(provider_deployment, "_inspect_project_containers", side_effect=({}, ready_services(plan))),
+                patch.object(provider_deployment, "_run_compose_plan", side_effect=lambda *_: events.append("compose_up")),
             ):
-                self.assertEqual(
-                    start_deployment(
-                        repository,
-                        "production",
-                        expected_plan_sha256=preview_sha256,
-                    ),
-                    plan,
-                )
+                self.assertEqual(start_deployment(repository, "production", expected_plan_sha256=preview_sha256), plan)
+            self.assertEqual(events, ["materialize", "hf", "chf", "provider_volumes", "compose_up"])
 
-            self.assertEqual(
-                events,
-                [
-                    "credential",
-                    "interpreter",
-                    "hf",
-                    "chf",
-                    "provider_volumes",
-                    "compose_up",
-                ],
-            )
-            self.assertTrue(
-                (
-                    repository
-                    / "secrets/deployments/production"
-                    / "generations"
-                    / plan.generation.frozen_generation_id.removeprefix("sha256:")
-                    / "frozen/manifest.json"
-                ).is_file()
-            )
 
     def test_start_rejects_changed_preview_before_materialization_or_engine_effects(self) -> None:
         with render_repository() as repository:
@@ -481,7 +300,6 @@ class ProviderDeploymentTests(unittest.TestCase):
             with (
                 patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
                 patch.object(provider_deployment, "_materialize_locked") as materialize,
-                patch.object(provider_deployment, "_admit_installed_credential") as credential,
                 patch.object(provider_deployment, "ensure_provider_state_volumes") as volumes,
                 patch.object(provider_deployment, "_run_compose_plan") as compose_up,
                 self.assertRaisesRegex(DeploymentOperationRejected, "differs from reviewed preview"),
@@ -492,7 +310,6 @@ class ProviderDeploymentTests(unittest.TestCase):
                     expected_plan_sha256="0" * 64,
                 )
             materialize.assert_not_called()
-            credential.assert_not_called()
             volumes.assert_not_called()
             compose_up.assert_not_called()
 
@@ -525,261 +342,46 @@ class ProviderDeploymentTests(unittest.TestCase):
                 sha256(deployment_plan_bytes(plan) + b"\n").hexdigest(),
             )
 
-    def test_start_stops_before_engine_effects_when_input_access_fails(self) -> None:
+    def test_start_stops_before_engine_effects_when_runtime_materialization_fails(self) -> None:
         with render_repository() as repository:
             plan = test_plan(repository)
-
+            failure = DeploymentOperationRejected("Captured provider inputs could not be published")
             with (
-                patch.object(
-                    provider_deployment,
-                    "render_deployment_plan",
-                    return_value=plan,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_grant_provider_tree_access",
-                    side_effect=DeploymentOperationRejected(
-                        "Provider input access operation was rejected"
-                    ),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "verify_hf_checkpoint",
-                ) as verify_hf,
-                patch.object(
-                    provider_deployment,
-                    "verify_chf_checkpoint",
-                ) as verify_chf,
-                patch.object(
-                    provider_deployment,
-                    "ensure_provider_state_volumes",
-                ) as ensure_volumes,
-                patch.object(
-                    provider_deployment,
-                    "_run_compose_plan",
-                ) as compose_up,
-                self.assertRaisesRegex(
-                    DeploymentOperationRejected,
-                    "input access operation was rejected",
-                ),
+                patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                patch.object(provider_deployment, "_materialize_locked", side_effect=failure),
+                patch.object(provider_deployment, "verify_hf_checkpoint") as verify_hf,
+                patch.object(provider_deployment, "verify_chf_checkpoint") as verify_chf,
+                patch.object(provider_deployment, "ensure_provider_state_volumes") as ensure_volumes,
+                patch.object(provider_deployment, "_run_compose_plan") as compose_up,
+                self.assertRaisesRegex(DeploymentOperationRejected, "could not be published"),
             ):
-                start_deployment(
-                    repository,
-                    "production",
-                    expected_plan_sha256=sha256(deployment_plan_bytes(plan) + b"\n").hexdigest(),
-                )
-
+                start_deployment(repository, "production",
+                    expected_plan_sha256=sha256(deployment_plan_bytes(plan) + b"\n").hexdigest())
             verify_hf.assert_not_called()
             verify_chf.assert_not_called()
             ensure_volumes.assert_not_called()
             compose_up.assert_not_called()
 
-    def test_startup_credential_must_match_provider_and_private_posture(self) -> None:
-        with TemporaryDirectory() as temporary:
-            state = Path(temporary)
-            credential = state / "signing.private.json"
-            credential.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
-            credential.chmod(0o600)
-            provider_deployment._admit_installed_credential(
-                state,
-                "provider:nmrpeak",
-            )
-            with self.assertRaisesRegex(
-                DeploymentOperationRejected,
-                "another provider",
-            ):
-                provider_deployment._admit_installed_credential(
-                    state,
-                    "provider:other",
-                )
-            credential.chmod(0o644)
-            with self.assertRaisesRegex(
-                DeploymentOperationRejected,
-                "exact private access",
-            ):
-                provider_deployment._admit_installed_credential(
-                    state,
-                    "provider:nmrpeak",
-                )
 
-    def test_interpreter_config_grants_only_one_bounded_toml_tree(self) -> None:
+    def test_interpreter_config_capture_keeps_exact_bounded_source_bytes(self) -> None:
         with TemporaryDirectory() as temporary:
             state = Path(temporary)
             directory = state / "openai-chat-completions.d"
             directory.mkdir(mode=0o700)
             endpoint = directory / "10-primary.toml"
-            endpoint.write_text(
-                'id="primary"\nbase_url="https://example.test"\n'
-                'api_key="secret"\nmodel="model"\n',
-                encoding="utf-8",
-            )
+            source = b'id="primary"\nbase_url="https://example.test"\napi_key="secret"\nmodel="model"\n'
+            endpoint.write_bytes(source)
             endpoint.chmod(0o600)
-            with (
-                patch.object(
-                    provider_deployment,
-                    "_read_acl",
-                    return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_grant_provider_tree_access",
-                ) as grant,
-            ):
-                provider_deployment._admit_interpreter_configs(state)
-            grant.assert_called_once_with(directory)
-
-            with (
-                patch.object(
-                    provider_deployment,
-                    "_read_acl",
-                    return_value=provider_deployment._PROVIDER_READONLY_FILE_ACL,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_grant_provider_tree_access",
-                ) as grant,
-            ):
-                provider_deployment._admit_interpreter_configs(state)
-            grant.assert_called_once_with(directory)
-
-            with (
-                patch.object(
-                    provider_deployment,
-                    "_read_acl",
-                    return_value=("user::rwx",),
-                ),
-                self.assertRaisesRegex(
-                    DeploymentOperationRejected,
-                    "operator-installed mode-0600 file",
-                ),
-            ):
-                provider_deployment._admit_interpreter_configs(state)
-
+            with patch.object(provider_deployment, "_read_acl",
+                              return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL):
+                self.assertEqual(provider_deployment._capture_interpreter_inputs(state),
+                                 {"interpreter/10-primary.toml": source})
             (directory / "README").write_text("unexpected", encoding="utf-8")
-            with (
-                patch.object(
-                    provider_deployment,
-                    "_read_acl",
-                    return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL,
-                ),
-                self.assertRaisesRegex(
-                    DeploymentOperationRejected,
-                    "filename must end in .toml",
-                ),
-            ):
-                provider_deployment._admit_interpreter_configs(state)
+            with patch.object(provider_deployment, "_read_acl",
+                              return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL), \
+                 self.assertRaisesRegex(DeploymentOperationRejected, "non-TOML entry"):
+                provider_deployment._capture_interpreter_inputs(state)
 
-    def test_credential_install_is_idempotent_and_replaces_only_while_stopped(
-        self,
-    ) -> None:
-        with render_repository() as repository, TemporaryDirectory() as temporary:
-            api_root = Path(temporary).resolve()
-            source = write_api_credential(
-                api_root,
-                credential_bytes(Ed25519PrivateKey.generate()),
-            )
-            destination = install_provider_credential(
-                repository,
-                "production",
-                api_root,
-            )
-            original_inode = destination.stat().st_ino
-            self.assertEqual(destination.read_bytes(), source.read_bytes())
-            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
-            self.assertEqual(
-                provider_deployment._read_acl(
-                    destination,
-                    "Provider signing credential",
-                ),
-                provider_deployment._PROVIDER_WRITABLE_FILE_ACL,
-            )
-            self.assertEqual(
-                install_provider_credential(repository, "production", api_root),
-                destination,
-            )
-            self.assertEqual(destination.stat().st_ino, original_inode)
-
-            replacement = credential_bytes(Ed25519PrivateKey.generate())
-            source.write_bytes(replacement)
-            source.chmod(0o600)
-            with self.assertRaisesRegex(
-                DeploymentOperationRejected,
-                "REPLACE=1",
-            ):
-                install_provider_credential(repository, "production", api_root)
-            self.assertNotEqual(destination.read_bytes(), replacement)
-
-            with (
-                patch.object(
-                    provider_deployment,
-                    "_inspect_project_containers",
-                    return_value={
-                        "provider": {"State": {"Running": True}},
-                    },
-                ),
-                self.assertRaisesRegex(
-                    DeploymentOperationRejected,
-                    "proved-stopped",
-                ),
-            ):
-                install_provider_credential(
-                    repository,
-                    "production",
-                    api_root,
-                    replace=True,
-                )
-            self.assertNotEqual(destination.read_bytes(), replacement)
-
-            with patch.object(
-                provider_deployment,
-                "_inspect_project_containers",
-                return_value={
-                    "provider": {"State": {"Running": False}},
-                },
-            ):
-                install_provider_credential(
-                    repository,
-                    "production",
-                    api_root,
-                    replace=True,
-                )
-            self.assertEqual(destination.read_bytes(), replacement)
-
-    def test_credential_install_rejects_ambiguous_or_symlinked_api_artifacts(
-        self,
-    ) -> None:
-        with render_repository() as repository, TemporaryDirectory() as temporary:
-            api_root = Path(temporary).resolve()
-            run_document = credential_document(Ed25519PrivateKey.generate())
-            write_api_credential(
-                api_root,
-                canonical_json_bytes(run_document) + b"\n",
-            )
-            dev_document = {**run_document, "profile": "dev"}
-            write_api_credential(
-                api_root,
-                canonical_json_bytes(dev_document) + b"\n",
-                profile="dev",
-            )
-            with self.assertRaisesRegex(
-                DeploymentOperationRejected,
-                "exactly one matching",
-            ):
-                install_provider_credential(repository, "production", api_root)
-
-        with render_repository() as repository, TemporaryDirectory() as temporary:
-            api_root = Path(temporary).resolve()
-            outside = api_root / "outside.json"
-            outside.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
-            outside.chmod(0o600)
-            candidate = api_root / "secrets/run/providers/nmrpeak/signing.private.json"
-            candidate.parent.mkdir(parents=True)
-            candidate.symlink_to(outside)
-            with self.assertRaisesRegex(
-                DeploymentOperationRejected,
-                "path is invalid",
-            ):
-                install_provider_credential(repository, "production", api_root)
 
     def test_compose_up_consumes_the_exact_normalized_plan(self) -> None:
         with render_repository() as repository:
@@ -883,25 +485,21 @@ class ProviderDeploymentTests(unittest.TestCase):
 
     def test_cli_names_missing_and_forbidden_operation_options(self) -> None:
         cases = (
-            (["config", "localhost", "--replace"], "config does not accept --replace"),
-            (
-                ["credential-install", "localhost", "--confirm", "x"],
-                "requires --nmr-api-v1; does not accept --confirm",
-            ),
+            (["config", "localhost", "--replace"], "unrecognized arguments: --replace"),
             (["down", "localhost", "--confirm", "x"], "down does not accept --confirm"),
             (
                 ["generation-remove", "localhost", "--nmr-api-v1", "/tmp/api"],
-                "requires --frozen-generation and --confirm; does not accept --nmr-api-v1",
+                "unrecognized arguments: --nmr-api-v1 /tmp/api",
             ),
-            (["init", "localhost", "--replace"], "init does not accept --replace"),
+            (["init", "localhost", "--replace"], "unrecognized arguments: --replace"),
             (
                 ["journal-retire", "localhost", "--replace"],
-                "requires --confirm; does not accept --replace",
+                "unrecognized arguments: --replace",
             ),
             (["logs", "localhost", "--confirm", "x"], "logs does not accept --confirm"),
-            (["status", "localhost", "--replace"], "status does not accept --replace"),
+            (["status", "localhost", "--replace"], "unrecognized arguments: --replace"),
             (["up", "localhost", "--expected-plan-sha256", "0" * 64, "--replace"],
-             "up does not accept --replace"),
+             "unrecognized arguments: --replace"),
             (["up", "localhost"], "up requires --expected-plan-sha256"),
             (["config", "localhost", "--expected-plan-sha256", "0" * 64],
              "config does not accept --expected-plan-sha256"),
@@ -943,49 +541,6 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.assertIn("DeploymentOperationRejected: The Docker provider deployment operation", rendered)
         self.assertIn("Daemon socket permission denied", rendered)
         self.assertNotIn("actual-daemon-secret", rendered)
-
-    def test_localhost_render_selects_the_exact_overlay(self) -> None:
-        rendered = canonical_json_bytes(compose_document())
-        invocations: list[tuple[str, ...]] = []
-
-        def run(arguments: tuple[str, ...], **_kwargs: object):
-            invocations.append(arguments)
-            return subprocess.CompletedProcess(arguments, 0, rendered, b"")
-
-        with patch.object(subprocess, "run", side_effect=run):
-            provider_deployment._render_compose(
-                ROOT,
-                "localhost",
-                {"PATH": "/usr/bin:/bin"},
-                Path("/usr/bin/docker"),
-                localhost=True,
-            )
-            provider_deployment._render_compose(
-                ROOT,
-                "production",
-                {"PATH": "/usr/bin:/bin"},
-                Path("/usr/bin/docker"),
-                localhost=False,
-            )
-
-        localhost_files = [
-            invocations[0][index + 1]
-            for index, value in enumerate(invocations[0])
-            if value == "--file"
-        ]
-        public_files = [
-            invocations[1][index + 1]
-            for index, value in enumerate(invocations[1])
-            if value == "--file"
-        ]
-        self.assertEqual(
-            localhost_files,
-            [
-                str(ROOT / "compose/provider.yml"),
-                str(ROOT / "compose/provider-localhost.yml"),
-            ],
-        )
-        self.assertEqual(public_files, [str(ROOT / "compose/provider.yml")])
 
     def test_project_inspection_rejects_a_foreign_checkout(self) -> None:
         container_id = "a" * 64
@@ -1203,6 +758,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 Path("/usr/bin/docker"),
                 "production",
                 services,
+                route_volumes=(),
             )
 
         self.assertEqual(resources, (hf_volume, chf_volume, f"{project}_default"))
@@ -1260,6 +816,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 Path("/usr/bin/docker"),
                 ROOT,
                 "production",
+                route_volumes=(),
             )
 
         self.assertEqual(calls[0][-4:], ("stop", "--timeout", "600", "provider"))
@@ -1268,8 +825,8 @@ class ProviderDeploymentTests(unittest.TestCase):
             ("stop", "--timeout", "20", "hf-runner", "chf-runner"),
         )
         self.assertEqual(
-            calls[2][-5:],
-            ("down", "--timeout", "20", "--remove-orphans", "--volumes"),
+            calls[2][-4:],
+            ("down", "--timeout", "20", "--volumes"),
         )
         teardown = (ROOT / "compose/provider-teardown.yml").read_text()
         for retained_volume in (
@@ -1280,7 +837,7 @@ class ProviderDeploymentTests(unittest.TestCase):
         ):
             self.assertNotIn(retained_volume, teardown)
 
-    def test_private_ca_generation_removal_preserves_referenced_and_neighboring_state(
+    def test_generation_removal_preserves_referenced_and_neighboring_state(
         self,
     ) -> None:
         with render_repository() as repository:
@@ -1294,18 +851,17 @@ class ProviderDeploymentTests(unittest.TestCase):
             )
             neighbor = generation.parent / ("f" * 64)
             neighbor.mkdir(mode=0o700)
-            provider_config = repository / "config/deployments/production/provider.toml"
-            provider_config.write_bytes(
-                provider_config.read_bytes()
-                .replace(b"https://api.example.test", b"https://nmr.localhost:10443")
-                .replace(b'topology = "web"', b'topology = "dev-local"')
-                .replace(b"[server_a]\n", b"[server_a]\nuse_private_ca = true\n")
-            )
             with (
+                patch.object(provider_deployment, "_resolve_provider_image", return_value=IMAGES["provider"]),
                 patch.object(
                     provider_deployment,
                     "_inspect_project_containers",
                     return_value={},
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_journal_binding",
+                    return_value=(None, b"", plan.binding_projection),
                 ),
                 patch.object(
                     provider_deployment,
@@ -1326,10 +882,16 @@ class ProviderDeploymentTests(unittest.TestCase):
             self.assertTrue(generation.is_dir())
 
             with (
+                patch.object(provider_deployment, "_resolve_provider_image", return_value=IMAGES["provider"]),
                 patch.object(
                     provider_deployment,
                     "_inspect_project_containers",
                     return_value={},
+                ),
+                patch.object(
+                    provider_deployment,
+                    "_journal_binding",
+                    return_value=(None, b"", plan.binding_projection),
                 ),
                 patch.object(
                     provider_deployment,
@@ -1658,118 +1220,47 @@ class ProviderDeploymentTests(unittest.TestCase):
 
         reap.assert_called_once_with(holder)
 
-    def test_journal_retirement_removes_only_after_empty_complete_inventory(
-        self,
-    ) -> None:
+    def test_journal_retirement_removes_only_after_empty_complete_inventory(self) -> None:
+        from contextlib import contextmanager
+        from nmrpeak_provider.provider_config import decode_provider_template
         with render_repository() as repository:
             plan = test_plan(repository)
             materialize_deployment_plan(repository, "production", plan)
-            credential = (
-                repository
-                / "secrets/deployments/production/signing.private.json"
-            )
-            credential.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
-            credential.chmod(0o600)
             journal = "nmrpeak-production-journal-v1"
-            image = LocalImage("sha256:" + "1" * 64, "sha256:" + "2" * 64)
-
-            for inventory, message in (
-                (AttemptInventoryReadFailed(object()), "complete Attempt inventory"),
-                (AttemptInventory((object(),)), "in-progress Attempts"),
-            ):
-                with (
-                    patch.object(
-                        provider_deployment,
-                        "_inspect_project_containers",
-                        return_value={},
-                    ),
-                    patch.object(
-                        provider_deployment,
-                        "inspect_provider_journal_volume",
-                        return_value=(journal, ()),
-                    ),
-                    patch.object(
-                        provider_deployment,
-                        "inspect_provider_identity_lock_volume",
-                        return_value="nmrpeak-provider-lock-test",
-                    ),
-                    patch.object(
-                        provider_deployment,
-                        "_resolve_provider_image",
-                        return_value=image,
-                    ),
-                    patch.object(
-                        provider_deployment,
-                        "_held_provider_identity_lock",
-                        return_value=nullcontext(),
-                    ),
-                    patch.object(
-                        provider_deployment,
-                        "read_attempt_inventory",
-                        return_value=inventory,
-                    ),
-                    patch.object(
-                        provider_deployment,
-                        "remove_provider_journal_volume",
-                    ) as remove,
-                    self.assertRaisesRegex(DeploymentOperationRejected, message),
-                ):
-                    retire_provider_journal(repository, "production", journal)
-                remove.assert_not_called()
-
+            image = IMAGES["provider"]
+            policy = decode_provider_template((repository / "config/deployments/production/provider.toml").read_bytes())
+            events: list[str] = []
+            @contextmanager
+            def held_route(*_args, **_kwargs):
+                events.append("route-start")
+                yield policy, plan.binding_projection, Path("/tmp/captured-api")
+                events.append("route-cleanup")
+            @contextmanager
+            def held_identity(*_args, **_kwargs):
+                events.append("identity-lock-start")
+                yield
+                events.append("identity-lock-release")
+            def run_client(*_args, **_kwargs):
+                events.append("inventory")
+                return b"complete-empty\n"
+            def remove(*args):
+                events.append("delete")
+                return journal
             with (
-                patch.object(
-                    provider_deployment,
-                    "_inspect_project_containers",
-                    return_value={},
-                ),
-                patch.object(
-                    provider_deployment,
-                    "inspect_provider_journal_volume",
-                    return_value=(journal, ()),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "inspect_provider_identity_lock_volume",
-                    return_value="nmrpeak-provider-lock-test",
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_resolve_provider_image",
-                    return_value=image,
-                ),
-                patch.object(
-                    provider_deployment,
-                    "_held_provider_identity_lock",
-                    return_value=nullcontext(),
-                ) as held,
-                patch.object(
-                    provider_deployment,
-                    "read_attempt_inventory",
-                    return_value=AttemptInventory(()),
-                ),
-                patch.object(
-                    provider_deployment,
-                    "remove_provider_journal_volume",
-                    return_value=journal,
-                ) as remove,
+                patch.object(provider_deployment, "_inspect_project_containers", return_value={}),
+                patch.object(provider_deployment, "_journal_binding", return_value=(policy, b"", plan.binding_projection)),
+                patch.object(provider_deployment, "inspect_provider_journal_volume", return_value=(journal, ())),
+                patch.object(provider_deployment, "inspect_provider_identity_lock_volume", return_value="nmrpeak-provider-lock-test"),
+                patch.object(provider_deployment, "_resolve_provider_image", return_value=image),
+                patch.object(provider_deployment, "_held_provider_identity_lock", side_effect=held_identity),
+                patch.object(provider_deployment, "_held_maintenance_api_route", side_effect=held_route),
+                patch.object(provider_deployment, "_run_journal_api_client", side_effect=run_client),
+                patch.object(provider_deployment, "remove_provider_journal_volume", side_effect=remove) as remove_volume,
             ):
-                self.assertEqual(
-                    retire_provider_journal(repository, "production", journal),
-                    journal,
-                )
-            held.assert_called_once_with(
-                Path("/usr/bin/docker"),
-                "nmrpeak-provider-lock-test",
-                "provider:nmrpeak",
-                image,
-            )
-            remove.assert_called_once_with(
-                Path("/usr/bin/docker"),
-                "production",
-                "provider:nmrpeak",
-                "sha256:1961d55ea350b47586f7208f5ab84a2be2214bdfe3700033d41c3a07e11d05ce",
-            )
+                self.assertEqual(retire_provider_journal(repository, "production", journal), journal)
+            self.assertEqual(events, ["identity-lock-start", "route-start", "inventory", "route-cleanup", "delete", "identity-lock-release"])
+            remove_volume.assert_called_once_with(Path("/usr/bin/docker"), "production", "provider:nmrpeak", plan.binding_projection["journal_authority_id"])
+
 
 
 class committed_repository:
@@ -1785,7 +1276,7 @@ class committed_repository:
         )
         (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
         (root / ".gitignore").write_text(
-            "/config/deployments/\n",
+            "/config/deployments/\n/secrets/\n",
             encoding="utf-8",
         )
         subprocess.run(("git", "init", "-q", str(root)), check=True)
@@ -1828,9 +1319,23 @@ class render_repository:
         )
         for relative in paths:
             (root / relative).mkdir(parents=True, exist_ok=True)
-        (root / "config/deployments/production/provider.toml").write_bytes(
-            (ROOT / "config/provider.toml.example").read_bytes()
+        self.external = TemporaryDirectory()
+        external = Path(self.external.name).resolve()
+        credential = external / "first.json"
+        credential.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
+        credential.chmod(0o600)
+        definition = external / "bindings.toml"
+        definition.write_text(
+            DEFINITION.replace('name = "first"', 'name = "first"', 1)
+            .replace('/run/credentials/first.json', str(credential)),
+            encoding="utf-8",
         )
+        definition.chmod(0o600)
+        provider_template = (ROOT / "config/provider.toml.example").read_bytes()
+        provider_template = provider_template.replace(
+            b"/absolute/path/to/shared-bindings.toml", str(definition).encode("utf-8")
+        ).replace(b'name = "nmrpeak"', b'name = "first"')
+        (root / "config/deployments/production/provider.toml").write_bytes(provider_template)
         (root / "config/deployments/production/deployment.toml").write_text(
             selection(),
             encoding="utf-8",
@@ -1867,6 +1372,7 @@ class render_repository:
         )
         (root / "compose/provider.yml").write_text("test fixture\n", encoding="utf-8")
         archive.unlink()
+        (root / ".gitignore").write_text("/secrets/\n", encoding="utf-8")
         subprocess.run(("git", "init", "-q", str(root)), check=True)
         subprocess.run(("git", "-C", str(root), "add", "."), check=True)
         subprocess.run(
@@ -1884,23 +1390,52 @@ class render_repository:
             ),
             check=True,
         )
+        endpoint_root = root / "secrets/deployments/production/openai-chat-completions.d"
+        endpoint_root.mkdir(parents=True, mode=0o700)
+        for directory in (root / "secrets", root / "secrets/deployments", endpoint_root.parent, endpoint_root):
+            directory.chmod(0o700)
+        endpoint = endpoint_root / "10-primary.toml"
+        endpoint.write_text('id="primary"\nbase_url="https://example.test"\napi_key="test-secret"\nmodel="model"\n', encoding="utf-8")
+        endpoint.chmod(0o600)
+        self._projection_patch = patch.object(provider_deployment, "_contained_binding_projection", side_effect=self._project_binding)
+        self._projection_patch.start()
+        self._validate_patch = patch.object(provider_deployment, "_validate_captured_runtime", side_effect=self._validate_captured)
+        self._validate_patch.start()
         return root
 
+    def _project_binding(self, _docker, image, definition, binding_name, namespace, *, input_sources):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "bindings.toml"
+            path.write_bytes(definition)
+            path.chmod(0o600)
+            image_id = image.image_id if isinstance(image, LocalImage) else image
+            return project_provider_binding(path, binding_name, image=image_id,
+                                            namespace=namespace, input_sources=input_sources)
+
+    def _validate_captured(self, _docker, image, files, *, arguments=("validate",)):
+        import tomllib
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "bindings.toml"
+            path.write_bytes(files["bindings.toml"])
+            path.chmod(0o600)
+            image_id = image.image_id if isinstance(image, LocalImage) else image
+            name = "first"
+            projection = project_provider_binding(path, name, image=image_id,
+                namespace="nmrpeak-fixture", input_sources={})
+        if arguments == ("validate",):
+            configured = tomllib.loads(files["provider.toml"].decode("utf-8"))
+            return {key: projection[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")} | {
+                "frozen_generation_id": configured["frozen_generation_id"],
+                "proxy_socket": configured["api_route"]["proxy_socket"],
+            }
+        proxy_socket = arguments[arguments.index("--proxy-socket") + 1]
+        return {key: projection[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")} | {"proxy_socket": proxy_socket}
+
     def __exit__(self, *exc_info: object) -> None:
+        self._validate_patch.stop()
+        self._projection_patch.stop()
+        self.external.cleanup()
         self.temporary.cleanup()
-
-
-def write_api_credential(
-    api_root: Path,
-    content: bytes,
-    *,
-    profile: str = "run",
-) -> Path:
-    path = api_root / f"secrets/{profile}/providers/nmrpeak/signing.private.json"
-    path.parent.mkdir(parents=True)
-    path.write_bytes(content)
-    path.chmod(0o600)
-    return path
 
 
 def selection() -> str:
@@ -1929,82 +1464,67 @@ def compose_for_environment(
     deployment: str,
     environment: dict[str, str],
     *,
-    localhost: bool = False,
+    binding_projection: dict,
 ) -> dict[str, object]:
-    document = compose_document()
+    document = compose_document(binding_projection)
+    provider = document["services"]["provider"]
+    client_mount = binding_projection["api_route"]["client_mount"]
+    delivery_target = str(Path(binding_projection["delivery"]["socket_path"]).parent)
+    provider["volumes"] = [mount for mount in provider["volumes"]
+                           if mount["target"] not in {client_mount["target"], delivery_target}]
+    provider.pop("depends_on", None)
+    provider.pop("group_add", None)
+    document["volumes"].pop(client_mount["source"], None)
+    document["volumes"].pop("delivery-ipc", None)
+    for name in binding_projection["api_route"]["compose"]["services"]:
+        document["services"].pop(name)
+    for name in binding_projection["api_route"]["compose"]["networks"]:
+        document["networks"].pop(name)
     document["name"] = f"nmrpeak-{deployment}"
     services = document["services"]
     services["provider"]["image"] = environment["PROVIDER_IMAGE_REF"]
     services["hf-runner"]["image"] = environment["HF_RUNNER_IMAGE_REF"]
     services["chf-runner"]["image"] = environment["CHF_RUNNER_IMAGE_REF"]
-    services["hf-runner"]["command"] = [
-        "--checkpoint-ref",
-        environment["HF_CHECKPOINT_REF"],
-        "--image-input-id",
-        environment["HF_RUNNER_IMAGE_INPUT_ID"],
-    ]
-    services["chf-runner"]["command"] = [
-        "--checkpoint-ref",
-        environment["CHF_CHECKPOINT_REF"],
-        "--image-input-id",
-        environment["CHF_RUNNER_IMAGE_INPUT_ID"],
-    ]
-    provider_mounts = services["provider"]["volumes"]
-    provider_mounts[0]["source"] = environment["PROVIDER_CONFIG_PATH"]
-    provider_mounts[1]["source"] = environment["PROVIDER_CREDENTIAL_PATH"]
-    provider_mounts[2]["source"] = environment["FROZEN_GENERATION_PATH"]
-    provider_mounts[7]["source"] = environment["INTERPRETER_CONFIG_PATH"]
-    if localhost:
-        services["provider"]["extra_hosts"] = ["nmr.localhost=host-gateway"]
-        provider_mounts.append(
-            {
-                "type": "bind",
-                "source": environment["LOCALHOST_CA_CERTIFICATE_PATH"],
-                "target": "/run/config/nmrpeak-provider/server-a-ca.crt",
-                "read_only": True,
-            }
-        )
-    return document
+    services["hf-runner"]["command"] = ["--checkpoint-ref", environment["HF_CHECKPOINT_REF"],
+                                          "--image-input-id", environment["HF_RUNNER_IMAGE_INPUT_ID"]]
+    services["chf-runner"]["command"] = ["--checkpoint-ref", environment["CHF_CHECKPOINT_REF"],
+                                           "--image-input-id", environment["CHF_RUNNER_IMAGE_INPUT_ID"]]
+    runtime = next(mount for mount in services["provider"]["volumes"]
+                   if mount["target"] == "/run/config/nmrpeak-provider")
+    runtime["source"] = environment["PROVIDER_RUNTIME_DIRECTORY"]
+    frozen = next(mount for mount in services["provider"]["volumes"]
+                  if mount["target"] == "/run/nmrpeak-provider/frozen")
+    frozen["source"] = environment["FROZEN_GENERATION_PATH"]
+    normalized = provider_deployment._compose_binding_route(document, binding_projection)
+    normalized["services"]["provider"]["depends_on"] = {
+        role: facts | {"required": True}
+        for role, facts in normalized["services"]["provider"]["depends_on"].items()
+    }
+    return normalized
 
 
 def test_plan(repository: Path) -> DeploymentPlan:
     with (
-        patch.object(
-            provider_deployment,
-            "_image_input_ids",
-            return_value=INPUTS,
-        ),
-        patch.object(
-            provider_deployment,
-            "_local_images",
-            return_value=IMAGES,
-        ),
-        patch.object(
-            provider_deployment,
-            "_render_compose",
-            side_effect=lambda _, deployment, environment, __, *, localhost: (
-                compose_for_environment(
-                    deployment,
-                    environment,
-                    localhost=localhost,
-                )
-            ),
-        ),
+        patch.object(provider_deployment, "_image_input_ids", return_value=INPUTS),
+        patch.object(provider_deployment, "_local_images", return_value=IMAGES),
+        patch.object(provider_deployment, "_render_compose",
+                     side_effect=lambda _, deployment, environment, __, *, binding_projection:
+                         compose_for_environment(deployment, environment, binding_projection=binding_projection)),
     ):
         return render_deployment_plan(repository, "production")
 
 
 def ready_services(plan: DeploymentPlan) -> dict[str, dict[str, object]]:
-    return {
-        service: {
-            "Image": plan.compose["services"][service]["image"],
-            "State": {
-                "Status": "running",
-                **({"Health": {"Status": "healthy"}} if service == "provider" else {}),
-            },
-        }
-        for service in ("provider", "hf-runner", "chf-runner")
-    }
+    ready = {}
+    for service in plan.compose["services"]:
+        if service == "api-init":
+            state = {"Status": "exited", "ExitCode": 0}
+        else:
+            state = {"Status": "running"}
+            if service in {"provider", "api"}:
+                state["Health"] = {"Status": "healthy"}
+        ready[service] = {"Image": plan.compose["services"][service]["image"], "State": state}
+    return ready
 
 
 if __name__ == "__main__":

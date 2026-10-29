@@ -20,7 +20,6 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from nmrpeak_provider.canonical_json import canonical_json_bytes
-from nmrpeak_provider.provider_credential import parse_provider_signing_credential
 from nmrpeak_provider.provider_identity_lock import (
     ProviderIdentityLock,
     ProviderIdentityLockBusy,
@@ -30,50 +29,68 @@ from nmrpeak_provider.provider_identity_lock import (
 PROVIDER_REF = "provider:nmrpeak"
 
 
-class ProviderCredentialTests(unittest.TestCase):
-    def test_valid_document_returns_the_matching_private_capability(self) -> None:
-        private_key = Ed25519PrivateKey.generate()
-        credential = parse_provider_signing_credential(credential_bytes(private_key))
-        message = b"provider startup proof"
-
-        credential.private_key.public_key().verify(
-            credential.private_key.sign(message),
-            message,
-        )
-        self.assertEqual(credential.profile, "run")
-        self.assertEqual(credential.provider_ref, PROVIDER_REF)
-        self.assertEqual(credential.credential_ref, "credential:run-nmrpeak-ed25519")
-
-    def test_shape_identity_and_canonical_spelling_are_closed(self) -> None:
-        private_key = Ed25519PrivateKey.generate()
-        valid = credential_document(private_key)
-        invalid = (
-            {**valid, "extra": True},
-            {**valid, "profile": "staging"},
-            {**valid, "principal_ref": "principal:user:test"},
-            {**valid, "credential_ref": "credential:contains space"},
-        )
-        for document in invalid:
-            with self.subTest(document=document), self.assertRaises(ValueError):
-                parse_provider_signing_credential(
-                    canonical_json_bytes(document) + b"\n"
-                )
-        with self.assertRaisesRegex(ValueError, "canonical JSON"):
-            parse_provider_signing_credential(b'{"schema_id": "drift"}\n')
-
-    def test_mismatched_public_and_private_keys_are_rejected(self) -> None:
-        document = credential_document(Ed25519PrivateKey.generate())
-        other = Ed25519PrivateKey.generate().public_key().public_bytes(
-            Encoding.DER,
-            PublicFormat.SubjectPublicKeyInfo,
-        )
-        document["public_key_spki_der_b64"] = b64encode(other).decode("ascii")
-
-        with self.assertRaisesRegex(ValueError, "keys do not match"):
-            parse_provider_signing_credential(canonical_json_bytes(document) + b"\n")
-
-
 class ProviderIdentityLockTests(unittest.TestCase):
+    def test_failed_close_remains_visible_without_retrying_a_reused_descriptor(self):
+        failure = OSError("Descriptor release acknowledgement failed")
+        with lock_file() as path, root_owned_lock_status(path):
+            owner = ProviderIdentityLock.acquire(path, PROVIDER_REF)
+            real_close = os.close
+            replacement = []
+
+            def close_then_reuse(descriptor):
+                real_close(descriptor)
+                reopened = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+                if reopened != descriptor:
+                    os.dup2(reopened, descriptor)
+                    real_close(reopened)
+                replacement.append(descriptor)
+                raise failure
+
+            try:
+                with patch("nmrpeak_provider.provider_identity_lock.os.close", side_effect=close_then_reuse) as close:
+                    for _ in range(2):
+                        with self.assertRaises(OSError) as caught:
+                            owner.close()
+                        self.assertIs(caught.exception, failure)
+                    close.assert_called_once()
+                self.assertTrue(stat.S_ISREG(os.fstat(replacement[0]).st_mode))
+            finally:
+                for descriptor in replacement:
+                    real_close(descriptor)
+
+    def test_context_retains_the_primary_and_independent_close_failure(self):
+        primary = RuntimeError("Provider failed before cleanup")
+        cleanup = OSError("Descriptor close failed")
+        with lock_file() as path, root_owned_lock_status(path):
+            owner = ProviderIdentityLock.acquire(path, PROVIDER_REF)
+            real_close = os.close
+
+            def failed_close(descriptor):
+                real_close(descriptor)
+                raise cleanup
+
+            with patch("nmrpeak_provider.provider_identity_lock.os.close", side_effect=failed_close):
+                with self.assertRaises(BaseExceptionGroup) as caught:
+                    with owner:
+                        raise primary
+            self.assertEqual(caught.exception.exceptions, (primary, cleanup))
+
+    def test_admission_refusal_retains_an_independent_descriptor_close_failure(self):
+        cleanup = OSError("Refused descriptor close failed")
+        with lock_file(content=b"provider:other\n") as path, root_owned_lock_status(path):
+            real_close = os.close
+
+            def failed_close(descriptor):
+                real_close(descriptor)
+                raise cleanup
+
+            with patch("nmrpeak_provider.provider_identity_lock.os.close", side_effect=failed_close):
+                with self.assertRaises(BaseExceptionGroup) as caught:
+                    ProviderIdentityLock.acquire(path, PROVIDER_REF)
+            self.assertIsInstance(caught.exception.exceptions[0], ValueError)
+            self.assertIn("another provider", str(caught.exception.exceptions[0]))
+            self.assertIs(caught.exception.exceptions[1], cleanup)
+
     def test_lock_is_held_until_close_and_excludes_a_second_owner(self) -> None:
         with lock_file() as path, root_owned_lock_status(path):
             first = ProviderIdentityLock.acquire(path, PROVIDER_REF)

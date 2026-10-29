@@ -16,6 +16,7 @@ x-test-common: &test-common
     environment:
       HOME: /tmp
       NMRPEAK_TEST_CONTAINER: "1"
+      PROVIDER_CORE_IN_CONTAINER: "1"
       PYTHONHASHSEED: "0"
       PYTHONPATH: /workspace
       PYTHONSAFEPATH: "1"

@@ -12,6 +12,7 @@ ARG NO_PROXY
 ARG no_proxy
 
 ENV HOME=/tmp \
+    PROVIDER_CORE_IN_CONTAINER=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_COMPILE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -23,7 +24,7 @@ ENV HOME=/tmp \
     PYTHONUNBUFFERED=1
 
 WORKDIR /build
-COPY containers/test/os-packages.lock requirements.lock ./
+COPY containers/test/os-packages.lock ./
 RUN test -n "$HTTP_PROXY" && test "$HTTP_PROXY" = "$http_proxy" \
     && test -n "$HTTPS_PROXY" && test "$HTTPS_PROXY" = "$https_proxy" \
     && test -z "$NO_PROXY" && test -z "$no_proxy" \
@@ -32,6 +33,8 @@ RUN test -n "$HTTP_PROXY" && test "$HTTP_PROXY" = "$http_proxy" \
     && apt-get -o "Acquire::http::Proxy=$http_proxy" -o "Acquire::https::Proxy=$https_proxy" \
         install --no-install-recommends -y ${packages} \
     && rm -rf /var/lib/apt/lists/*
+COPY requirements.lock ./
+COPY dependencies/provider-core-api.lock dependencies/provider-core-source.txt dependencies/
 RUN python -m pip install --require-hashes --only-binary=:all: \
         --requirement requirements.lock \
     && python -m pip check \

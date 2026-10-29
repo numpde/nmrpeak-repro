@@ -3,3 +3,6 @@
 !nmrpeak_provider/**
 !pyproject.toml
 !requirements.lock
+!dependencies/
+!dependencies/provider-core-api.lock
+!dependencies/provider-core-source.txt

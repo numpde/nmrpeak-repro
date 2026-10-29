@@ -1,4 +1,4 @@
-"""Prove the committed NMR API provider release is exact and usable offline."""
+"""Prove the retained historical API source release is exact and usable offline."""
 
 from __future__ import annotations
 

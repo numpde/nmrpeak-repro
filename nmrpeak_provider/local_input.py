@@ -8,7 +8,7 @@ from enum import Enum
 import os
 from pathlib import Path
 import stat
-from typing import BinaryIO, Callable
+from typing import Callable
 
 
 class LocalInputFailureReason(Enum):
@@ -55,10 +55,7 @@ def read_bounded_regular_file(
     """Read one leaf without following it or blocking on a special file."""
 
     _require_request(path=path, maximum_bytes=maximum_bytes)
-    raw = _read_open_file(_open_file(path), maximum_bytes=maximum_bytes)
-    if len(raw) > maximum_bytes:
-        raise LocalInputSnapshotError(LocalInputFailureReason.TOO_LARGE)
-    return raw
+    return _read_open_file(_open_file(path), maximum_bytes=maximum_bytes)
 
 def read_ordered_bounded_regular_files(
     directory: Path,
@@ -100,7 +97,7 @@ def _read_directory_snapshot(
     maximum_files: int,
     maximum_file_bytes: int,
 ) -> tuple[bytes, ...]:
-    operation_succeeded = False
+    primary = None
     try:
         snapshot = _snapshot_selected_files(
             descriptor,
@@ -109,12 +106,14 @@ def _read_directory_snapshot(
             maximum_files=maximum_files,
             maximum_file_bytes=maximum_file_bytes,
         )
-        operation_succeeded = True
         return snapshot
+    except BaseException as error:
+        primary = error
+        raise
     finally:
         _close_owned(
             lambda: os.close(descriptor),
-            preserve_failure=not operation_succeeded,
+            primary=primary,
             failure_reason=LocalInputFailureReason.DIRECTORY_UNREADABLE,
         )
 
@@ -169,44 +168,51 @@ def _require_positive_limit(name: str, value: object) -> None:
 
 
 def _read_open_file(descriptor: int, *, maximum_bytes: int) -> bytes:
-    source = _open_regular_source(descriptor)
-    read_succeeded = False
+    primary = None
     try:
-        raw = source.read(maximum_bytes + 1)
-    except OSError as error:
-        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from error
-    else:
-        read_succeeded = True
+        try:
+            facts = os.fstat(descriptor)
+            if not stat.S_ISREG(facts.st_mode):
+                raise LocalInputSnapshotError(LocalInputFailureReason.NOT_REGULAR)
+            if facts.st_size > maximum_bytes:
+                raise LocalInputSnapshotError(LocalInputFailureReason.TOO_LARGE)
+            raw = bytearray()
+            while len(raw) <= maximum_bytes:
+                chunk = os.read(descriptor, min(65536, maximum_bytes + 1 - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+            if len(raw) > maximum_bytes:
+                raise LocalInputSnapshotError(LocalInputFailureReason.TOO_LARGE)
+            if len(raw) != facts.st_size:
+                raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE)
+            return bytes(raw)
+        except OSError as error:
+            raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from error
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        _close_owned(source.close, preserve_failure=not read_succeeded)
-    return raw
-
-
-def _open_regular_source(descriptor: int) -> BinaryIO:
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise LocalInputSnapshotError(LocalInputFailureReason.NOT_REGULAR)
-        source = os.fdopen(descriptor, "rb")
-        descriptor = -1
-        return source
-    except OSError as error:
-        raise LocalInputSnapshotError(LocalInputFailureReason.UNREADABLE) from error
-    finally:
-        if descriptor >= 0:
-            _close_owned(lambda: os.close(descriptor), preserve_failure=True)
+        _close_owned(lambda: os.close(descriptor), primary=primary)
 
 
 def _close_owned(
     close: Callable[[], object],
     *,
-    preserve_failure: bool,
+    primary: BaseException | None,
     failure_reason: LocalInputFailureReason = LocalInputFailureReason.UNREADABLE,
 ) -> None:
     try:
-        close()
-    except OSError as error:
-        if not preserve_failure:
+        try:
+            close()
+        except OSError as error:
             raise LocalInputSnapshotError(failure_reason) from error
+    except BaseException as cleanup:
+        if primary is not None and cleanup is not primary:
+            raise BaseExceptionGroup(
+                "Local input snapshot and independent cleanup failures", [primary, cleanup],
+            ) from None
+        raise
 
 
 def _open_file(path: Path) -> int:
@@ -259,7 +265,7 @@ def _select_and_close(
     maximum_entries: int,
     maximum_files: int,
 ) -> tuple[str, ...]:
-    scan_succeeded = False
+    primary = None
     try:
         names = _select_names_or_unreadable(
             entries,
@@ -267,11 +273,13 @@ def _select_and_close(
             maximum_entries=maximum_entries,
             maximum_files=maximum_files,
         )
-        scan_succeeded = True
+    except BaseException as error:
+        primary = error
+        raise
     finally:
         _close_owned(
             entries.close,
-            preserve_failure=not scan_succeeded,
+            primary=primary,
             failure_reason=LocalInputFailureReason.DIRECTORY_UNREADABLE,
         )
     return tuple(sorted(names))
@@ -334,8 +342,4 @@ def _read_directory_file(
         raise LocalInputSnapshotError(
             LocalInputFailureReason.INVALID_SELECTED_FILE
         ) from error
-    if len(raw) > maximum_bytes:
-        raise LocalInputSnapshotError(
-            LocalInputFailureReason.INVALID_SELECTED_FILE
-        )
     return raw

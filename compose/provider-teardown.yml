@@ -19,6 +19,14 @@ services:
     volumes:
       - chf-session:/run/nmrpeak
 
+  api:
+    image: numpde/nmrpeak-teardown-only
+    stop_grace_period: 15s
+
+  api-init:
+    image: numpde/nmrpeak-teardown-only
+    stop_grace_period: 10s
+
 volumes:
   hf-session:
     driver: local

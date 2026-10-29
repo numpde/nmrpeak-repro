@@ -9,7 +9,6 @@ import zipfile
 
 from nmrpeak_provider.frozen_generation import load_frozen_generation
 from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
-from nmrpeak_provider.provider_config import decode_provider_runtime_config
 from repository_checks.chf_release import ARCHIVE_MEMBER as CHF_MEMBER
 from repository_checks.chf_release import candidate_release_bytes as chf_release_bytes
 from repository_checks.hf_release import ARCHIVE_MEMBER as HF_MEMBER
@@ -25,7 +24,7 @@ from repository_checks.deployment_topology import (
     DeploymentImages,
     project_deployment_topology,
 )
-from tests.unit.test_deployment_topology import compose_document
+from tests.unit.test_deployment_topology import BINDING, compose_document
 from tests.unit.test_frozen_generation import materialized_generation
 
 
@@ -71,7 +70,6 @@ class NamedDeploymentTests(unittest.TestCase):
                     chf_release_declaration=chf_declaration,
                     upstream_revision=SOURCE_REVISION,
                 ),
-                provider_config_template=(ROOT / "config/provider.toml.example").read_bytes(),
                 hf_image_input_id=HF_IMAGE_INPUT,
                 chf_image_input_id=CHF_IMAGE_INPUT,
                 hf_hello=b"HF description",
@@ -86,12 +84,10 @@ class NamedDeploymentTests(unittest.TestCase):
                         "sha256:" + "5" * 64,
                         "sha256:" + "6" * 64,
                     ),
-                    checkpoints,
+                    checkpoints, binding_projection=BINDING,
                 ),
             )
 
-        configured = decode_provider_runtime_config(rendered.provider_config)
-        self.assertEqual(configured.frozen_generation_id, rendered.frozen_generation_id)
         with materialized_generation(rendered.manifest, rendered.files) as generation:
             loaded = load_frozen_generation(
                 generation,

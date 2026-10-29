@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 FROM ghcr.io/astral-sh/uv@sha256:440fd6477af86a2f1b38080c539f1672cd22acb1b1a47e321dba5158ab08864d AS uv
-FROM docker.io/library/python:3.11.14-slim-bookworm@sha256:83f339c1be6340ae1096010fdccf6552ac932d8f410d45d206014916bdf37e48
+FROM docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487
 
 RUN groupadd --gid 65532 nmrpeak \
     && useradd --uid 65532 --gid 65532 --home-dir /nonexistent \
@@ -11,7 +11,7 @@ RUN groupadd --gid 65532 nmrpeak \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libbsd0=0.11.7-2 \
-        libexpat1=2.5.0-1+deb12u2 \
+        libexpat1=2.5.0-1+deb12u5 \
         libmd0=1.0.4-2 \
         libx11-6=2:1.8.4-2+deb12u2 \
         libx11-data=2:1.8.4-2+deb12u2 \

@@ -1,10 +1,10 @@
-"""Durable Attempt obligations and restart decisions, independent of storage."""
+"""Read exact historical Attempt obligations without live recovery authority."""
 
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from hashlib import sha256
@@ -16,20 +16,7 @@ from .canonical_json import (
     canonical_json_bytes,
     parse_canonical_json_bytes,
 )
-from .provider_https import ProviderOperation
-from ._nmr_api_failure_contract import CONFLICT_RECOVERY, EVIDENCE
-from ._nmr_api_failures import _text as admitted_evidence_text
-from .provider_requests import (
-    _PreparedProviderRequest,
-    prepare_execution_attempt_complete,
-    prepare_execution_attempt_fail,
-)
-from .provider_success import (
-    AttemptState,
-    ExecutionAttemptSnapshot,
-    ExecutionAttemptStarted,
-    JobState,
-)
+from .journal_evidence import CONFLICT_RECOVERY, EVIDENCE, admitted_evidence_text
 
 
 _SCHEMA_ID_V1 = "nmrpeak.attempt_journal_record.v1"
@@ -37,6 +24,7 @@ _SCHEMA_ID_V2 = "nmrpeak.attempt_journal_record.v2"
 _JOB_REF = re.compile(r"job:[A-Za-z0-9_.-]{1,124}")
 _ATTEMPT_KEY = re.compile(r"nmrpeak-provider\.v1:[0-9a-f]{64}")
 _ATTEMPT_REF = re.compile(r"execution_attempt:sha256:[0-9a-f]{64}")
+_HISTORICAL_FAILURE_CODE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 _SHA256_REF = re.compile(r"sha256:[0-9a-f]{64}")
 MAX_JOURNAL_RECORD_BYTES = 2_900_000
 _DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}", re.ASCII)
@@ -405,180 +393,6 @@ def _parse_diagnostic(value: object) -> LatestDiagnostic:
     )
 
 
-def bind_started_attempt(
-    record: StartPending,
-    receipt: ExecutionAttemptStarted,
-) -> ActiveAttempt:
-    """Bind a validated in-progress start receipt to retained start facts."""
-
-    if type(record) is not StartPending or type(receipt) is not ExecutionAttemptStarted:
-        raise TypeError("Attempt start binding requires retained facts and a receipt")
-    if receipt.job_ref != record.job_ref:
-        raise ValueError("Attempt start receipt does not match the journal Job")
-    if receipt.state is not AttemptState.IN_PROGRESS:
-        raise ValueError("Attempt start receipt is already terminal")
-    return ActiveAttempt(
-        **_common_record_values(record),
-        execution_attempt_ref=receipt.execution_attempt_ref,
-        local_phase=LocalExecutionPhase.PRE_EXECUTION,
-    )
-
-
-def mark_execution_entered(record: ActiveAttempt) -> ActiveAttempt:
-    """Persist the point after which restart must not rerun model execution."""
-
-    if type(record) is not ActiveAttempt:
-        raise TypeError("Execution entry requires an active Attempt record")
-    if record.local_phase is not LocalExecutionPhase.PRE_EXECUTION:
-        raise ValueError("Attempt execution has already been entered")
-    return replace(record, local_phase=LocalExecutionPhase.EXECUTION_ENTERED)
-
-
-def retain_terminal_command(
-    record: ActiveAttempt,
-    prepared: _PreparedProviderRequest,
-) -> TerminalPending:
-    """Replace local execution state with one exact terminal replay obligation."""
-
-    if type(record) is not ActiveAttempt:
-        raise TypeError("Terminal selection requires an active Attempt record")
-    operation = {
-        ProviderOperation.EXECUTION_ATTEMPT_COMPLETE: TerminalOperation.COMPLETE,
-        ProviderOperation.EXECUTION_ATTEMPT_FAIL: TerminalOperation.FAIL,
-    }.get(prepared.operation)
-    if operation is None:
-        raise ValueError("Attempt journal accepts only complete or fail commands")
-    return TerminalPending(
-        **_common_record_values(record),
-        execution_attempt_ref=record.execution_attempt_ref,
-        terminal_operation=operation,
-        local_phase=record.local_phase,
-        terminal_request_body=prepared.body,
-        terminal_request_fingerprint=_fingerprint(prepared.body),
-        latest_diagnostic=record.latest_diagnostic,
-    )
-
-
-def prepared_terminal_replay(record: TerminalPending) -> _PreparedProviderRequest:
-    """Restore fixed route metadata around the exact retained terminal body."""
-
-    if type(record) is not TerminalPending:
-        raise TypeError("Terminal replay requires a retained terminal obligation")
-    operation, path = {
-        TerminalOperation.COMPLETE: (
-            ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
-            "/provider/v1/execution-attempts/complete",
-        ),
-        TerminalOperation.FAIL: (
-            ProviderOperation.EXECUTION_ATTEMPT_FAIL,
-            "/provider/v1/execution-attempts/fail",
-        ),
-    }[record.terminal_operation]
-    return _PreparedProviderRequest(
-        operation=operation,
-        method="POST",
-        path=path,
-        query="",
-        body=record.terminal_request_body,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class ReplayStart:
-    record: StartPending
-
-
-@dataclass(frozen=True, slots=True)
-class ResumePreExecution:
-    record: ActiveAttempt
-
-
-@dataclass(frozen=True, slots=True)
-class PublishInterruptedFailure:
-    record: ActiveAttempt
-    failure_code: str = "provider_execution_interrupted"
-
-
-@dataclass(frozen=True, slots=True)
-class ObserveUntilExpiry:
-    record: ActiveAttempt
-
-
-@dataclass(frozen=True, slots=True)
-class ReplayTerminal:
-    record: TerminalPending
-
-
-@dataclass(frozen=True, slots=True)
-class RetainTerminalConflict:
-    record: TerminalPending
-
-
-@dataclass(frozen=True, slots=True)
-class RetireResolved:
-    record: ActiveAttempt | TerminalPending
-    server_state: AttemptState
-
-
-RestartDecision = (
-    ReplayStart
-    | ResumePreExecution
-    | PublishInterruptedFailure
-    | ObserveUntilExpiry
-    | ReplayTerminal
-    | RetainTerminalConflict
-    | RetireResolved
-)
-
-
-def decide_restart(
-    record: AttemptJournalRecord,
-    snapshot: ExecutionAttemptSnapshot | None,
-) -> RestartDecision:
-    """Choose the only admitted restart action from durable and server facts."""
-
-    _require_record(record)
-    if type(record) is StartPending:
-        if snapshot is not None:
-            raise ValueError("A pending start cannot have a bound Attempt snapshot")
-        return ReplayStart(record)
-    if type(snapshot) is not ExecutionAttemptSnapshot:
-        raise TypeError("A bound journal Attempt requires an authoritative snapshot")
-    if (
-        snapshot.execution_attempt_ref != record.execution_attempt_ref
-        or snapshot.job_ref != record.job_ref
-    ):
-        raise ValueError("Attempt snapshot identity does not match the journal record")
-    if type(record) is TerminalPending:
-        return _terminal_restart(record, snapshot)
-    if snapshot.state is not AttemptState.IN_PROGRESS:
-        return RetireResolved(record, snapshot.state)
-    if snapshot.job_state is not JobState.OPEN:
-        return ObserveUntilExpiry(record)
-    if record.local_phase is LocalExecutionPhase.PRE_EXECUTION:
-        return ResumePreExecution(record)
-    return PublishInterruptedFailure(record)
-
-
-def _terminal_restart(
-    record: TerminalPending,
-    snapshot: ExecutionAttemptSnapshot,
-) -> RestartDecision:
-    if record.terminal_hold_action is not None:
-        return RetainTerminalConflict(record)
-    if snapshot.state is AttemptState.EXPIRED:
-        return RetainTerminalConflict(record)
-    expected_state = (
-        AttemptState.SUCCEEDED
-        if record.terminal_operation is TerminalOperation.COMPLETE
-        else AttemptState.FAILED
-    )
-    if snapshot.state in {AttemptState.SUCCEEDED, AttemptState.FAILED}:
-        if snapshot.state is not expected_state:
-            return RetainTerminalConflict(record)
-    return ReplayTerminal(record)
-
-
 _COMMON_FIELDS = {
     "schema_id",
     "job_ref",
@@ -586,6 +400,7 @@ _COMMON_FIELDS = {
     "input_fingerprint",
     "frozen_generation_id",
 }
+
 
 
 def _record_kind(record: AttemptJournalRecord) -> str:
@@ -602,15 +417,6 @@ def _common_values(document: dict[str, JsonValue]) -> dict[str, object]:
         "provider_attempt_key": document["provider_attempt_key"],
         "input_fingerprint": document["input_fingerprint"],
         "frozen_generation_id": document["frozen_generation_id"],
-    }
-
-
-def _common_record_values(record: _AttemptRecord) -> dict[str, str]:
-    return {
-        "job_ref": record.job_ref,
-        "provider_attempt_key": record.provider_attempt_key,
-        "input_fingerprint": record.input_fingerprint,
-        "frozen_generation_id": record.frozen_generation_id,
     }
 
 
@@ -637,40 +443,36 @@ def _fingerprint(raw: bytes) -> str:
     return "sha256:" + sha256(raw).hexdigest()
 
 
-def _validate_terminal_request(
-    execution_attempt_ref: str,
-    operation: TerminalOperation,
-    body: bytes,
-) -> None:
+def _historical_text(value, maximum):
+    if type(value) is not str or not value or len(value) > maximum or "\0" in value:
+        raise ValueError("Historical terminal text is invalid")
+    value.encode("utf-8", errors="strict")
+
+
+def _validate_terminal_request(execution_attempt_ref, operation, body):
+    """Admit exact historical command bytes without preparing a live API request."""
     try:
         document = parse_canonical_json_bytes(body)
-        if type(document) is not dict:
-            raise ValueError
         if operation is TerminalOperation.COMPLETE:
-            encoded_result = document["canonical_result_base64"]
-            if type(encoded_result) is not str:
+            _require_fields(document, {"schema_id", "execution_attempt_ref", "result_schema_id", "canonical_result_base64"})
+            if document["schema_id"] != "nmr.provider.execution_attempt_complete_request.v1":
                 raise ValueError
-            reconstructed = prepare_execution_attempt_complete(
-                execution_attempt_ref=document["execution_attempt_ref"],
-                result_schema_id=document["result_schema_id"],
-                canonical_result=b64decode(encoded_result, validate=True),
-            )
+            _historical_text(document["result_schema_id"], 1024)
+            encoded = document["canonical_result_base64"]
+            if type(encoded) is not str:
+                raise ValueError
+            result = b64decode(encoded, validate=True)
+            if not 1 <= len(result) <= 786432 or b64encode(result).decode("ascii") != encoded:
+                raise ValueError
         else:
-            reconstructed = prepare_execution_attempt_fail(
-                execution_attempt_ref=document["execution_attempt_ref"],
-                failure_code=document["failure_code"],
-                failure_message=document["failure_message"],
-            )
-    except (CanonicalJsonError, KeyError, TypeError, ValueError) as error:
-        raise ValueError("Attempt journal terminal request is invalid") from error
-    if (
-        reconstructed.operation
-        is not {
-            TerminalOperation.COMPLETE: ProviderOperation.EXECUTION_ATTEMPT_COMPLETE,
-            TerminalOperation.FAIL: ProviderOperation.EXECUTION_ATTEMPT_FAIL,
-        }[operation]
-        or reconstructed.body != body
-    ):
-        raise ValueError("Attempt journal terminal request identity has drifted")
-    if document["execution_attempt_ref"] != execution_attempt_ref:
-        raise ValueError("Attempt journal terminal request targets another Attempt")
+            _require_fields(document, {"schema_id", "execution_attempt_ref", "failure_code", "failure_message"})
+            if document["schema_id"] != "nmr.provider.execution_attempt_fail_request.v1":
+                raise ValueError
+            _require_match(document["failure_code"], _HISTORICAL_FAILURE_CODE, "Historical failure code")
+            if len(document["failure_code"]) > 128:
+                raise ValueError
+            _historical_text(document["failure_message"], 1024)
+        if document["execution_attempt_ref"] != execution_attempt_ref or canonical_json_bytes(document) != body:
+            raise ValueError
+    except (CanonicalJsonError, KeyError, TypeError, ValueError) as cause:
+        raise ValueError("Attempt journal terminal request is invalid") from cause

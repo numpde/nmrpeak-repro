@@ -20,7 +20,6 @@ from nmrpeak_provider.attempt_journal import (
     StartPending,
     journal_record_bytes,
     journal_record_name,
-    retain_terminal_command,
 )
 from nmrpeak_provider.attempt_journal_store import (
     AttemptJournalAdmissionRejected,
@@ -29,7 +28,7 @@ from nmrpeak_provider.attempt_journal_store import (
     AttemptJournalStore,
     AttemptJournalWriteFailed,
 )
-from nmrpeak_provider.provider_requests import prepare_execution_attempt_complete
+from tests.fakes.retained_journal import complete_command, retained_terminal
 
 
 ATTEMPT_REF = "execution_attempt:sha256:" + "a" * 64
@@ -192,9 +191,9 @@ class AttemptJournalStoreTests(unittest.TestCase):
         with journal_directory() as root:
             start = start_pending("1")
             active = active_attempt(start)
-            terminal = retain_terminal_command(
+            terminal = retained_terminal(
                 active,
-                prepare_execution_attempt_complete(
+                complete_command(
                     execution_attempt_ref=ATTEMPT_REF,
                     result_schema_id="nmrpeak.structure_candidates.result.v1",
                     canonical_result=b'{"candidate":"C"}',

@@ -33,6 +33,10 @@ class RunnerProtocolError(ValueError):
     """A private frame cannot participate in the current runner boot."""
 
 
+class RunnerChannelClosed(RunnerProtocolError):
+    """The original scientific stream ended before a complete frame arrived."""
+
+
 class RunnerRejectionReason(StrEnum):
     """Closed, source-free causes admitted from runner VALIDATE."""
 
@@ -600,7 +604,7 @@ def _receive_exact(
                 f"Cannot receive NMRPeak runner frame: socket read failed during {part}"
             ) from error
         if count == 0:
-            raise RunnerProtocolError(
+            raise RunnerChannelClosed(
                 f"Cannot receive NMRPeak runner frame: connection closed during {part}"
             )
         received += count

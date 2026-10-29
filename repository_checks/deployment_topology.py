@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 
 from nmrpeak_provider.canonical_json import JsonValue, canonical_json_bytes
@@ -39,7 +40,7 @@ _COMMON = {
     "user",
     "volumes",
 }
-_PROVIDER_FIELDS = _COMMON | {"healthcheck", "networks"}
+_PROVIDER_FIELDS = _COMMON | {"healthcheck", "networks", "depends_on", "group_add"}
 _RUNNER_FIELDS = _COMMON | {"network_mode", "shm_size"}
 
 
@@ -72,14 +73,14 @@ def project_deployment_topology(
     images: DeploymentImages,
     checkpoints: DeploymentCheckpoints,
     *,
-    private_ca: bool = False,
+    binding_projection: dict,
 ) -> bytes:
     """Return canonical secret-free facts from one admitted Compose document."""
 
     if (
         type(images) is not DeploymentImages
         or type(checkpoints) is not DeploymentCheckpoints
-        or type(private_ca) is not bool
+        or type(binding_projection) is not dict
     ):
         raise TypeError("Deployment topology requires admitted image and release facts")
     if not all(
@@ -107,12 +108,15 @@ def project_deployment_topology(
         raise DeploymentTopologyRejected("Normalized Compose fields are invalid")
     services = _mapping(document, "services")
     volumes = _mapping(document, "volumes")
-    if set(services) != _SERVICES or set(volumes) != _VOLUMES:
+    route = binding_projection["api_route"]
+    sdk_compose = route["compose"]
+    if (set(services) != _SERVICES | sdk_compose["services"].keys()
+            or set(volumes) != _VOLUMES | sdk_compose["volumes"].keys() | {"delivery-ipc"}):
         raise DeploymentTopologyRejected(
             "Normalized Compose must contain exactly the fixed services and volumes"
         )
     networks = _mapping(document, "networks")
-    if set(networks) != {"default"}:
+    if set(networks) != {"default"} | sdk_compose["networks"].keys():
         raise DeploymentTopologyRejected(
             "Normalized Compose must expose only the provider default network"
         )
@@ -120,22 +124,26 @@ def project_deployment_topology(
     if type(network) is not dict or set(network) != {"ipam", "name"} or network["ipam"] != {}:
         raise DeploymentTopologyRejected("Provider default network fields are invalid")
 
-    provider_fields = _PROVIDER_FIELDS | ({"extra_hosts"} if private_ca else set())
-    provider = _service(services, "provider", provider_fields)
+    provider = _service(services, "provider", _PROVIDER_FIELDS)
     hf = _service(services, "hf-runner", _RUNNER_FIELDS)
     chf = _service(services, "chf-runner", _RUNNER_FIELDS)
     _common_posture(provider, images.provider, cpus=1, memory=268_435_456, pids=64)
     _common_posture(hf, images.hf, cpus=8, memory=34_359_738_368, pids=256)
     _common_posture(chf, images.chf, cpus=8, memory=34_359_738_368, pids=256)
-    _provider_posture(provider, private_ca=private_ca)
+    _provider_posture(provider, binding_projection=binding_projection)
     _runner_posture(hf, "hf", checkpoints.hf, images.hf_input)
     _runner_posture(chf, "chf", checkpoints.chf, images.chf_input)
-    _volume_posture(volumes)
+    _volume_posture({name: volumes[name] for name in _VOLUMES})
+    delivery = binding_projection["delivery"]
+    if volumes["delivery-ipc"] != {"external": True, "name": delivery["ipc_volume"]}:
+        raise DeploymentTopologyRejected("Delivery IPC volume differs from the selected SDK binding")
+    operational_mounts = {route["client_mount"]["target"], str(Path(delivery["socket_path"]).parent)}
+
 
     projection: dict[str, JsonValue] = {
         "schema_id": "nmrpeak.deployment_topology.v1",
         "services": [
-            _project_service("provider", provider, images.provider_input),
+            _project_service("provider", provider, images.provider_input, omit_mounts=operational_mounts),
             _project_service("hf", hf, images.hf_input),
             _project_service("chf", chf, images.chf_input),
         ],
@@ -188,7 +196,7 @@ def _common_posture(
         )
 
 
-def _provider_posture(service: dict[str, object], *, private_ca: bool) -> None:
+def _provider_posture(service: dict[str, object], *, binding_projection: dict) -> None:
     if service.get("networks") != {"default": None}:
         raise DeploymentTopologyRejected("Only the provider may receive API egress")
     if service.get("command") is not None or service.get("entrypoint") is not None:
@@ -208,49 +216,36 @@ def _provider_posture(service: dict[str, object], *, private_ca: bool) -> None:
         "/run/nmrpeak-provider:size=64k,mode=0700,noexec,nosuid,nodev,uid=65532,gid=65532",
     ]:
         raise DeploymentTopologyRejected("Provider scratch posture has drifted")
+    route, delivery = binding_projection["api_route"], binding_projection["delivery"]
+    route_mount = route["client_mount"]
+    delivery_target = str(Path(delivery["socket_path"]).parent)
     expected_mounts = {
-        "/run/config/nmrpeak-provider/provider.toml": ("bind", True),
-        "/run/secrets/nmrpeak-provider/signing.private.json": ("bind", True),
-        "/run/secrets/nmrpeak-provider/openai-chat-completions.d": (
-            "bind",
-            True,
-        ),
+        "/run/config/nmrpeak-provider": ("bind", True),
         "/run/nmrpeak-provider/frozen": ("bind", True),
         "/run/nmrpeak-provider-lock": ("volume", True),
         "/var/lib/nmrpeak-provider": ("volume", False),
         "/run/nmrpeak-provider/hf": ("volume", False),
         "/run/nmrpeak-provider/chf": ("volume", False),
+        delivery_target: ("volume", True),
     }
-    if private_ca:
-        expected_mounts["/run/config/nmrpeak-provider/server-a-ca.crt"] = (
-            "bind",
-            True,
-        )
-        if service.get("extra_hosts") != ["nmr.localhost=host-gateway"]:
-            raise DeploymentTopologyRejected(
-                "Localhost provider host-gateway mapping has drifted"
-            )
-    _mounts(service, expected_mounts)
+    if service.get("group_add") != [str(delivery["socket_group_id"])]:
+        raise DeploymentTopologyRejected("Provider delivery group differs from the selected SDK binding")
+    dependencies = {name: {"condition": facts["condition"], "required": True}
+                    for name, facts in route["client_depends_on"].items()}
+    if service.get("depends_on") != dependencies:
+        raise DeploymentTopologyRejected("Provider API dependency differs from its SDK route")
+    _mounts(service, expected_mounts, delegated_mounts=(route_mount,))
     mounts = {item["target"]: item for item in service["volumes"]}
     expected_sources = {
         "/run/nmrpeak-provider-lock": "provider-identity-lock",
         "/var/lib/nmrpeak-provider": "provider-journal",
         "/run/nmrpeak-provider/hf": "hf-session",
         "/run/nmrpeak-provider/chf": "chf-session",
+        delivery_target: "delivery-ipc",
     }
     if any(mounts[target]["source"] != source for target, source in expected_sources.items()):
         raise DeploymentTopologyRejected("Provider received a misassigned volume")
-    for target in (
-        "/run/config/nmrpeak-provider/provider.toml",
-        "/run/secrets/nmrpeak-provider/signing.private.json",
-        "/run/secrets/nmrpeak-provider/openai-chat-completions.d",
-        "/run/nmrpeak-provider/frozen",
-        *(
-            ("/run/config/nmrpeak-provider/server-a-ca.crt",)
-            if private_ca
-            else ()
-        ),
-    ):
+    for target in ("/run/config/nmrpeak-provider", "/run/nmrpeak-provider/frozen"):
         source = mounts[target]["source"]
         if type(source) is not str or not source.startswith("/"):
             raise DeploymentTopologyRejected("Provider bind source is not absolute")
@@ -297,12 +292,16 @@ def _runner_posture(
         raise DeploymentTopologyRejected("Runner received another lane's volume")
 
 
-def _mounts(service: dict[str, object], expected: dict[str, tuple[str, bool]]) -> None:
+def _mounts(service: dict[str, object], expected: dict[str, tuple[str, bool]], *, delegated_mounts=()) -> None:
     mounts = service.get("volumes")
-    if type(mounts) is not list or len(mounts) != len(expected):
+    if type(mounts) is not list or len(mounts) != len(expected) + len(delegated_mounts):
         raise DeploymentTopologyRejected("Deployment mount inventory has drifted")
     observed: dict[str, tuple[str, bool]] = {}
     for mount in mounts:
+        # SDK mount options retain their exact issuing owner. NMR validates only
+        # faithful inclusion; its own mount grammar does not reinterpret them.
+        if mount in delegated_mounts:
+            continue
         if type(mount) is not dict:
             raise DeploymentTopologyRejected("Deployment mount fields are invalid")
         fields = set(mount)
@@ -358,6 +357,8 @@ def _project_service(
     role: str,
     service: dict[str, object],
     image_input: str,
+    *,
+    omit_mounts: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, JsonValue]:
     mounts = sorted(
         (
@@ -366,7 +367,7 @@ def _project_service(
                 "type": mount["type"],
                 "read_only": mount.get("read_only", False),
             }
-            for mount in service["volumes"]
+            for mount in service["volumes"] if mount["target"] not in omit_mounts
         ),
         key=lambda mount: mount["target"],
     )

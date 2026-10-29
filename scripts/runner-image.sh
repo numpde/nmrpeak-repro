@@ -15,12 +15,12 @@ case "$runner" in
     nmrpeak_chf_v1)
         readonly image_repository="numpde/nmrpeak-chf-runner"
         readonly contract_id="nmrpeak.runner_session.chf.v1"
-        readonly entrypoint='["python","-m","models.nmrpeak_chf_v1.runner.owner_session_supervisor","5","5","--","python","-m","models.nmrpeak_chf_v1.runner.worker"]'
+        readonly entrypoint='["/usr/local/bin/python3.12","-P","-m","nmrpeak_provider.native_launcher","nmrpeak_chf_v1","models.nmrpeak_chf_v1.runner.worker"]'
         ;;
     nmrpeak_hf_v1)
         readonly image_repository="numpde/nmrpeak-hf-runner"
         readonly contract_id="nmrpeak.runner_session.hf.v1"
-        readonly entrypoint='["python","-m","models.nmrpeak_hf_v1.runner.owner_session_supervisor","5","5","--","python","-m","models.nmrpeak_hf_v1.runner.worker"]'
+        readonly entrypoint='["/usr/local/bin/python3.12","-P","-m","nmrpeak_provider.native_launcher","nmrpeak_hf_v1","models.nmrpeak_hf_v1.runner.worker"]'
         ;;
     *)
         fail "runner image must select nmrpeak_chf_v1 or nmrpeak_hf_v1: ${runner:-<unset>}"

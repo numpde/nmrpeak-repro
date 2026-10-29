@@ -18,10 +18,15 @@ class ProviderIdentityLockBusy(RuntimeError):
 
 
 class ProviderIdentityLock:
-    """The held descriptor proving one cooperating provider process is active."""
+    """Keep exclusion until confirmed settlement or OS process teardown.
+
+    This integer descriptor deliberately has no object-finalizer close: failed
+    runtime cleanup can leave scientific threads alive after Python unwinding.
+    """
 
     def __init__(self, descriptor: int) -> None:
         self._descriptor = descriptor
+        self._close_failure: BaseException | None = None
 
     @classmethod
     def acquire(cls, path: Path, provider_ref: str) -> ProviderIdentityLock:
@@ -57,21 +62,41 @@ class ProviderIdentityLock:
                     "Another deployment already holds this provider identity"
                 ) from error
             return cls(descriptor)
-        except BaseException:
-            os.close(descriptor)
+        except BaseException as primary:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup:
+                if cleanup is not primary:
+                    raise BaseExceptionGroup(
+                        "Provider identity admission and descriptor cleanup failed", [primary, cleanup],
+                    ) from None
+                raise
             raise
 
     def close(self) -> None:
-        """Release this process's cooperating-provider exclusion exactly once."""
+        """Attempt release once and retain any uncertainty about its outcome."""
 
+        if self._close_failure is not None:
+            raise self._close_failure
         descriptor = self._descriptor
         if descriptor < 0:
             return
         self._descriptor = -1
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except BaseException as cause:
+            self._close_failure = cause
+            raise
 
     def __enter__(self) -> ProviderIdentityLock:
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
+    def __exit__(self, exception_type, primary, traceback) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup:
+            if primary is not None and cleanup is not primary:
+                raise BaseExceptionGroup(
+                    "Provider failure and independent identity-lock cleanup failure", [primary, cleanup],
+                ) from None
+            raise

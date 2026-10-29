@@ -1,5 +1,8 @@
 """Prove worker causes cross only a correlated, intact response stream."""
 
+from tests.fakes.runner import admit_fake_session
+
+
 from dataclasses import replace
 import json
 import unittest
@@ -34,23 +37,24 @@ class ScriptedConnection:
         self.frames.append(CHF_RUNNER_CODEC.decode_frame(data))
 
 
-class RunnerFailureDiagnosticsTests(unittest.TestCase):
-    def test_validation_and_generation_causes_reach_the_provider(self):
+class RunnerFailureDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_validation_and_generation_causes_reach_the_provider(self):
         for phase in ("validation", "generation"):
             with self.subTest(phase=phase):
                 primary = RuntimeError("Vocabulary failed; Bearer actual-secret")
                 runtime = RecordingRuntime(**{phase + "_failure": primary})
                 with WorkerHarness(runtime) as harness:
-                    session = RunnerSession.admit(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC)
+                    session = await self.enterAsyncContext(admit_fake_session(harness.provider, FACTS, DEADLINES, CHF_RUNNER_CODEC))
                     with self.assertRaises(RunnerSessionRetired) as raised:
-                        admitted = validate(session)
-                        session.generate(admitted)
+                        admitted = await session.join_science(validate(session))
+                        await session.join_science(session.generate(admitted))
                     self.assertIn("Vocabulary failed", str(raised.exception))
-                    self.assertIn("exit is unconfirmed", str(raised.exception))
+                    self.assertIn(f"No verified {phase} outcome", str(raised.exception))
                     self.assertNotIn("actual-secret", str(raised.exception))
+                    await session.retire()
                 self.assertIs(harness.failure, primary)
 
-    def test_wrong_phase_or_correlation_cannot_supply_an_attempt_failure(self):
+    async def test_wrong_phase_or_correlation_cannot_supply_an_attempt_failure(self):
         for phase, wrong_correlation in (("generate", False), ("validate", True)):
             class Channel(FakeRunnerChannel):
                 def _accept_validate(self, frame):
@@ -58,14 +62,15 @@ class RunnerFailureDiagnosticsTests(unittest.TestCase):
                     self._queue(FailedFrame(correlation, phase, "Foreign failure explanation"))
 
             channel = Channel(CHF_RUNNER_CODEC, READY)
-            session = RunnerSession.admit(channel, FACTS, DEADLINES, CHF_RUNNER_CODEC)
+            session = await self.enterAsyncContext(admit_fake_session(channel, FACTS, DEADLINES, CHF_RUNNER_CODEC))
             with self.subTest(phase=phase), self.assertRaises(RunnerSessionRetired) as raised:
-                validate(session)
+                await session.join_science(validate(session))
             self.assertIn("response type or correlation is wrong", str(raised.exception))
             self.assertNotIn("Foreign failure explanation", str(raised.exception))
+            await session.retire()
             self.assertTrue(channel.closed)
 
-    def test_result_encoding_failure_is_reported_before_transmission(self):
+    async def test_result_encoding_failure_is_reported_before_transmission(self):
         connection = ScriptedConnection()
         with self.assertRaises(TypeError):
             serve_loaded_nmrpeak_runtime(connection, RecordingRuntime(candidates=object()), READY, CHF_RUNNER_CODEC)
@@ -74,14 +79,14 @@ class RunnerFailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(failed.phase, "generate")
         self.assertIn("unsupported canonical JSON type", failed.diagnostic)
 
-    def test_partial_result_write_does_not_append_another_frame(self):
+    async def test_partial_result_write_does_not_append_another_frame(self):
         connection = ScriptedConnection(failed_write=3)
         with self.assertRaisesRegex(OSError, "partial handoff"):
             serve_loaded_nmrpeak_runtime(connection, RecordingRuntime(candidates=["CCO"]), READY, CHF_RUNNER_CODEC)
         self.assertEqual(connection.writes, 3)
         self.assertFalse(any(type(frame) is FailedFrame for frame in connection.frames))
 
-    def test_failure_report_delivery_does_not_replace_primary(self):
+    async def test_failure_report_delivery_does_not_replace_primary(self):
         primary = RuntimeError("Original tensor failure")
         connection = ScriptedConnection(failed_write=3)
         with self.assertRaises(RuntimeError) as raised:
@@ -89,14 +94,14 @@ class RunnerFailureDiagnosticsTests(unittest.TestCase):
         self.assertIs(raised.exception, primary)
         self.assertIn("partial handoff", " ".join(primary.__notes__))
 
-    def test_previous_protocol_cannot_admit_failure_frames(self):
+    async def test_previous_protocol_cannot_admit_failure_frames(self):
         frame = FailedFrame(CORRELATION, "validate", "Vocabulary missing")
         document = json.loads(CHF_RUNNER_CODEC.encode(frame)[4:])
         document["v"] = 3
         with self.assertRaises(RunnerProtocolError):
             CHF_RUNNER_CODEC.decode_payload(canonical_json_bytes(document))
 
-    def test_failure_frames_reject_unknown_phases_and_invalid_diagnostics(self):
+    async def test_failure_frames_reject_unknown_phases_and_invalid_diagnostics(self):
         for phase, diagnostic in (("other", "reason"), ([], "reason"), ("validate", ""), ("generate", "x" * 4097), ("generate", "bad\ntext")):
             with self.subTest(phase=phase), self.assertRaises(RunnerProtocolError):
                 FailedFrame(CORRELATION, phase, diagnostic)

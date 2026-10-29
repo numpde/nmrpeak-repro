@@ -76,6 +76,8 @@ def main(arguments: list[str]) -> int:
     configure_process_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument("--session-fd", required=True, type=int)
+    parser.add_argument("--lease-fd", required=True, type=int)
+    parser.add_argument("--operation", required=True)
     parser.add_argument("--checkpoint-ref", required=True)
     parser.add_argument("--image-input-id", required=True)
     options = parser.parse_args(arguments)

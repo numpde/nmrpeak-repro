@@ -326,6 +326,22 @@ class ChfModelInput(NmrpeakModelInput):
     carbon_peaks: tuple[CarbonPeak, ...]
 
 
+def is_structured_source(raw: bytes) -> bool:
+    """Route source once; malformed structured input cannot become prose."""
+    prefix = raw.lstrip(b" \t\r\n")
+    if prefix.startswith(b"\xef\xbb\xbf"):
+        raise InputRejected(InputIssue(
+            InputRejectionReason.INVALID_STRUCTURE,
+            expected="UTF-8 text without a byte-order mark",
+        ))
+    if prefix and prefix[0] < 0x20:
+        raise InputRejected(InputIssue(
+            InputRejectionReason.INVALID_STRUCTURE,
+            expected="printable UTF-8 text after JSON whitespace",
+        ))
+    return prefix.startswith((b"{", b"["))
+
+
 def parse_job_input(
     raw: bytes, offering: AnalysisOffering, *, diagnostic_secrets: tuple[str, ...] = (),
 ) -> HfModelInput | ChfModelInput:

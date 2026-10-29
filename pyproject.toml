@@ -6,10 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "nmrpeak-provider-core"
 version = "0.1.0"
 description = "NMRPeak NMR API provider runtime"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "cryptography==49.0.0",
+    "cryptography==50.0.0",
     "httpx==0.28.1",
+    "provider-core[api]==0.5.2",
 ]
 
 [tool.setuptools.packages.find]

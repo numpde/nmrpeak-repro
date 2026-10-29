@@ -1,5 +1,5 @@
 """Archive admission preserves deployment, API and generation ownership."""
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -24,12 +24,14 @@ RESULT = {'schema_id': 'nmrpeak.journal_archive_result.v1',
 class ArchiveDeploymentTests(unittest.TestCase):
     def setup_plan(self, stack, repository, *, running=False, attachments=()):
         plan = test_plan(repository)
-        deployment.materialize_deployment_plan(repository, 'production', plan)
+        runtime_file, _frozen = deployment.materialize_deployment_plan(repository, 'production', plan)
         stack.enter_context(patch.object(deployment, '_inspect_project_containers', return_value={
             'provider': {'Id': 'owned', 'State': {'Running': running}}}))
         stack.enter_context(patch.object(deployment, 'inspect_provider_journal_volume', return_value=('journal-volume', attachments)))
         stack.enter_context(patch.object(deployment, 'inspect_provider_identity_lock_volume', return_value='lock-volume'))
-        stack.enter_context(patch.object(deployment, '_read_owned_private_credential', return_value=(b'', SimpleNamespace(provider_ref=plan.provider_ref))))
+        policy = deployment.decode_provider_template((repository / 'config/deployments/production/provider.toml').read_bytes())
+        stack.enter_context(patch.object(deployment, '_held_maintenance_api_route',
+                           return_value=nullcontext((policy, plan.binding_projection, runtime_file.parent))))
         stack.enter_context(patch.object(deployment, '_resolve_provider_image', return_value=IMAGES['provider']))
         command = stack.enter_context(patch.object(deployment, '_docker_command', return_value=subprocess.CompletedProcess((), 0, canonical_json_bytes(RESULT) + b'\n', b'')))
         return plan, command
@@ -103,12 +105,12 @@ class ArchiveDeploymentTests(unittest.TestCase):
                 with self.assertRaises(deployment.DeploymentOperationRejected) as caught:
                     self.archive(repository, plan)
                 self.assertIn('unconfirmed', str(caught.exception))
-                self.assertIn('timed out', str(caught.exception))
+                self.assertIn('timed out', deployment._render_deployment_failure('journal-archive-closed', 'production', caught.exception))
                 self.assertIn('inspect', str(caught.exception).lower())
                 removals = [c for c in command.call_args_list if c.args[1][0] == 'rm']
                 self.assertEqual(len(removals), 0 if foreign else 1)
 
-    def test_public_make_passes_literal_selection_and_optional_ca_path(self):
+    def test_public_make_passes_literal_selection_and_uses_binding_trust(self):
         import json
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as temporary:
@@ -116,15 +118,15 @@ class ArchiveDeploymentTests(unittest.TestCase):
             fake_python.write_text('#!/usr/bin/python3\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n')
             fake_python.chmod(0o700)
             repository = Path(__file__).resolve().parents[2]
-            for ca in ('', '/tmp/private CA.pem'):
-                result = subprocess.run(['make', '--no-print-directory', '-s', 'provider/deployment/journal/archive-closed',
-                    'PYTHON=' + str(fake_python), 'DEPLOYMENT=production', 'ATTEMPT_REF=' + ATTEMPT,
-                    'RECORD_DIGEST=' + DIGEST, 'FROZEN_GENERATION=sha256:'+'e'*64,
-                    'REASON=Reviewed; $(literal) `literal` remains text', 'LOCALHOST_CA_CERTIFICATE=' + ca],
-                    cwd=repository, capture_output=True, check=True)
-                args = json.loads(result.stdout)
-                self.assertEqual(args[args.index('--reason')+1], 'Reviewed; $(literal) `literal` remains text')
-                if ca:
-                    self.assertEqual(args[args.index('--localhost-ca-certificate')+1], ca)
-                else:
-                    self.assertNotIn('--localhost-ca-certificate', args)
+            arguments = ['make', '--no-print-directory', '-s', 'provider/deployment/journal/archive-closed',
+                'PYTHON=' + str(fake_python), 'DEPLOYMENT=production', 'ATTEMPT_REF=' + ATTEMPT,
+                'RECORD_DIGEST=' + DIGEST, 'FROZEN_GENERATION=sha256:'+'e'*64,
+                'REASON=Reviewed; $(literal) `literal` remains text']
+            result = subprocess.run(arguments, cwd=repository, capture_output=True, check=True)
+            args = json.loads(result.stdout)
+            self.assertEqual(args[args.index('--reason')+1], 'Reviewed; $(literal) `literal` remains text')
+            self.assertNotIn('--localhost-ca-certificate', args)
+            refused = subprocess.run(arguments + ['LOCALHOST_CA_CERTIFICATE=/tmp/private CA.pem'],
+                                     cwd=repository, capture_output=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn(b'selected shared binding', refused.stderr)

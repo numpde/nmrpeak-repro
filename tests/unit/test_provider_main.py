@@ -1,76 +1,123 @@
-"""Prove production composition admits local inputs before locked provider work."""
+"""Keep partial startup and independent runner cleanup with the composition root."""
 
-from __future__ import annotations
-
-from contextlib import redirect_stderr
-from io import StringIO
-from types import SimpleNamespace
+import asyncio
+from contextlib import ExitStack
+from dataclasses import replace
 import signal
-import logging
+import ssl
 import subprocess
 import sys
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
+from provider_core.api_config import ApiSettings, HttpsSettings
+from nmrpeak_provider import provider_main
+from nmrpeak_provider.attempt_journal_store import AttemptJournalStateRejected, AttemptJournalStore
 from nmrpeak_provider.frozen_generation import FrozenGeneration
-from nmrpeak_provider.provider_main import (
-    _cleanup_provider_resources,
-    _prepare_hello,
-    main,
-    run_provider,
-)
-from nmrpeak_provider.provider_process import (
-    ProviderLaneFailed,
-)
-from nmrpeak_provider.provider_credential import parse_provider_signing_credential
+from nmrpeak_provider.provider_config import decode_provider_runtime_config
+from nmrpeak_provider.provider_startup import ProviderStartup
+from tests.unit.test_attempt_journal_store import journal_directory, start_pending
 from tests.unit.test_frozen_generation import FILES, runtime
-from tests.unit.test_provider_config import CONFIG
-from tests.unit.test_provider_startup_inputs import credential_bytes
+from tests.fakes.shared_api import SharedApi
+from tests.unit.test_runtime_config_v2 import RUNTIME
 
 
-class FakeSession:
-    def __init__(self, name: str, events: list[str]) -> None:
-        self.name = name
-        self.events = events
-        self.retired = False
+def runner(name, events, *, connect_failure=None, retire_failure=None):
+    owner = SimpleNamespace(retirement_confirmed=False)
 
-    def retire(self) -> None:
-        self.retired = True
-        self.events.append(f"{self.name}_retired")
+    async def connect():
+        events.append(name + ":connect")
+        if connect_failure is not None:
+            raise connect_failure
+
+    async def retire():
+        events.append(name + ":retire")
+        if retire_failure is not None:
+            raise retire_failure
+        owner.retirement_confirmed = True
+
+    owner.connect, owner.retire = connect, retire
+    return owner
 
 
-class FakeJournal:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
+class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
+    def test_runtime_effects_require_the_identity_lock_and_empty_legacy_guard(self):
+        frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
+        settings = ApiSettings(SharedApi({}).identity,
+                               HttpsSettings(ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT), 30, 20), "web")
+        binding = SimpleNamespace(api={"provider_ref": "provider:nmrpeak"})
+        definition = SimpleNamespace(selected=Mock(return_value=binding), request_seconds=5)
+        readiness = Mock()
+        held = False
 
-    def close(self) -> None:
-        self.events.append("journal_closed")
+        def close_lock():
+            nonlocal held
+            held = False
 
+        def acquire_lock(*_arguments):
+            nonlocal held
+            held = True
+            return SimpleNamespace(close=close_lock)
 
-class ProviderMainTests(unittest.TestCase):
-    def setUp(self) -> None:
-        root = logging.getLogger()
-        handlers = root.handlers[:]
-        names = ("", "nmrpeak_provider", "nmrpeak_runner")
-        levels = {name: logging.getLogger(name).level for name in names}
+        def guard(_path):
+            self.assertTrue(held)
 
-        def restore_logging() -> None:
-            for handler in root.handlers[:]:
-                if handler not in handlers:
-                    root.removeHandler(handler)
-                    handler.close()
-            root.handlers[:] = handlers
-            for name, level in levels.items():
-                logging.getLogger(name).setLevel(level)
+        async def serve(**arguments):
+            self.assertTrue(held)
+            guarded.assert_called_once()
+            self.assertIs(arguments["binding"], binding)
+            self.assertEqual(arguments["settings"].http.proxy_socket, "/routes/selected/proxy.sock")
+            self.assertIsNone(settings.http.proxy_socket)
+            arguments["identity_lock"].close()
 
-        self.addCleanup(restore_logging)
+        guarded, serving = Mock(side_effect=guard), AsyncMock(side_effect=serve)
+        replacements = {
+            "load_provider_startup": Mock(return_value=ProviderStartup(
+                decode_provider_runtime_config(RUNTIME), definition, binding,
+                replace(settings, http=replace(settings.http, proxy_socket="/routes/selected/proxy.sock")),
+            )),
+            "load_frozen_generation": Mock(return_value=frozen),
+            "load_openai_chat_endpoint_specs": Mock(return_value=()),
+            "InputInterpreter": Mock(), "_require_empty_legacy_journal": guarded,
+            "_serve": serving,
+        }
+        with ExitStack() as stack:
+            for name, replacement in replacements.items():
+                stack.enter_context(patch.object(provider_main, name, replacement))
+            stack.enter_context(patch.object(provider_main.ProviderReadiness, "begin", return_value=readiness))
+            stack.enter_context(patch.object(provider_main.ProviderIdentityLock, "acquire", side_effect=acquire_lock))
+            provider_main.run_provider()
+            self.assertFalse(held)
+            blocked = RuntimeError("Retained legacy work blocks startup")
+            guarded.side_effect = blocked
+            with self.assertRaises(RuntimeError) as caught:
+                provider_main.run_provider()
+            self.assertIs(caught.exception, blocked)
+            serving.assert_awaited_once()
+        self.assertFalse(held)
+        self.assertEqual(readiness.close.call_count, 2)
 
-    def test_entrypoint_exposes_application_info_with_utc_timestamps(self) -> None:
-        result = subprocess.run(
-            [sys.executable, "-c", """
+    async def test_unusable_scientific_state_cannot_skip_native_retirement(self):
+        events = []
+        owner = runner("hf", events)
+        owner.retired = True
+        self.assertEqual(await provider_main._retire_runners(owner, None), [])
+        self.assertEqual(events, ["hf:retire"])
+        self.assertTrue(owner.retirement_confirmed)
+
+    def test_hello_uses_only_authenticated_frozen_descriptions(self):
+        frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
+        announcement = provider_main._prepare_hello(frozen)
+        self.assertEqual([item.description for item in announcement.analysis_offerings],
+                         [file.content.decode() for file in FILES[:2]])
+        self.assertEqual(announcement.description,
+                         "Generates candidate molecular structures from molecular formula and "
+                         "NMR peak-list input. License, attribution, and source details: "
+                         "https://numpde.github.io/nmrpeak-repro/")
+
+    def test_entrypoint_logs_application_info_with_utc_timestamps(self):
+        program = '''
 import logging
 from unittest.mock import patch
 from nmrpeak_provider.provider_main import main
@@ -80,288 +127,150 @@ def run():
     logging.getLogger('httpx').info('Dependency chatter')
 with patch('nmrpeak_provider.provider_main.run_provider', run):
     raise SystemExit(main())
-"""],
-            capture_output=True, text=True, check=True,
-        )
+'''
+        result = subprocess.run([sys.executable, "-P", "-c", program],
+                                capture_output=True, text=True, timeout=5, check=True)
         self.assertEqual(result.stdout, "")
         self.assertRegex(result.stderr, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z INFO")
-        self.assertIn("Hello receipt visible", result.stderr)
-        self.assertIn("Runner progress visible", result.stderr)
-        self.assertIn("Provider stopped", result.stderr)
+        for message in ("Hello receipt visible", "Runner progress visible", "Provider stopped"):
+            self.assertIn(message, result.stderr)
         self.assertNotIn("Dependency chatter", result.stderr)
 
-    def test_main_renders_process_effect_cause_and_cleanup_note(self) -> None:
-        cause = RuntimeError(
-            "Cannot read the Job feed: the HTTP 403 problem response failed validation."
-        )
-        failure = ProviderLaneFailed(
-            "The hf provider lane stopped unexpectedly, so coordinated provider "
-            "shutdown began."
-        )
-        failure.__cause__ = cause
-        failure.add_note("A sibling runner session also failed to close.")
-        stderr = StringIO()
+    async def _serve(self, hf, chf, *, service=None, handlers=None):
+        policy = decode_provider_runtime_config(RUNTIME).policy
+        lane = SimpleNamespace(result_facts=object(), runner_codec=object())
+        frozen = SimpleNamespace(runtime=SimpleNamespace(hf=lane, chf=lane))
+        process = service or SimpleNamespace(run=AsyncMock(), request_stop=Mock(), shutdown_ready=True)
+        handlers = {} if handlers is None else handlers
 
-        with (
-            patch("nmrpeak_provider.provider_main.run_provider", side_effect=failure),
-            redirect_stderr(stderr),
-        ):
-            self.assertEqual(main(), 1)
+        def install(number, handler):
+            previous = handlers.get(number, signal.SIG_DFL)
+            handlers[number] = handler
+            return previous
 
-        rendered = stderr.getvalue()
-        self.assertIn("Provider process stopped unexpectedly", rendered)
-        self.assertIn("coordinated provider shutdown began", rendered)
-        self.assertIn("Cannot read the Job feed", rendered)
-        self.assertIn("A sibling runner session also failed to close", rendered)
-        self.assertIn("provider is not ready", rendered)
+        with patch.object(provider_main, "prepare_runner_session", side_effect=[hf, chf]), \
+                patch.object(provider_main, "ProviderProcess", return_value=process), \
+                patch.object(provider_main.signal, "signal", side_effect=install):
+            await provider_main._serve(
+                policy=policy, frozen=frozen, interpreter=object(), settings=object(),
+                binding=object(), delivery_seconds=5, announcement=object(),
+                readiness=SimpleNamespace(publish=Mock()), identity_lock=Mock(),
+            )
+        return process
 
-    def test_main_publishes_unexpected_exception_text_and_notes(self) -> None:
-        failure = RuntimeError("original unexpected failure")
-        failure.add_note("original cleanup note")
-        stderr = StringIO()
+    async def test_signal_during_startup_retires_the_retained_owner_without_admission(self):
+        events, handlers = [], {}
+        hf, chf = runner("hf", events), runner("chf", events)
 
-        with (
-            patch("nmrpeak_provider.provider_main.run_provider", side_effect=failure),
-            redirect_stderr(stderr),
-        ):
-            self.assertEqual(main(), 1)
+        async def interrupted_connect():
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+            await asyncio.sleep(0)
 
-        rendered = stderr.getvalue()
-        self.assertIn("RuntimeError: original unexpected failure", rendered)
-        self.assertIn("original cleanup note", rendered)
+        hf.connect = interrupted_connect
+        service = await asyncio.create_task(self._serve(hf, chf, handlers=handlers))
+        service.run.assert_not_awaited()
+        self.assertTrue(hf.retirement_confirmed)
+        self.assertFalse(chf.retirement_confirmed)
+        self.assertEqual(events, ["hf:retire"])
+        self.assertEqual(handlers, {signal.SIGINT: signal.SIG_DFL, signal.SIGTERM: signal.SIG_DFL})
 
-    def test_main_publishes_nested_grouped_failure_evidence(self) -> None:
-        endpoint_failures = ExceptionGroup(
-            "Interpreter endpoint failures",
-            [RuntimeError("endpoint one refused the connection")],
-        )
-        unavailable = RuntimeError("All interpreter endpoints failed")
-        unavailable.__cause__ = endpoint_failures
-        failure = ProviderLaneFailed("The hf provider lane stopped")
-        failure.__cause__ = unavailable
-        stderr = StringIO()
+    async def test_signal_during_service_requests_admission_stop_then_retires_runners(self):
+        events, handlers = [], {}
+        hf, chf = runner("hf", events), runner("chf", events)
 
-        with (
-            patch("nmrpeak_provider.provider_main.run_provider", side_effect=failure),
-            redirect_stderr(stderr),
-        ):
-            self.assertEqual(main(), 1)
+        async def run(*, on_ready):
+            on_ready()
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
 
-        rendered = stderr.getvalue()
-        self.assertIn("Interpreter endpoint failures", rendered)
-        self.assertIn("endpoint one refused the connection", rendered)
-        self.assertIn("All interpreter endpoints failed", rendered)
-        self.assertIn("The hf provider lane stopped", rendered)
+        service = SimpleNamespace(run=AsyncMock(side_effect=run), request_stop=Mock(), shutdown_ready=True)
+        await self._serve(hf, chf, service=service, handlers=handlers)
+        service.request_stop.assert_called_once()
+        self.assertTrue(hf.retirement_confirmed and chf.retirement_confirmed)
 
-    def test_cleanup_attempts_every_resource_and_correlates_each_failure(self) -> None:
+    async def test_partial_startup_retires_both_original_owners_before_raising(self):
         events = []
+        failure = RuntimeError("CHF READY failed")
+        hf, chf = runner("hf", events), runner("chf", events, connect_failure=failure)
+        with self.assertRaises(RuntimeError) as caught:
+            await self._serve(hf, chf)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(events, ["hf:connect", "chf:connect", "hf:retire", "chf:retire"])
+        self.assertTrue(hf.retirement_confirmed and chf.retirement_confirmed)
 
-        class FailingResource:
-            retired = False
+    async def test_independent_retirement_failure_cannot_hide_primary_or_skip_sibling(self):
+        events = []
+        primary = RuntimeError("CHF admission failed")
+        cleanup = BaseExceptionGroup("HF retirement failed", [SystemExit(7)])
+        hf = runner("hf", events, retire_failure=cleanup)
+        chf = runner("chf", events, connect_failure=primary)
+        with self.assertRaises(BaseExceptionGroup) as caught:
+            await self._serve(hf, chf)
+        self.assertEqual(caught.exception.exceptions, (primary, cleanup))
+        self.assertTrue(chf.retirement_confirmed)
 
-            def __init__(self, name: str) -> None:
-                self.name = name
+    async def test_background_fatal_failure_retires_loaded_runners(self):
+        events = []
+        failure = BaseExceptionGroup("Background failure", [SystemExit(0)])
+        service = SimpleNamespace(run=AsyncMock(side_effect=failure), request_stop=Mock(), shutdown_ready=True)
+        hf, chf = runner("hf", events), runner("chf", events)
+        with self.assertRaises(BaseExceptionGroup) as caught:
+            await self._serve(hf, chf, service=service)
+        self.assertIs(caught.exception, failure)
+        self.assertTrue(hf.retirement_confirmed and chf.retirement_confirmed)
 
-            def close(self) -> None:
-                events.append(self.name)
-                raise OSError("private journal detail")
+    async def test_successful_service_run_still_retires_both_loaded_runners(self):
+        events = []
+        hf, chf = runner("hf", events), runner("chf", events)
+        service = await self._serve(hf, chf)
+        service.run.assert_awaited_once()
+        self.assertTrue(hf.retirement_confirmed and chf.retirement_confirmed)
 
-            def retire(self) -> None:
-                events.append(self.name)
-                raise RuntimeError("private runner detail")
+    def test_legacy_guard_refuses_original_records_without_mutating_them(self):
+        with journal_directory() as root:
+            with AttemptJournalStore(root, maximum_records=1) as store:
+                store.admit(start_pending("1"))
+            before = {p.name: p.read_bytes() for p in root.iterdir()}
+            with self.assertRaisesRegex(RuntimeError, "legacy Attempt records"):
+                provider_main._require_empty_legacy_journal(root)
+            self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, before)
 
-        primary = RuntimeError("primary")
-        with self.assertLogs("nmrpeak_provider.provider_main", level="ERROR") as logs:
-            _cleanup_provider_resources(
-                FailingResource("journal"), FailingResource("hf"),
-                FailingResource("chf"), primary,
-            )
-        self.assertEqual(events, ["journal", "hf", "chf"])
-        rendered = "\n".join(logs.output)
-        for resource in ("attempt_journal", "hf_runner_session", "chf_runner_session"):
-            self.assertIn(f"resource='{resource}'", rendered)
-        self.assertIn("error_type='OSError'", rendered)
-        self.assertIn("error_type='RuntimeError'", rendered)
-        self.assertIn("failure_effect='attached_to_primary'", rendered)
-        self.assertTrue(any("Provider cleanup could not confirm every local resource closure" in note for note in primary.__notes__))
-        self.assertIn("private journal detail", " ".join(primary.__notes__))
+    def test_unreadable_legacy_state_cannot_be_treated_as_empty(self):
+        with journal_directory() as root:
+            (root / "unexpected").write_bytes(b"unrecognized state")
+            with self.assertRaises(AttemptJournalStateRejected):
+                provider_main._require_empty_legacy_journal(root)
+            self.assertEqual((root / "unexpected").read_bytes(), b"unrecognized state")
 
-        events.clear()
-        with self.assertLogs(
-            "nmrpeak_provider.provider_main", level="ERROR"
-        ) as fatal_logs, self.assertRaisesRegex(OSError, "private journal detail"):
-            _cleanup_provider_resources(
-                FailingResource("journal"), FailingResource("hf"),
-                FailingResource("chf"), None,
-            )
-        self.assertEqual(events, ["journal", "hf", "chf"])
-        self.assertIn("failure_effect='process_fatal'", "\n".join(fatal_logs.output))
+    def test_background_exit_zero_is_a_failure_at_the_cli_boundary(self):
+        with patch.object(provider_main, "run_provider", side_effect=SystemExit(0)), \
+                patch.object(provider_main, "configure_process_logging"), \
+                self.assertLogs(provider_main._LOG, level="ERROR"):
+            self.assertEqual(provider_main.main(), 1)
 
-    def test_hello_uses_only_the_two_authenticated_frozen_descriptions(self) -> None:
-        frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
+    def test_diagnostic_failure_retains_the_original_process_failure(self):
+        primary = RuntimeError("Private runtime failure")
+        diagnostic = SystemExit(0)
+        with patch.object(provider_main, "run_provider", side_effect=primary), \
+                patch.object(provider_main, "configure_process_logging"), \
+                patch.object(provider_main._LOG, "error", side_effect=diagnostic):
+            with self.assertRaises(BaseExceptionGroup) as caught:
+                provider_main.main()
+        self.assertEqual(caught.exception.exceptions, (primary, diagnostic))
 
-        prepared = _prepare_hello(frozen)
-        document = parse_canonical_json_bytes(prepared.body)
-
-        self.assertEqual(
-            [item["description"] for item in document["analysis_offerings"]],
-            [frozen_file.content.decode() for frozen_file in FILES[:2]],
-        )
-        self.assertEqual(
-            document["description"],
-            "Generates candidate molecular structures from molecular formula and "
-            "NMR peak-list input. License, attribution, and source details: "
-            "https://numpde.github.io/nmrpeak-repro/",
-        )
-
-    def test_local_admission_precedes_locked_work_and_cleanup_surrounds_failure(self) -> None:
-        events: list[str] = []
-        frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
-        credential_raw = credential_bytes(Ed25519PrivateKey.generate())
-        credential = parse_provider_signing_credential(credential_raw)
-
-        class EndpointConfig:
-            def materialize(self) -> object:
-                events.append("tls_materialized")
-                return object()
-
-        configured = SimpleNamespace(
-            frozen_generation_id=frozen.frozen_generation_id,
-            runner=object(),
-            journal_maximum_records=2,
-            journal_filesystem_reserve_bytes=1024,
-            endpoint=EndpointConfig(),
-            process=object(),
-            interpreter=object(),
-        )
-        hf = FakeSession("hf", events)
-        chf = FakeSession("chf", events)
-        journal = FakeJournal(events)
-
-        class HeldLock:
-            def __enter__(self) -> HeldLock:
-                events.append("lock_entered")
-                return self
-
-            def __exit__(self, *exc_info: object) -> None:
-                events.append("lock_closed")
-
-        def load_generation(*_args: object, **_kwargs: object) -> FrozenGeneration:
-            events.append("generation_loaded")
-            return frozen
-
-        def open_session(socket_path: str, *_args: object) -> FakeSession:
-            name = "hf" if "/hf/" in socket_path else "chf"
-            events.append(f"{name}_opened")
-            return hf if name == "hf" else chf
-
-        def open_journal(*_args: object, **_kwargs: object) -> FakeJournal:
-            events.append("journal_opened")
-            return journal
-
-        def acquire_lock(*_args: object) -> HeldLock:
-            events.append("lock_acquired")
-            return HeldLock()
-
-        def create_api(*_args: object) -> object:
-            events.append("api_created")
-            return object()
-
-        def enter_process(**_kwargs: object) -> None:
-            events.append("provider_process_entered")
-            _kwargs["on_ready"]()
-            raise RuntimeError("provider failed")
-
-        class FakeReadiness:
-            def publish(self) -> None:
-                events.append("readiness_published")
-
-            def close(self) -> None:
-                events.append("readiness_closed")
-
-        def begin_readiness() -> FakeReadiness:
-            events.append("readiness_begun")
-            return FakeReadiness()
-
-        with (
-            patch(
-                "nmrpeak_provider.provider_main.ProviderReadiness.begin",
-                side_effect=begin_readiness,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main._read_regular_file",
-                side_effect=(CONFIG, credential_raw),
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.decode_provider_runtime_config",
-                return_value=configured,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.load_openai_chat_endpoint_specs",
-                return_value=(object(),),
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.InputInterpreter",
-                return_value=object(),
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.load_frozen_generation",
-                side_effect=load_generation,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.parse_provider_signing_credential",
-                return_value=credential,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.open_runner_session",
-                side_effect=open_session,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.AttemptJournalStore",
-                side_effect=open_journal,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.ProviderIdentityLock.acquire",
-                side_effect=acquire_lock,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.ProviderApiClient",
-                side_effect=create_api,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.run_provider_process",
-                side_effect=enter_process,
-            ),
-            patch(
-                "nmrpeak_provider.provider_main.signal.signal",
-                return_value=signal.SIG_DFL,
-            ),
-            self.assertRaisesRegex(RuntimeError, "provider failed"),
-        ):
-            run_provider()
-
-        self.assertEqual(
-            events,
-            [
-                "readiness_begun",
-                "generation_loaded",
-                "lock_acquired",
-                "lock_entered",
-                "tls_materialized",
-                "api_created",
-                "hf_opened",
-                "chf_opened",
-                "journal_opened",
-                "provider_process_entered",
-                "readiness_published",
-                "journal_closed",
-                "hf_retired",
-                "chf_retired",
-                "lock_closed",
-                "readiness_closed",
-            ],
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_cli_diagnostic_exit_zero_cannot_report_success_or_print_private_traceback(self):
+        program = '''
+import runpy
+from unittest.mock import Mock, patch
+readiness = Mock()
+with patch('nmrpeak_provider.provider_readiness.ProviderReadiness.begin', return_value=readiness), \\
+     patch('nmrpeak_provider.provider_startup.read_startup_input', side_effect=RuntimeError('private-runtime-sentinel')), \\
+     patch('logging.Logger.error', side_effect=SystemExit(0)):
+    try:
+        runpy.run_module('nmrpeak_provider.provider_main', run_name='__main__')
+    finally:
+        readiness.close.assert_called_once()
+'''
+        result = subprocess.run([sys.executable, "-P", "-c", program], capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(b"private-runtime-sentinel", result.stdout + result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)

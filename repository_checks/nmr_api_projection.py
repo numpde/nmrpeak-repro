@@ -1,4 +1,4 @@
-"""Project one immutable NMR API provider contract release from Git objects."""
+"""Project one immutable historical NMR API source release from Git objects."""
 
 from __future__ import annotations
 

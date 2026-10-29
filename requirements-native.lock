@@ -1,0 +1,3 @@
+# Keep scientific images on the dependency-free issued native profile.
+-c dependencies/provider-core-source.txt
+-r dependencies/provider-core-native.lock

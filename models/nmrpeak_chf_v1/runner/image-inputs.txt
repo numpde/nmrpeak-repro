@@ -1,3 +1,5 @@
+dependencies/provider-core-native.lock
+dependencies/provider-core-source.txt
 families/nmrpeak/bart-base/config.json
 families/nmrpeak/bart-base/source.json
 families/nmrpeak/checkpoint_file.py
@@ -10,7 +12,6 @@ families/nmrpeak/unicore-closure.paths
 families/nmrpeak/unicore-closure.sha256
 models/nmrpeak_chf_v1/runner/Dockerfile.runner
 models/nmrpeak_chf_v1/runner/Dockerfile.runner.dockerignore
-models/nmrpeak_chf_v1/runner/owner_session_supervisor.py
 models/nmrpeak_chf_v1/runner/runtime.py
 models/nmrpeak_chf_v1/runner/worker.py
 nmrpeak_provider/__init__.py
@@ -19,9 +20,10 @@ nmrpeak_provider/chf_binding.py
 nmrpeak_provider/chf_runner_protocol.py
 nmrpeak_provider/diagnostic_text.py
 nmrpeak_provider/failure_message.py
+nmrpeak_provider/native_launcher.py
+nmrpeak_provider/native_policy.py
 nmrpeak_provider/nmrpeak_binding.py
 nmrpeak_provider/owner_session_endpoint.py
-nmrpeak_provider/owner_session_supervisor.py
 nmrpeak_provider/process_logging.py
 nmrpeak_provider/product.py
 nmrpeak_provider/product_decode.py
@@ -29,3 +31,4 @@ nmrpeak_provider/product_input.py
 nmrpeak_provider/product_result.py
 nmrpeak_provider/runner_protocol.py
 repository_checks/nmrpeak_source.py
+requirements-native.lock
