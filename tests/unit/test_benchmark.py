@@ -121,6 +121,22 @@ class BenchmarkTests(unittest.TestCase):
                 launch.return_value.terminate.assert_called_once()
                 launch.return_value.wait.assert_called_once_with(timeout=5)
 
+    def test_uncertain_build_retains_proxy_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(os.environ, {"NETWORK_INTERFACE_SELECTED": "wlp10s0"}), \
+             patch.object(host.subprocess, "Popen") as launch, \
+             patch("sys.stderr", new_callable=io.StringIO) as diagnostics:
+            scratch = Path(temporary)
+            (scratch / "proxy.port").write_text("12345\n")
+            launch.return_value.pid = 123
+            with self.assertRaisesRegex(RuntimeError, "client lost"):
+                with host.build_network(scratch, lambda: True):
+                    raise RuntimeError("client lost")
+            launch.return_value.terminate.assert_not_called()
+            self.assertIn("PID 123 retained", diagnostics.getvalue())
+            self.assertTrue(launch.call_args.kwargs["start_new_session"])
+            self.assertEqual(launch.call_args.kwargs["stderr"], subprocess.DEVNULL)
+
     def test_build_proxy_failure_never_falls_back_to_default_network(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"NETWORK_INTERFACE_SELECTED": "missing"}), \
              patch.object(host.subprocess, "Popen") as launch:

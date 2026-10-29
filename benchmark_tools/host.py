@@ -108,7 +108,7 @@ def image_spec(role, input_id, revision):
 
 
 @contextmanager
-def build_network(scratch):
+def build_network(scratch, retirement_uncertain=lambda: False):
     interface = os.environ.get("NETWORK_INTERFACE_SELECTED", "")
     if not interface:
         raise ValueError("Cannot build benchmark images without a selected network interface")
@@ -121,7 +121,9 @@ def build_network(scratch):
         return
     ready = scratch / "proxy.port"
     proxy = subprocess.Popen([sys.executable, str(ROOT / "docker/bound_http_proxy.py"),
-                              f"--interface={interface}", "--ready-file", str(ready)], env=ENV)
+                              f"--interface={interface}", "--ready-file", str(ready)], env=ENV,
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     failure = None
     try:
         deadline = time.monotonic() + 5
@@ -145,17 +147,20 @@ def build_network(scratch):
         failure = error
         raise
     finally:
-        try:
-            proxy.terminate()
+        if retirement_uncertain():
+            print(f"Network proxy PID {proxy.pid} retained at {scratch} and may be accessible to local processes; inspect the process and Docker before cleanup.", file=sys.stderr)
+        else:
             try:
-                proxy.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proxy.kill()
-                proxy.wait(timeout=5)
-        except Exception as cleanup_error:
-            if failure is None:
-                raise
-            failure.add_note(f"Network proxy cleanup failed: {cleanup_error}")
+                proxy.terminate()
+                try:
+                    proxy.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proxy.kill()
+                    proxy.wait(timeout=5)
+            except Exception as cleanup_error:
+                if failure is None:
+                    raise
+                failure.add_note(f"Network proxy cleanup failed: {cleanup_error}")
 
 
 def prepare_images(revision, scratch, build=False, network_arguments=()):
@@ -371,7 +376,7 @@ def stage_lock():
             shutil.copyfile(ROOT / path, target)
         shutil.copyfile(ROOT / "families/nmrpeak/pyproject.toml", root / "pyproject.toml")
         shutil.copyfile(ROOT / "containers/benchmark/requirements.lock", root / "requirements.seed")
-        with build_network(root) as build_arguments:
+        with build_network(root, lambda: engine_active) as build_arguments:
             engine_active = True
             docker("build", *build_arguments, "--tag", "nmrpeak-benchmark-lock:renderer", "--file",
                    root / "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock", root, timeout=600)
@@ -423,7 +428,7 @@ def main():
         check_lock(ROOT, "benchmark-cu128", ROOT / "containers/benchmark/requirements.lock")
         temporary = tempfile.mkdtemp(prefix="nmrpeak-benchmark-build-")
         try:
-            with build_network(Path(temporary)) as network_arguments:
+            with build_network(Path(temporary), lambda: sys.exc_info()[0] is not None) as network_arguments:
                 print(json.dumps(prepare_images(revision, Path(temporary), build=True,
                                                 network_arguments=network_arguments), indent=2))
         except BaseException:

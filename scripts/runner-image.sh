@@ -42,12 +42,12 @@ engine_active=0
 cleanup() {
     local status=$?
     trap - EXIT
-    if [[ -n "$proxy_pid" ]]; then
+    if [[ -n "$proxy_pid" ]] && (( ! engine_active )); then
         kill "$proxy_pid" 2>/dev/null || true
         wait "$proxy_pid" 2>/dev/null || true
     fi
     if (( engine_active )); then
-        printf 'Build or container retirement is unconfirmed; preserve inputs at %s and inspect Docker before retrying.\n' "$tmp" >&2
+        printf 'Build retirement is unconfirmed; preserve inputs at %s and proxy PID %s; the proxy may remain accessible to local processes. Inspect Docker and the process before cleanup or retrying.\n' "$tmp" "${proxy_pid:-none}" >&2
     else
         rm -rf -- "$tmp"
     fi
@@ -70,8 +70,8 @@ proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-
 if [[ "$network_interface" != system ]]; then
     build_network=host
     readonly ready_file="$tmp/proxy.port"
-    "$python" "$repo_root/docker/bound_http_proxy.py" \
-        --interface="$network_interface" --ready-file "$ready_file" &
+    setsid "$python" "$repo_root/docker/bound_http_proxy.py" \
+        --interface="$network_interface" --ready-file "$ready_file" </dev/null >/dev/null 2>&1 &
     proxy_pid=$!
     for _ in {1..100}; do
         [[ -s "$ready_file" ]] && break

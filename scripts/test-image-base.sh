@@ -39,12 +39,12 @@ engine_active=0
 cleanup() {
     status=$?
     trap - EXIT
-    if [[ -n "$proxy_pid" ]]; then
+    if [[ -n "$proxy_pid" ]] && (( ! engine_active )); then
         kill "$proxy_pid" 2>/dev/null || true
         wait "$proxy_pid" 2>/dev/null || true
     fi
     if (( engine_active )); then
-        printf 'Build retirement is unconfirmed; preserve inputs at %s and inspect Docker before retrying.\n' "$scratch" >&2
+        printf 'Build retirement is unconfirmed; preserve inputs at %s and proxy PID %s; the proxy may remain accessible to local processes. Inspect Docker and the process before cleanup or retrying.\n' "$scratch" "${proxy_pid:-none}" >&2
     else
         rm -rf -- "$scratch"
     fi
@@ -58,8 +58,8 @@ trap 'exit 143' TERM
 build_network=default
 proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg http_proxy= --build-arg https_proxy= --build-arg NO_PROXY= --build-arg no_proxy= --build-arg ALL_PROXY= --build-arg all_proxy= --build-arg FTP_PROXY= --build-arg ftp_proxy=)
 if [[ "$network_interface" != system ]]; then
-    "${PYTHON:-python3}" "$repo_root/docker/bound_http_proxy.py" \
-        --interface="$network_interface" --ready-file "$scratch/proxy.port" &
+    setsid "${PYTHON:-python3}" "$repo_root/docker/bound_http_proxy.py" \
+        --interface="$network_interface" --ready-file "$scratch/proxy.port" </dev/null >/dev/null 2>&1 &
     proxy_pid=$!
     for _ in {1..100}; do
         [[ -s "$scratch/proxy.port" ]] && break
@@ -92,7 +92,9 @@ fi
 if [[ "$docker_base_id" != "$expected_base_id" ]]; then
     podman --remote=false tag "$python_ref" "$python_alias"
     podman --remote=false save --format docker-archive --output "$scratch/python-base.tar" "$python_alias"
+    engine_active=1
     docker --context default load --input "$scratch/python-base.tar" >/dev/null
+    engine_active=0
 fi
 
 mkdir -p "$scratch/context/containers/test" "$scratch/context/dependencies"
