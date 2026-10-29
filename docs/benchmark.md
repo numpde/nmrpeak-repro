@@ -159,8 +159,9 @@ a lane.
 
 Builds use allowlisted committed source and pinned upstream closures; secrets,
 weights, local deployment state, and benchmark results are excluded. Networked
-builds fetch pinned dependency artifacts. `make benchmark/lock` stages a new
-hash-locked candidate in `/tmp` for review; it does not replace the committed lock.
+builds fetch pinned dependency artifacts. `make benchmark/lock` uses the same
+explicit network-route selection and stages a new hash-locked candidate in
+`/tmp` for review; it does not replace the committed lock.
 
 CPU and CUDA image builds use the builder-wide UV cache at `/root/.cache/uv`,
 without a repository or lane-specific cache ID. Other repositories using that

@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import stat
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 import tempfile
@@ -19,6 +20,63 @@ GPU = "GPU-75078110-7bdd-beaa-2195-2ba33a555cd7"
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_benchmark_lock_stage_uses_selected_proxy_for_build_and_renderer(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative in ("containers/runner-lock/seed-and-compile.sh",
+                             "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock",
+                             "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock.dockerignore",
+                             "families/nmrpeak/pyproject.toml", "containers/benchmark/requirements.lock"):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture")
+            def docker(*arguments, **kwargs):
+                calls.append(arguments)
+                if arguments[0] == "context":
+                    return SimpleNamespace(stdout=b"unix:///var/run/docker.sock\n")
+                if arguments[0] == "run":
+                    kwargs["stdout"].write(b"fixture\n")
+                return SimpleNamespace(stdout=b"")
+            selected = ["--network", "host", "--build-arg", "HTTPS_PROXY=http://127.0.0.1:12345", "--build-arg", "NO_PROXY="]
+            named_temporary_file = tempfile.NamedTemporaryFile
+            with (patch.object(host, "ROOT", root), patch.object(host, "docker", side_effect=docker),
+                  patch.object(host, "build_network", return_value=nullcontext(selected)),
+                  patch.object(host.tempfile, "NamedTemporaryFile", side_effect=lambda **kwargs: named_temporary_file(dir=root, **kwargs)),
+                  patch("repository_checks.nmrpeak_lock.check_lock"), patch("sys.stdout", io.StringIO())):
+                host.stage_lock()
+            build, run = calls[1:]
+            self.assertIn("HTTPS_PROXY=http://127.0.0.1:12345", build)
+            self.assertEqual(run[run.index("--network") + 1], "host")
+            self.assertIn("HTTPS_PROXY=http://127.0.0.1:12345", run)
+            self.assertIn("NO_PROXY=", run)
+
+    def test_benchmark_lock_stage_preserves_inputs_after_unconfirmed_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative in ("containers/runner-lock/seed-and-compile.sh",
+                             "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock",
+                             "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock.dockerignore",
+                             "families/nmrpeak/pyproject.toml", "containers/benchmark/requirements.lock"):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture")
+            staged = root / "staged"
+            staged.mkdir()
+            def docker(*arguments, **_kwargs):
+                if arguments[0] == "context":
+                    return SimpleNamespace(stdout=b"unix:///var/run/docker.sock\n")
+                raise RuntimeError("build client lost")
+            error_output = io.StringIO()
+            with (patch.object(host, "ROOT", root), patch.object(host, "docker", side_effect=docker),
+                  patch.object(host.tempfile, "mkdtemp", return_value=str(staged)),
+                  patch.object(host, "build_network", return_value=nullcontext(["--network", "default"])),
+                  patch("sys.stderr", error_output), self.assertRaisesRegex(RuntimeError, "build client lost")):
+                host.stage_lock()
+            self.assertTrue((staged / "pyproject.toml").is_file())
+            self.assertTrue((staged / "requirements.seed").is_file())
+            self.assertIn("retirement is unconfirmed", error_output.getvalue())
+
     def test_staged_harness_is_readable_by_the_image_user_under_restrictive_umask(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(host, "git", return_value=b"committed bytes"):
             previous = os.umask(0o077)
@@ -79,10 +137,11 @@ class BenchmarkTests(unittest.TestCase):
             (["NETWORK_INTERFACE="], {}, False),
             ([], {"NETWORK_INTERFACE": "system"}, False),
         ):
-            with self.subTest(arguments=arguments, environment=environment):
-                result = subprocess.run(["make", "-C", str(host.ROOT), "benchmark/image/build", "PYTHON=/bin/true", *arguments],
-                                        env={**os.environ, **environment}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(result.returncode == 0, succeeds, result.stderr.decode())
+            for target in ("benchmark/image/build", "benchmark/lock"):
+                with self.subTest(target=target, arguments=arguments, environment=environment):
+                    result = subprocess.run(["make", "-C", str(host.ROOT), target, "PYTHON=/bin/true", *arguments],
+                                            env={**os.environ, **environment}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    self.assertEqual(result.returncode == 0, succeeds, result.stderr.decode())
 
     def test_sigterm_enters_the_controlled_interruption_path(self):
         with patch.object(host.signal, "signal") as register, patch("sys.argv", ["benchmark", "devices"]), \

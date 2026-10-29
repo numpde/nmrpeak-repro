@@ -41,7 +41,7 @@ benchmark/devices:
 	@$(PYTHON) -m benchmark_tools.host devices
 
 benchmark/lock:
-	@$(PYTHON) -m benchmark_tools.host lock
+	@source "$(REPOSITORY_ROOT)/scripts/network-interface.sh"; select_network_interface; $(PYTHON) -m benchmark_tools.host lock
 
 benchmark/verify: private export BENCHMARK_RUN := $(value RUN)
 benchmark/verify:

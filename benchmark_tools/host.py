@@ -48,7 +48,7 @@ def admit_source():
     revision = git("rev-parse", "HEAD").decode().strip()
     endpoint = docker("context", "inspect", "default", "--format", "{{.Endpoints.docker.Host}}",
                       stdout=subprocess.PIPE).stdout.decode().strip()
-    if not endpoint.startswith("unix://"):
+    if not endpoint.startswith("unix:///"):
         raise RuntimeError("Cannot benchmark: Docker default context must use a local Unix socket")
     if os.getuid() == 0 or os.getgid() == 0:
         raise RuntimeError("Cannot run the benchmark as root; use a regular Docker-enabled user")
@@ -355,7 +355,13 @@ def run_benchmark(revision, options):
 
 
 def stage_lock():
-    with tempfile.TemporaryDirectory(prefix="nmrpeak-benchmark-lock-") as temporary:
+    endpoint = docker("context", "inspect", "default", "--format", "{{.Endpoints.docker.Host}}",
+                      stdout=subprocess.PIPE).stdout.decode().strip()
+    if not endpoint.startswith("unix:///"):
+        raise RuntimeError("Cannot stage benchmark lock: Docker default context must use a local Unix socket")
+    temporary = tempfile.mkdtemp(prefix="nmrpeak-benchmark-lock-")
+    engine_active = False
+    try:
         root = Path(temporary)
         for path in ("containers/runner-lock/seed-and-compile.sh",
                      "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock",
@@ -363,21 +369,39 @@ def stage_lock():
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / path, target)
-        docker("build", "--network", "default", "--tag", "nmrpeak-benchmark-lock:renderer", "--file",
-               root / "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock", root, timeout=600)
-        with tempfile.NamedTemporaryFile(prefix="nmrpeak-benchmark-", suffix=".lock", delete=False) as output:
-            docker("run", "--rm", "--read-only", "--network", "bridge", "--cap-drop", "ALL",
+        shutil.copyfile(ROOT / "families/nmrpeak/pyproject.toml", root / "pyproject.toml")
+        shutil.copyfile(ROOT / "containers/benchmark/requirements.lock", root / "requirements.seed")
+        with build_network(root) as build_arguments:
+            engine_active = True
+            docker("build", *build_arguments, "--tag", "nmrpeak-benchmark-lock:renderer", "--file",
+                   root / "families/nmrpeak/targets/cpu-x86_64/Dockerfile.lock", root, timeout=600)
+            engine_active = False
+            run_network = "host" if build_arguments[1] == "host" else "bridge"
+            proxy_values = [build_arguments[i + 1] for i, value in enumerate(build_arguments[:-1]) if value == "--build-arg"]
+            proxy_arguments = [item for value in proxy_values for item in ("--env", value)]
+            with tempfile.NamedTemporaryFile(prefix="nmrpeak-benchmark-", suffix=".lock", delete=False) as output:
+                engine_active = True
+                docker("run", "--rm", "--read-only", "--network", run_network, *proxy_arguments, "--cap-drop", "ALL",
                    "--security-opt", "no-new-privileges:true", "--pids-limit", "64", "--cpus", "2", "--memory", "8g",
                    "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=6g", "--tmpfs", "/out:rw,size=32m",
-                   "--mount", f'type=bind,src={ROOT / "families/nmrpeak/pyproject.toml"},dst=/work/pyproject.toml,readonly',
-                   "--mount", f'type=bind,src={ROOT / "containers/benchmark/requirements.lock"},dst=/seed/requirements.lock,readonly',
+                   "--mount", f'type=bind,src={root / "pyproject.toml"},dst=/work/pyproject.toml,readonly',
+                   "--mount", f'type=bind,src={root / "requirements.seed"},dst=/seed/requirements.lock,readonly',
                    "--workdir", "/work", "nmrpeak-benchmark-lock:renderer", "pyproject.toml", "--group", "benchmark-cu128",
                    "--custom-compile-command", "make benchmark/lock", "--output-file", "/out/requirements.lock",
                    stdout=output, timeout=1800)
-            candidate = Path(output.name)
+                engine_active = False
+                candidate = Path(output.name)
         from repository_checks.nmrpeak_lock import check_lock
         check_lock(ROOT, "benchmark-cu128", candidate)
         print(f"Candidate benchmark lock: {candidate}; review before replacing containers/benchmark/requirements.lock")
+    except BaseException:
+        if engine_active:
+            print(f"Build or renderer retirement is unconfirmed; preserve inputs at {temporary} and inspect Docker before retrying.", file=sys.stderr)
+        else:
+            print(f"Benchmark lock staging failed; inputs remain at {temporary}.", file=sys.stderr)
+        raise
+    else:
+        shutil.rmtree(temporary)
 
 
 def main():
