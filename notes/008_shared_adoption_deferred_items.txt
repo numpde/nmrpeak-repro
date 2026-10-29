@@ -184,3 +184,16 @@ and filesystem administrators must not add borrowers during the operation.
 Revisit this when the historical retirement operation has been reviewed and its
 recovery and rollback obligations have been resolved; do not infer retirement
 from an absent active mount alone.
+
+On the localhost deployment, a stopped inspection under both locks found no
+current or archived journal generation references. A later live census found
+21 runtime trees and 21 frozen trees, including one active tree of each kind.
+Sixteen historical trees of each kind have a named ACL user 4294967295, while
+the historical publisher required user 65532. One historical tree of each
+kind passes the current retained-tree posture. A borrower census for that valid
+subset refused because its container and volume inventories disagreed; a later
+aggregate observation differed. No tree was removed. Deployment maintenance
+owns the next attempt: establish why the historical ACLs differ and arrange an
+engine/filesystem maintenance boundary that prevents new borrowers, then repeat
+the locked journal and borrower checks with reviewed one-time retirement tooling.
+Preserve the trees until those facts and recovery disposition are established.
