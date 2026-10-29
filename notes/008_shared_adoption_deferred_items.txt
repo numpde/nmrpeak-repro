@@ -167,3 +167,20 @@ not a live failure. Preserve the current cap and evidence boundary; do not inven
 consumer truncation, byte-slice JSON, or postpone the qualified outage/deadline
 fixes for a new diagnostic framework. A future SDK-owned bounded representation
 must declare omissions and preserve encoding/envelope validity.
+
+Historical snapshot retirement
+------------------------------
+NMRPeak deployment maintenance owns disposition of captured runtime and frozen
+generation trees. Older runtime trees use the former single-file identity, and
+older frozen manifests name an earlier provider HTTP release. The current
+runtime-config removal operation admits only the current content identity;
+generation removal validates the current frozen contract. Historical trees
+therefore need an explicit one-time integrity and recovery disposition rather
+than permanent old-format runtime support. Before deleting any tree, drain the
+provider and hold the deployment and provider identity locks while establishing
+the journal references and default-engine borrowers. Preserve selected inputs,
+retained or archived journal references and shared delivery state. Direct Docker
+and filesystem administrators must not add borrowers during the operation.
+Revisit this when the historical retirement operation has been reviewed and its
+recovery and rollback obligations have been resolved; do not infer retirement
+from an absent active mount alone.
