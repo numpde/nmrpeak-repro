@@ -137,6 +137,9 @@ help:
 		'Exceptional removal:' \
 		'  make provider/deployment/generation/remove DEPLOYMENT=<name> FROZEN_GENERATION=<id> CONFIRM=<id>' \
 		'      Remove one unreferenced frozen generation after exact confirmation.' \
+		'  make provider/deployment/runtime-config/remove DEPLOYMENT=<name> RUNTIME_CONFIG=<id> CONFIRM=<id>' \
+		'      Remove one stopped, unmounted, nonselected captured runtime config.' \
+		'      Direct Docker and filesystem operators must not add borrowers during removal.' \
 		'  make provider/deployment/journal/retire DEPLOYMENT=<name> CONFIRM=<full-journal-volume-name>' \
 		'      Delete the entire stopped journal, including retained commands, diagnostics, and archives, after exact volume confirmation.' \
 		'  make provider/identity-lock/remove PROVIDER_REF=<provider-ref> CONFIRM=<full-journal-volume-name>' \
@@ -362,6 +365,18 @@ provider/deployment/generation/remove:
 		$(PYTHON) -m deployment.provider_deployment generation-remove \
 		"$$DEPLOYMENT_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT" \
 		--confirm "$$CONFIRM_INPUT"
+
+.PHONY: provider/deployment/runtime-config/remove
+provider/deployment/runtime-config/remove: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/runtime-config/remove: private export RUNTIME_CONFIG_INPUT := $(value RUNTIME_CONFIG)
+provider/deployment/runtime-config/remove: private export CONFIRM_INPUT := $(value CONFIRM)
+provider/deployment/runtime-config/remove:
+	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin RUNTIME_CONFIG)" = command\ line || { echo 'RUNTIME_CONFIG must be set on the make command line' >&2; exit 2; }
+	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment runtime-config-remove \
+		"$$DEPLOYMENT_INPUT" --runtime-config "$$RUNTIME_CONFIG_INPUT" --confirm "$$CONFIRM_INPUT"
 
 provider/deployment/journal/inspect: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/journal/inspect: private export ATTEMPT_REF_INPUT := $(value ATTEMPT_REF)

@@ -742,6 +742,155 @@ def remove_frozen_generation(
             _remove_retained_generation(state_root, frozen_generation)
 
 
+def remove_runtime_config(
+    repository: Path, deployment: str, runtime_config: str, confirmation: str,
+    *, docker: Path = _DOCKER,
+) -> None:
+    """Remove a nonselected snapshot while cooperating operations are excluded.
+
+    Docker and filesystem administrators must not add borrowers during removal.
+    """
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected("Deployment repository must be one resolved directory")
+    _require_deployment_name(deployment)
+    if type(runtime_config) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_config) is None:
+        raise DeploymentOperationRejected("Runtime config removal requires one full SHA-256 identity")
+    if confirmation != runtime_config:
+        raise DeploymentOperationRejected("Runtime config removal confirmation must equal its full identity")
+    for parent in (root / "secrets", root / "secrets/deployments"):
+        metadata = parent.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise DeploymentOperationRejected("Deployment state ancestors must be operator-owned mode 0700 directories")
+    state_root = _existing_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        services = _inspect_project_containers(docker, root, deployment)
+        _require_stopped_services(services, "Runtime config removal")
+        plan = render_deployment_plan(root, deployment, docker=docker)
+        if runtime_config == plan.runtime_config_id:
+            raise DeploymentOperationRejected("The selected runtime config cannot be removed")
+        image = _resolve_provider_image(docker, root)
+        lock = inspect_provider_identity_lock_volume(docker, plan.provider_ref)
+        target = state_root / "runtime-configs" / _retained_identity_name(runtime_config)
+        with _held_provider_identity_lock(docker, lock, plan.provider_ref, image):
+            _require_snapshot_unmounted(docker, target)
+            _remove_retained_runtime_config(target, runtime_config)
+
+
+def _require_snapshot_unmounted(docker: Path, target: Path) -> None:
+    """Reject any default-engine container retaining an overlapping host mount."""
+    identifiers = _docker_command(docker, ("ps", "--all", "--no-trunc", "--quiet"), timeout=60).stdout.decode("ascii").splitlines()
+    if len(identifiers) != len(set(identifiers)) or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in identifiers):
+        raise DeploymentOperationRejected("Docker returned an invalid container inventory")
+    records = _json_output(_docker_command(docker, ("inspect", *identifiers), timeout=60).stdout, "Snapshot borrower inventory") if identifiers else []
+    if type(records) is not list or len(records) != len(identifiers):
+        raise DeploymentOperationRejected("Docker returned an incomplete snapshot borrower inventory")
+    seen = set()
+    volumes = set()
+    for record in records:
+        if type(record) is not dict or record.get("Id") not in identifiers or record["Id"] in seen or type(record.get("Mounts")) is not list:
+            raise DeploymentOperationRejected("Docker returned an invalid snapshot borrower inventory")
+        seen.add(record["Id"])
+        for mount in record["Mounts"]:
+            if type(mount) is not dict:
+                raise DeploymentOperationRejected("Docker returned an invalid container mount")
+            if mount.get("Type") not in {"bind", "volume"}:
+                continue
+            source = mount.get("Source")
+            if type(source) is not str or not Path(source).is_absolute():
+                raise DeploymentOperationRejected("Docker returned an invalid container mount source")
+            path = Path(source).resolve()
+            if path == target or path in target.parents or target in path.parents:
+                raise DeploymentOperationRejected("A container still mounts the retained runtime config")
+            if mount["Type"] == "volume":
+                name = mount.get("Name")
+                if type(name) is not str or not name:
+                    raise DeploymentOperationRejected("Docker returned an invalid container volume name")
+                volumes.add(name)
+    volume_names = _docker_command(docker, ("volume", "ls", "--quiet"), timeout=60).stdout.decode("utf-8").splitlines()
+    if (len(volume_names) != len(set(volume_names))
+            or any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None for name in volume_names)
+            or not volumes.issubset(volume_names)):
+        raise DeploymentOperationRejected("Docker returned an invalid volume inventory")
+    if volume_names:
+        _require_volume_sources_unmounted(docker, set(volume_names), target)
+
+
+def _require_volume_sources_unmounted(docker: Path, names: set[str], target: Path) -> None:
+    output = _docker_command(docker, ("volume", "inspect", *sorted(names)), timeout=60).stdout
+    records = _json_output(output, "Snapshot volume borrower inventory")
+    if type(records) is not list or len(records) != len(names):
+        raise DeploymentOperationRejected("Docker returned an incomplete snapshot volume inventory")
+    seen = set()
+    for record in records:
+        if type(record) is not dict or record.get("Name") not in names or record["Name"] in seen:
+            raise DeploymentOperationRejected("Docker returned an invalid snapshot volume inventory")
+        seen.add(record["Name"])
+        if record.get("Driver") != "local":
+            raise DeploymentOperationRejected("A Docker volume uses an uninspectable nonlocal driver")
+        options = record.get("Options")
+        if options is None:
+            options = {}
+        if type(options) is not dict or any(type(k) is not str or type(v) is not str for k, v in options.items()):
+            raise DeploymentOperationRejected("Docker returned invalid local volume options")
+        mount_options = options.get("o", "").split(",")
+        if "bind" in mount_options or "rbind" in mount_options:
+            device = options.get("device")
+            if type(device) is not str or not Path(device).is_absolute():
+                raise DeploymentOperationRejected("A bind-backed volume has an invalid host source")
+            source = Path(device).resolve()
+            if source == target or source in target.parents or target in source.parents:
+                raise DeploymentOperationRejected("A Docker volume still references the retained runtime config")
+
+
+def _remove_retained_runtime_config(target: Path, identity: str) -> None:
+    parent = target.parent
+    metadata = parent.stat(follow_symlinks=False)
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise DeploymentOperationRejected("Retained runtime config directory must be operator-owned mode 0700")
+    if target.is_symlink() or not target.is_dir():
+        raise DeploymentOperationRejected("Retained runtime config is not a non-symlink directory")
+    files = {}
+    total = entries = 0
+    pending = [target]
+    while pending:
+        current = pending.pop()
+        with os.scandir(current) as directory:
+            for entry in directory:
+                entries += 1
+                if entries > 512:
+                    raise DeploymentOperationRejected("Retained runtime config contains too many entries")
+                path = current / entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                elif entry.is_file(follow_symlinks=False):
+                    content = _read_regular_file(path)
+                    total += len(content)
+                    if total > 8 * 1024 * 1024:
+                        raise DeploymentOperationRejected("Retained runtime config exceeds its inventory byte limit")
+                    files[path.relative_to(target).as_posix()] = content
+                else:
+                    raise DeploymentOperationRejected("Retained runtime config contains a non-regular entry")
+    _require_retained_tree(target, files)
+    if runtime_config_id(files) != identity:
+        raise DeploymentOperationRejected("Retained runtime config identity does not match its files")
+    staged = parent / f".{target.name}.{secrets.token_hex(16)}.removing"
+    renamed = deleted = False
+    try:
+        os.rename(target, staged)
+        renamed = True
+        _fsync_directory(parent)
+        shutil.rmtree(staged)
+        deleted = True
+        _fsync_directory(parent)
+    except OSError as error:
+        if deleted:
+            raise DeploymentOperationRejected("Runtime config was removed, but deletion durability is unconfirmed") from error
+        if renamed:
+            raise DeploymentOperationRejected("Runtime config removal was incomplete; staged residue remains") from error
+        raise DeploymentOperationRejected("Runtime config could not be staged for removal") from error
+
+
 def inspect_provider_journal(
     repository: Path,
     deployment: str,
@@ -2599,6 +2748,7 @@ def main(arguments: list[str] | None = None) -> int:
             "config",
             "down",
             "generation-remove",
+            "runtime-config-remove",
             "init",
             "journal-inspect",
             "journal-archive-closed",
@@ -2610,6 +2760,7 @@ def main(arguments: list[str] | None = None) -> int:
     )
     parser.add_argument("deployment")
     parser.add_argument("--frozen-generation")
+    parser.add_argument("--runtime-config")
     parser.add_argument("--confirm")
     parser.add_argument("--execution-attempt-ref")
     parser.add_argument("--record-digest")
@@ -2619,7 +2770,10 @@ def main(arguments: list[str] | None = None) -> int:
     _validate_operation_options(parser, options)
     repository = Path(__file__).resolve().parents[1]
     try:
-        if options.operation == "generation-remove":
+        if options.operation == "runtime-config-remove":
+            remove_runtime_config(repository, options.deployment, options.runtime_config, options.confirm)
+            print(f"Removed retained runtime config: {options.deployment} {options.runtime_config}")
+        elif options.operation == "generation-remove":
             remove_frozen_generation(
                 repository,
                 options.deployment,
@@ -2705,6 +2859,10 @@ _OPERATION_OPTION_POLICY = {
         frozenset({"frozen_generation", "confirm"}),
         frozenset({"frozen_generation", "confirm"}),
     ),
+    "runtime-config-remove": (
+        frozenset({"runtime_config", "confirm"}),
+        frozenset({"runtime_config", "confirm"}),
+    ),
     "init": (frozenset(), frozenset()),
     "journal-inspect": (frozenset(), frozenset({"execution_attempt_ref"})),
     "journal-archive-closed": (frozenset({"execution_attempt_ref", "record_digest", "reason", "frozen_generation"}),
@@ -2716,6 +2874,7 @@ _OPERATION_OPTION_POLICY = {
 }
 _OPTION_NAMES = {
     "frozen_generation": "--frozen-generation",
+    "runtime_config": "--runtime-config",
     "confirm": "--confirm",
     "execution_attempt_ref": "--execution-attempt-ref",
     "record_digest": "--record-digest",
@@ -2726,6 +2885,7 @@ _OPERATION_FAILURE_HEADLINES = {
     "config": "Provider deployment preview failed",
     "down": "Provider deployment shutdown failed",
     "generation-remove": "Frozen deployment generation removal failed",
+    "runtime-config-remove": "Retained runtime config removal failed",
     "init": "Provider deployment initialization failed",
     "journal-inspect": "Provider journal inspection failed",
     "journal-archive-closed": "Provider journal archival failed",

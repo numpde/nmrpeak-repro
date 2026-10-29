@@ -936,6 +936,69 @@ class ProviderDeploymentTests(unittest.TestCase):
             self.assertFalse(generation.exists())
             self.assertTrue(neighbor.is_dir())
 
+    def test_runtime_config_removal_keeps_selected_and_refuses_mounted_inputs(self):
+        from nmrpeak_provider.provider_config import runtime_config_id
+        with render_repository() as repository:
+            plan = test_plan(repository)
+            materialize_deployment_plan(repository, "production", plan)
+            parent = repository / "secrets/deployments/production/runtime-configs"
+            files = dict(plan.runtime_files)
+            files["provider.toml"] += b"\n"
+            old_id = runtime_config_id(files)
+            old = provider_deployment._publish_retained_tree(parent, old_id, files)
+            selected = parent / plan.runtime_config_id.removeprefix("sha256:")
+            with self.assertRaisesRegex(DeploymentOperationRejected, "identity does not match"):
+                provider_deployment._remove_retained_runtime_config(old, "sha256:" + "f" * 64)
+            self.assertTrue(old.is_dir())
+            with (
+                patch.object(provider_deployment, "_inspect_project_containers", return_value={}),
+                patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                patch.object(provider_deployment, "_resolve_provider_image", return_value=IMAGES["provider"]),
+                patch.object(provider_deployment, "inspect_provider_identity_lock_volume", return_value="lock"),
+                patch.object(provider_deployment, "_held_provider_identity_lock", return_value=nullcontext()),
+                patch.object(provider_deployment, "_require_snapshot_unmounted", side_effect=DeploymentOperationRejected("mounted")) as inventory,
+            ):
+                with self.assertRaisesRegex(DeploymentOperationRejected, "selected runtime"):
+                    provider_deployment.remove_runtime_config(repository, "production", plan.runtime_config_id, plan.runtime_config_id)
+                inventory.assert_not_called()
+                with self.assertRaisesRegex(DeploymentOperationRejected, "mounted"):
+                    provider_deployment.remove_runtime_config(repository, "production", old_id, old_id)
+                self.assertTrue(old.is_dir())
+                inventory.side_effect = None
+                provider_deployment.remove_runtime_config(repository, "production", old_id, old_id)
+            self.assertFalse(old.exists())
+            self.assertTrue(selected.is_dir())
+
+    def test_runtime_config_borrower_inventory_includes_stopped_containers(self):
+        container_id = "a" * 64
+        target = Path("/private/runtime/target")
+        def command(_docker, arguments, **_kwargs):
+            if arguments[0] == "ps":
+                output = (container_id + "\n").encode()
+            else:
+                output = json.dumps([{"Id": container_id, "Mounts": [
+                    {"Type": "bind", "Source": str(target / "input")},
+                ]}]).encode()
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+        with patch.object(provider_deployment, "_docker_command", side_effect=command):
+            with self.assertRaisesRegex(DeploymentOperationRejected, "still mounts"):
+                provider_deployment._require_snapshot_unmounted(Path("/usr/bin/docker"), target)
+
+    def test_runtime_config_borrower_inventory_checks_volume_backing_sources(self):
+        target = Path("/private/runtime/target")
+        def command(_docker, arguments, **_kwargs):
+            if arguments[0] == "ps":
+                output = b""
+            elif arguments[:2] == ("volume", "ls"):
+                output = b"retained-volume\n"
+            else:
+                output = json.dumps([{"Name": "retained-volume", "Driver": "local",
+                                      "Options": {"o": "bind,ro", "device": str(target)}}]).encode()
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+        with patch.object(provider_deployment, "_docker_command", side_effect=command):
+            with self.assertRaisesRegex(DeploymentOperationRejected, "volume still references"):
+                provider_deployment._require_snapshot_unmounted(Path("/usr/bin/docker"), target)
+
     def test_journal_inventory_helper_has_only_read_only_journal_authority(
         self,
     ) -> None:
