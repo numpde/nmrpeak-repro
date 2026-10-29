@@ -24,8 +24,9 @@ class ProviderIdentityLock:
     runtime cleanup can leave scientific threads alive after Python unwinding.
     """
 
-    def __init__(self, descriptor: int) -> None:
+    def __init__(self, descriptor: int, provider_ref: str) -> None:
         self._descriptor = descriptor
+        self.provider_ref = provider_ref
         self._close_failure: BaseException | None = None
 
     @classmethod
@@ -34,6 +35,15 @@ class ProviderIdentityLock:
 
         if type(provider_ref) is not str or _PROVIDER_REF.fullmatch(provider_ref) is None:
             raise ValueError("Provider identity lock requires a valid provider reference")
+        return cls._acquire(path, provider_ref)
+
+    @classmethod
+    def acquire_volume(cls, path: Path) -> ProviderIdentityLock:
+        """Acquire the volume identity before reading provider-owned inputs."""
+        return cls._acquire(path, None)
+
+    @classmethod
+    def _acquire(cls, path: Path, expected_ref: str | None) -> ProviderIdentityLock:
         try:
             descriptor = os.open(
                 Path(path),
@@ -53,7 +63,13 @@ class ProviderIdentityLock:
                     "Provider identity lock must be a root-owned mode-0444 regular file"
                 )
             content = os.read(descriptor, _MAX_LOCK_BYTES + 1)
-            if content != provider_ref.encode("ascii") + b"\n":
+            try:
+                provider_ref = content.decode("ascii").removesuffix("\n")
+            except UnicodeDecodeError as error:
+                raise ValueError("Provider identity lock contains an invalid identity") from error
+            if content != provider_ref.encode("ascii") + b"\n" or _PROVIDER_REF.fullmatch(provider_ref) is None:
+                raise ValueError("Provider identity lock contains an invalid identity")
+            if expected_ref is not None and provider_ref != expected_ref:
                 raise ValueError("Provider identity lock names another provider")
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -61,7 +77,7 @@ class ProviderIdentityLock:
                 raise ProviderIdentityLockBusy(
                     "Another deployment already holds this provider identity"
                 ) from error
-            return cls(descriptor)
+            return cls(descriptor, provider_ref)
         except BaseException as primary:
             try:
                 os.close(descriptor)

@@ -40,7 +40,7 @@ from tests.unit.test_runtime_config_v2 import RUNTIME
 lock_path, release, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 descriptor = os.open(lock_path, os.O_RDONLY | os.O_CLOEXEC)
 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-identity_lock = ProviderIdentityLock(descriptor)
+identity_lock = ProviderIdentityLock(descriptor, "provider:nmrpeak")
 # Root-owned file admission is covered separately; this probe owns a real flock.
 entered = Event()
 deadlines = RunnerDeadlines(2, 2, 5, 5, 0.2)
@@ -92,7 +92,7 @@ with patch.object(provider_main, "load_provider_startup", return_value=ProviderS
      patch.object(provider_main, "load_openai_chat_endpoint_specs", return_value=()), \
      patch.object(provider_main, "_require_empty_legacy_journal"), \
      patch.object(provider_main.ProviderReadiness, "begin", return_value=readiness), \
-     patch.object(provider_main.ProviderIdentityLock, "acquire", return_value=identity_lock), \
+     patch.object(provider_main.ProviderIdentityLock, "acquire_volume", return_value=identity_lock), \
      patch.object(provider_main, "prepare_runner_session", side_effect=prepare), \
      patch.object(provider_main, "ProviderProcess", Process):
     status = provider_main.main()

@@ -42,6 +42,21 @@ def runner(name, events, *, connect_failure=None, retire_failure=None):
 
 
 class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
+    def test_startup_read_and_lock_close_failures_are_both_preserved(self):
+        primary = RuntimeError("captured input unavailable")
+        cleanup = OSError("identity lock close failed")
+        lock = SimpleNamespace(close=Mock(side_effect=cleanup))
+        readiness = Mock()
+        with (
+            patch.object(provider_main.ProviderReadiness, "begin", return_value=readiness),
+            patch.object(provider_main.ProviderIdentityLock, "acquire_volume", return_value=lock),
+            patch.object(provider_main, "load_provider_startup", side_effect=primary),
+            self.assertRaises(BaseExceptionGroup) as caught,
+        ):
+            provider_main.run_provider()
+        self.assertEqual(caught.exception.exceptions, (primary, cleanup))
+        readiness.close.assert_called_once()
+
     def test_runtime_effects_require_the_identity_lock_and_empty_legacy_guard(self):
         frozen = FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)
         settings = ApiSettings(SharedApi({}).identity,
@@ -58,7 +73,7 @@ class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
         def acquire_lock(*_arguments):
             nonlocal held
             held = True
-            return SimpleNamespace(close=close_lock)
+            return SimpleNamespace(close=close_lock, provider_ref="provider:nmrpeak")
 
         def guard(_path):
             self.assertTrue(held)
@@ -72,13 +87,19 @@ class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
             arguments["identity_lock"].close()
 
         guarded, serving = Mock(side_effect=guard), AsyncMock(side_effect=serve)
+        startup = ProviderStartup(
+            decode_provider_runtime_config(RUNTIME), definition, binding,
+            replace(settings, http=replace(settings.http, proxy_socket="/routes/selected/proxy.sock")),
+        )
+
+        def read_while_locked(result):
+            self.assertTrue(held)
+            return result
+
         replacements = {
-            "load_provider_startup": Mock(return_value=ProviderStartup(
-                decode_provider_runtime_config(RUNTIME), definition, binding,
-                replace(settings, http=replace(settings.http, proxy_socket="/routes/selected/proxy.sock")),
-            )),
-            "load_frozen_generation": Mock(return_value=frozen),
-            "load_openai_chat_endpoint_specs": Mock(return_value=()),
+            "load_provider_startup": Mock(side_effect=lambda *_args: read_while_locked(startup)),
+            "load_frozen_generation": Mock(side_effect=lambda *_args, **_kw: read_while_locked(frozen)),
+            "load_openai_chat_endpoint_specs": Mock(side_effect=lambda *_args: read_while_locked(())),
             "InputInterpreter": Mock(), "_require_empty_legacy_journal": guarded,
             "_serve": serving,
         }
@@ -86,7 +107,7 @@ class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
             for name, replacement in replacements.items():
                 stack.enter_context(patch.object(provider_main, name, replacement))
             stack.enter_context(patch.object(provider_main.ProviderReadiness, "begin", return_value=readiness))
-            stack.enter_context(patch.object(provider_main.ProviderIdentityLock, "acquire", side_effect=acquire_lock))
+            stack.enter_context(patch.object(provider_main.ProviderIdentityLock, "acquire_volume", side_effect=acquire_lock))
             provider_main.run_provider()
             self.assertFalse(held)
             blocked = RuntimeError("Retained legacy work blocks startup")
@@ -95,8 +116,18 @@ class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
                 provider_main.run_provider()
             self.assertIs(caught.exception, blocked)
             serving.assert_awaited_once()
+            previous_reads = replacements["load_frozen_generation"].call_count
+            binding.api["provider_ref"] = "provider:other"
+            with self.assertRaisesRegex(ValueError, "another provider identity lock"):
+                provider_main.run_provider()
+            self.assertFalse(held)
+            self.assertEqual(replacements["load_frozen_generation"].call_count, previous_reads)
+            replacements["load_provider_startup"].side_effect = RuntimeError("captured input unavailable")
+            with self.assertRaisesRegex(RuntimeError, "captured input unavailable"):
+                provider_main.run_provider()
+            self.assertFalse(held)
         self.assertFalse(held)
-        self.assertEqual(readiness.close.call_count, 2)
+        self.assertEqual(readiness.close.call_count, 4)
 
     async def test_unusable_scientific_state_cannot_skip_native_retirement(self):
         events = []

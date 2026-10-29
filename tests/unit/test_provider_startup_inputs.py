@@ -30,6 +30,22 @@ PROVIDER_REF = "provider:nmrpeak"
 
 
 class ProviderIdentityLockTests(unittest.TestCase):
+    def test_volume_identity_is_admitted_and_excludes_expected_identity_owner(self):
+        with lock_file() as path, root_owned_lock_status(path):
+            owner = ProviderIdentityLock.acquire_volume(path)
+            try:
+                self.assertEqual(owner.provider_ref, PROVIDER_REF)
+                with self.assertRaises(ProviderIdentityLockBusy):
+                    ProviderIdentityLock.acquire(path, PROVIDER_REF)
+            finally:
+                owner.close()
+
+    def test_volume_identity_rejects_bad_framing(self):
+        for content in (b"provider:nmrpeak", b"provider:nmrpeak\n\n", b"\xff\n"):
+            with self.subTest(content=content), lock_file(content=content) as path, root_owned_lock_status(path):
+                with self.assertRaisesRegex(ValueError, "invalid identity"):
+                    ProviderIdentityLock.acquire_volume(path)
+
     def test_failed_close_remains_visible_without_retrying_a_reused_descriptor(self):
         failure = OSError("Descriptor release acknowledgement failed")
         with lock_file() as path, root_owned_lock_status(path):

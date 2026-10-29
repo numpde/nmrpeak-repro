@@ -44,29 +44,31 @@ def run_provider(config_path: Path = CONFIG_PATH) -> None:
     readiness = ProviderReadiness.begin()
     primary = None
     try:
-        startup = load_provider_startup(config_path)
-        configured = startup.configured
-        policy = configured.policy
-        frozen = load_frozen_generation(
-            FROZEN_ROOT, expected_frozen_generation_id=configured.frozen_generation_id,
-        )
-        definition, binding, settings = startup.definition, startup.binding, startup.settings
-        provider_ref = binding.api["provider_ref"]
-        if provider_ref != frozen.runtime.hf.generation.provider_ref:
-            raise ProviderConfigurationRejected("Selected API binding belongs to another frozen provider generation")
-        interpreter = InputInterpreter(
-            load_openai_chat_endpoint_specs(INTERPRETER_CONFIG_DIRECTORY), policy.interpreter,
-        )
-        announcement = _prepare_hello(frozen)
-        identity_lock = ProviderIdentityLock.acquire(IDENTITY_LOCK_PATH, provider_ref)
+        identity_lock = ProviderIdentityLock.acquire_volume(IDENTITY_LOCK_PATH)
         try:
+            startup = load_provider_startup(config_path)
+            configured = startup.configured
+            policy = configured.policy
+            definition, binding, settings = startup.definition, startup.binding, startup.settings
+            provider_ref = binding.api["provider_ref"]
+            if provider_ref != identity_lock.provider_ref:
+                raise ProviderConfigurationRejected("Selected API binding belongs to another provider identity lock")
+            frozen = load_frozen_generation(
+                FROZEN_ROOT, expected_frozen_generation_id=configured.frozen_generation_id,
+            )
+            if provider_ref != frozen.runtime.hf.generation.provider_ref:
+                raise ProviderConfigurationRejected("Selected API binding belongs to another frozen provider generation")
+            interpreter = InputInterpreter(
+                load_openai_chat_endpoint_specs(INTERPRETER_CONFIG_DIRECTORY), policy.interpreter,
+            )
+            announcement = _prepare_hello(frozen)
             _require_empty_legacy_journal(JOURNAL_PATH)
         except BaseException as cause:
             try:
                 identity_lock.close()
             except BaseException as cleanup:
                 if cleanup is not cause:
-                    raise BaseExceptionGroup("Legacy startup refusal and identity cleanup failure", [cause, cleanup]) from None
+                    raise BaseExceptionGroup("Provider admission and identity cleanup failure", [cause, cleanup]) from None
                 raise
             raise
         asyncio.run(_serve(

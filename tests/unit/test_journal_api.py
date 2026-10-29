@@ -70,7 +70,7 @@ class ArchiveIdentityLifetimeTests(unittest.TestCase):
                 path.touch()
                 descriptor = os.open(path, os.O_RDONLY)
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                held = ProviderIdentityLock(descriptor)
+                held = ProviderIdentityLock(descriptor, 'provider:nmrpeak')
                 failure = OSError('HTTP owner did not retire')
                 api = SimpleNamespace(retirement_confirmed=settled, last_failure=None,
                                       origin='https://api.example', expected_topology='web',
