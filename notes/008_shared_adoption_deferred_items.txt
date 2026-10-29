@@ -197,3 +197,14 @@ owns the next attempt: establish why the historical ACLs differ and arrange an
 engine/filesystem maintenance boundary that prevents new borrowers, then repeat
 the locked journal and borrower checks with reviewed one-time retirement tooling.
 Preserve the trees until those facts and recovery disposition are established.
+
+Acquisition cancellation
+------------------------
+The NMRPeak build and lock-stage launchers preserve their temporary input trees
+when a Docker operation exits without confirmed completion. This does not prove
+that a daemon-side build or lock-render container has retired: a local isolated
+probe found the Docker client and its container both still running two seconds
+after the client received TERM. NMRPeak's build owner should add exact invocation
+ownership and bounded retirement before treating an interrupted lock stage as
+finished; until then inspect Docker and preserve the reported inputs before a
+retry. The probe does not establish that BuildKit read a removed context.

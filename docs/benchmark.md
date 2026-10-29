@@ -24,11 +24,13 @@ git submodule update --init --recursive
 make benchmark/image/build
 ```
 
-For the repository's explicit Wi-Fi build route, use
-`make benchmark/image/build NMRPEAK_WIFI_INTERFACE=wlp10s0`, substituting your
-wireless interface. The build starts a temporary interface-bound proxy and stops
-it afterward. Dependency tools honoring the proxy
-use that interface; base/frontend image pulls retain Docker engine networking.
+To select a route without a prompt, use
+`make benchmark/image/build NETWORK_INTERFACE=wlp10s0`, substituting your
+chosen interface, or use `NETWORK_INTERFACE=system` for the system route.
+Without a selection, an interactive terminal offers a choice with no default;
+unattended builds require an explicit selection. An interface selection starts
+a temporary bound proxy for dependency tools; base/frontend image pulls retain
+Docker engine networking.
 It does not change host routes, DNS, or daemon configuration.
 
 The build prepares the current HF/CHF CPU runner images and one common benchmark

@@ -14,18 +14,25 @@ and freeform-text routes and deployment requirements.
 
 The maintained tests run in a pinned Docker image. On Linux, use Git, Make,
 Bash, Python 3.11+, Docker with Compose and a local default context, and a regular
-Docker-enabled account. The image-preparation command requires a kernel-recognized
-Wi-Fi interface; building a missing image also requires Podman. If the matching
-image already exists, run `make test` directly. Otherwise replace `wlp1s0` with
-your wireless interface's name:
+Docker-enabled account. The image-preparation command requires a network-route
+choice; building a missing image also requires Podman. If the matching image
+already exists, run `make test` directly. Otherwise replace `wlp1s0` with your
+chosen interface, or use `system` for the default route:
 
 ```bash
 git submodule update --init --recursive
-make test-image/base/build NMRPEAK_WIFI_INTERFACE=wlp1s0
+make test-image/base/build NETWORK_INTERFACE=wlp1s0
 make test
 ```
 
-Image preparation uses the network and reuses an existing matching image.
+Networked build and dependency-staging commands ask for a route when one is not
+supplied. Choose a listed interface, or `system` for the default route; there is
+no default selection, and unattended commands must set `NETWORK_INTERFACE` on
+the Make command line. Interface-bound dependency downloads use a temporary
+proxy for tools that honor it; it is not an egress firewall. Docker base and
+frontend image acquisition uses the engine's route; test-image base bootstrap
+uses Podman's default connection.
+Image preparation reuses an existing matching image.
 `make test` runs without network, API credentials, weights, or GPUs. It checks
 software behavior using fixtures; live provider and model qualification are
 separate opt-in operations. `make help` lists preparation and deployment commands.

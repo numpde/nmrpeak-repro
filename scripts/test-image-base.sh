@@ -3,13 +3,11 @@ set -euo pipefail
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 
-[[ $# -eq 2 ]] || fail "usage: test-image-base.sh <repository-root> <wifi-interface>"
+[[ $# -eq 2 ]] || fail "usage: test-image-base.sh <repository-root> <network-interface>"
 readonly repo_root="$1"
-readonly wifi_interface="$2"
-[[ -d "/sys/class/net/$wifi_interface" ]] ||
-    fail "selected Wi-Fi interface does not exist: $wifi_interface"
-[[ -d "/sys/class/net/$wifi_interface/wireless" ]] ||
-    fail "selected interface is not a kernel wireless interface: $wifi_interface"
+readonly network_interface="$2"
+[[ "$network_interface" == system || ( "$network_interface" =~ ^[A-Za-z0-9_.:-]{1,15}$ && "$network_interface" != . && "$network_interface" != .. && -d "/sys/class/net/$network_interface" ) ]] ||
+    fail "selected network interface does not exist: $network_interface"
 [[ "$(id -u)" -ne 0 && "$(id -g)" -ne 0 ]] ||
     fail "test image preparation requires a non-root user and primary group"
 
@@ -23,7 +21,7 @@ readonly test_image="nmrpeak-repro/python-test:$base_key"
 endpoint="$(docker --context default context inspect default --format '{{.Endpoints.docker.Host}}')"
 case "$endpoint" in
     unix:///*) ;;
-    *) fail "Docker context default is not local: $endpoint" ;;
+    *) fail "Docker context default must use a local Unix socket" ;;
 esac
 
 existing_id="$(docker --context default image ls --quiet --no-trunc "$test_image")"
@@ -37,6 +35,7 @@ fi
 
 readonly scratch="$(mktemp -d)"
 proxy_pid=""
+engine_active=0
 cleanup() {
     status=$?
     trap - EXIT
@@ -44,7 +43,11 @@ cleanup() {
         kill "$proxy_pid" 2>/dev/null || true
         wait "$proxy_pid" 2>/dev/null || true
     fi
-    rm -rf -- "$scratch"
+    if (( engine_active )); then
+        printf 'Build retirement is unconfirmed; preserve inputs at %s and inspect Docker before retrying.\n' "$scratch" >&2
+    else
+        rm -rf -- "$scratch"
+    fi
     exit "$status"
 }
 trap cleanup EXIT
@@ -52,22 +55,29 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-"${PYTHON:-python3}" "$repo_root/docker/bound_http_proxy.py" \
-    --interface "$wifi_interface" --ready-file "$scratch/proxy.port" &
-proxy_pid=$!
-for _ in {1..100}; do
-    [[ -s "$scratch/proxy.port" ]] && break
-    kill -0 "$proxy_pid" 2>/dev/null || fail "Wi-Fi proxy stopped before test image preparation"
-    sleep 0.05
-done
-[[ -s "$scratch/proxy.port" ]] || fail "Wi-Fi proxy did not become ready"
-readonly proxy_url="http://127.0.0.1:$(<"$scratch/proxy.port")"
+build_network=default
+proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg http_proxy= --build-arg https_proxy= --build-arg NO_PROXY= --build-arg no_proxy= --build-arg ALL_PROXY= --build-arg all_proxy= --build-arg FTP_PROXY= --build-arg ftp_proxy=)
+if [[ "$network_interface" != system ]]; then
+    "${PYTHON:-python3}" "$repo_root/docker/bound_http_proxy.py" \
+        --interface="$network_interface" --ready-file "$scratch/proxy.port" &
+    proxy_pid=$!
+    for _ in {1..100}; do
+        [[ -s "$scratch/proxy.port" ]] && break
+        kill -0 "$proxy_pid" 2>/dev/null || fail "Network proxy stopped before test image preparation"
+        sleep 0.05
+    done
+    [[ -s "$scratch/proxy.port" ]] || fail "Network proxy did not become ready"
+    readonly proxy_url="http://127.0.0.1:$(<"$scratch/proxy.port")"
+    build_network=host
+    proxy_build_arguments=(--build-arg "HTTP_PROXY=$proxy_url" --build-arg "HTTPS_PROXY=$proxy_url"
+        --build-arg "http_proxy=$proxy_url" --build-arg "https_proxy=$proxy_url"
+        --build-arg "NO_PROXY=" --build-arg "no_proxy=" --build-arg "ALL_PROXY=" --build-arg "all_proxy=" --build-arg "FTP_PROXY=" --build-arg "ftp_proxy=")
+fi
 
-command -v podman >/dev/null || fail "podman is required to authenticate the pinned Python base through Wi-Fi"
+command -v podman >/dev/null || fail "podman is required to authenticate the pinned Python base through selected interface"
 if ! podman --remote=false image inspect "$python_ref" >/dev/null 2>&1; then
-    HTTP_PROXY="$proxy_url" HTTPS_PROXY="$proxy_url" NO_PROXY= \
-        http_proxy="$proxy_url" https_proxy="$proxy_url" \
-        no_proxy= \
+    env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy \
+        -u ALL_PROXY -u all_proxy -u FTP_PROXY -u ftp_proxy \
         podman --remote=false pull --quiet "$python_ref" >/dev/null
 fi
 observed_digest="$(podman --remote=false image inspect "$python_ref" --format '{{.Digest}}')"
@@ -91,17 +101,14 @@ cp "$repo_root/dependencies/provider-core-api.lock" "$scratch/context/dependenci
 cp "$repo_root/dependencies/provider-core-source.txt" "$scratch/context/dependencies/provider-core-source.txt"
 cp "$repo_root/containers/test/os-packages.lock" "$scratch/context/containers/test/os-packages.lock"
 
-docker --context default build --pull=false --network host \
-    --build-arg "HTTP_PROXY=$proxy_url" \
-    --build-arg "HTTPS_PROXY=$proxy_url" \
-    --build-arg "http_proxy=$proxy_url" \
-    --build-arg "https_proxy=$proxy_url" \
-    --build-arg "NO_PROXY=" \
-    --build-arg "no_proxy=" \
+engine_active=1
+docker --context default build --pull=false --network "$build_network" \
+    "${proxy_build_arguments[@]}" \
     --build-arg "PYTHON_BASE_IMAGE=$python_alias" \
     --build-arg "TEST_BASE_IDENTITY=$base_key" \
     --tag "$test_image" \
     --file "$repo_root/containers/test/Dockerfile.base" "$scratch/context"
+engine_active=0
 
 observed_key="$(docker --context default image inspect "$test_image" \
     --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"

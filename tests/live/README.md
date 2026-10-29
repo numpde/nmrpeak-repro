@@ -9,7 +9,7 @@ mount one ignored-file-free source snapshot read-only, the signing credential
 read-only, and only the owner-only state directory read-write. The container is
 nonroot, capability-free, and given ordinary bridge networking for the selected
 HTTPS endpoint. Prepare the image first with `make test-image/base/build
-NMRPEAK_WIFI_INTERFACE=<name>`.
+NETWORK_INTERFACE=<name>`.
 
 Because this container receives a signing key and network access, live targets
 require a clean checkout and `LIVE_SOURCE_REVISION` equal to its reviewed HEAD.

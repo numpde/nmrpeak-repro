@@ -32,11 +32,12 @@
     <p>Results contain candidate structures represented as SMILES strings. They are model predictions; the provider does not establish the compound’s identity or report a confidence score.</p>
 
     <h2>Check the software</h2>
-    <p>The maintained tests run in a pinned container. Use Linux, Git, Make, Bash, Python 3.11 or later, Docker with Compose, a local Docker default context, and a regular Docker-enabled account. The image-preparation command requires a kernel-recognized Wi-Fi interface; building a missing image also requires Podman. If the matching image already exists, run <code>make test</code> directly. Otherwise clone the pinned source and prepare the test image; replace <code>wlp1s0</code> with your wireless interface:</p>
+    <p>The maintained tests run in a pinned container. Use Linux, Git, Make, Bash, Python 3.11 or later, Docker with Compose, a local Docker default context, and a regular Docker-enabled account. The image-preparation command requires an explicit network route; building a missing image also requires Podman. If the matching image already exists, run <code>make test</code> directly. Otherwise clone the pinned source and prepare the test image; replace <code>wlp1s0</code> with your chosen interface:</p>
     <pre><code>git clone --recurse-submodules https://github.com/numpde/nmrpeak-repro.git
 cd nmrpeak-repro
-make test-image/base/build NMRPEAK_WIFI_INTERFACE=wlp1s0
+make test-image/base/build NETWORK_INTERFACE=wlp1s0
 make test</code></pre>
+    <p>Omit <code>NETWORK_INTERFACE</code> to choose interactively, or set it to <code>system</code> for the default route. Unattended preparation requires an explicit selection. Dependency tools use the selected proxy when they honor it; base image bootstrap uses the default connection.</p>
     <p>Cloning and test-image preparation use network access. Preparation reuses an existing matching image. Ordinary tests never build or pull images: they run without network, API credentials, model weights, or GPUs, using a read-only source snapshot that excludes credentials and local deployment state. They check provider behavior, communication with the model processes, and repository consistency using fixtures and the pinned source. Passing them does not demonstrate model accuracy or a working deployment.</p>
 
     <h2>CPU/GPU comparison</h2>

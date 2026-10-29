@@ -78,13 +78,15 @@ fi
 require_regular_file "$renderer"
 require_regular_file "$renderer_ignore"
 require_regular_file "$compiler"
-readonly wifi_interface="${NMRPEAK_WIFI_INTERFACE:-}"
-if [[ -n "$wifi_interface" && ! -d "/sys/class/net/$wifi_interface" ]]; then
-    fail "cannot stage the $target lock because the selected Wi-Fi interface does not exist: $wifi_interface"
-fi
+source "$repo_root/scripts/network-interface.sh"
+select_network_interface
+readonly network_interface="$NETWORK_INTERFACE_SELECTED"
+require_local_docker
+docker() { command docker --context default "$@"; }
 
 tmp="$(mktemp -d)"
 proxy_pid=''
+engine_active=0
 cleanup() {
     local status=$?
     trap - EXIT
@@ -92,10 +94,17 @@ cleanup() {
         kill "$proxy_pid" 2>/dev/null || true
         wait "$proxy_pid" 2>/dev/null || true
     fi
-    rm -rf -- "$tmp"
+    if (( engine_active )); then
+        printf 'Build or container retirement is unconfirmed; preserve inputs at %s and inspect Docker before retrying.\n' "$tmp" >&2
+    else
+        rm -rf -- "$tmp"
+    fi
     exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 readonly context="$tmp/context"
 install -d -- "$context/containers/runner-lock" "$context/families/nmrpeak/targets/$target"
@@ -107,41 +116,58 @@ cp -- "$lock" "$tmp/requirements.seed"
 readonly input_digests="$(sha256sum -- "$intent" "$lock" "$renderer" "$renderer_ignore" "$compiler")"
 
 build_network=default
+proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg http_proxy= --build-arg https_proxy= --build-arg NO_PROXY= --build-arg no_proxy= --build-arg ALL_PROXY= --build-arg all_proxy= --build-arg FTP_PROXY= --build-arg ftp_proxy=)
 run_network=bridge
-proxy_build_arguments=()
-proxy_run_arguments=()
-if [[ -n "$wifi_interface" ]]; then
+proxy_run_arguments=(--env HTTP_PROXY= --env HTTPS_PROXY= --env http_proxy= --env https_proxy= --env NO_PROXY= --env no_proxy= --env ALL_PROXY= --env all_proxy= --env FTP_PROXY= --env ftp_proxy=)
+if [[ "$network_interface" != system ]]; then
+    build_network=host
+    run_network=host
     readonly ready_file="$tmp/proxy.port"
     "$python" "$repo_root/docker/bound_http_proxy.py" \
-        --interface "$wifi_interface" --ready-file "$ready_file" &
+        --interface="$network_interface" --ready-file "$ready_file" &
     proxy_pid=$!
     for _ in {1..100}; do
         [[ -s "$ready_file" ]] && break
-        kill -0 "$proxy_pid" 2>/dev/null || fail "Wi-Fi proxy stopped before staging the $target lock."
+        kill -0 "$proxy_pid" 2>/dev/null || fail "Network proxy stopped before staging the $target lock."
         sleep 0.05
     done
-    [[ -s "$ready_file" ]] || fail "Wi-Fi proxy did not become ready before staging the $target lock."
+    [[ -s "$ready_file" ]] || fail "Network proxy did not become ready before staging the $target lock."
     readonly proxy_url="http://127.0.0.1:$(<"$ready_file")"
-    build_network=host
-    run_network=host
     proxy_build_arguments=(
         --build-arg "HTTP_PROXY=$proxy_url"
         --build-arg "HTTPS_PROXY=$proxy_url"
+        --build-arg "http_proxy=$proxy_url"
+        --build-arg "https_proxy=$proxy_url"
+        --build-arg "NO_PROXY="
+        --build-arg "no_proxy="
+        --build-arg "ALL_PROXY="
+        --build-arg "all_proxy="
+        --build-arg "FTP_PROXY="
+        --build-arg "ftp_proxy="
     )
     proxy_run_arguments=(
         --env "HTTP_PROXY=$proxy_url"
         --env "HTTPS_PROXY=$proxy_url"
         --env "http_proxy=$proxy_url"
         --env "https_proxy=$proxy_url"
+        --env "NO_PROXY="
+        --env "no_proxy="
+        --env "ALL_PROXY="
+        --env "all_proxy="
+        --env "FTP_PROXY="
+        --env "ftp_proxy="
     )
 fi
 readonly image="nmrpeak-lock-renderer:${repo_digest:0:12}-$target"
 
+engine_active=1
 docker build --network "$build_network" "${proxy_build_arguments[@]}" \
     --tag "$image" --file "$context/families/nmrpeak/targets/$target/Dockerfile.lock" \
     "$context" >&2
+engine_active=0
 
 readonly rendered="$tmp/requirements.rendered"
+engine_active=1
 set +e
 docker run --rm --network "$run_network" --read-only --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 64 --cpus 1 --memory 2g \
@@ -157,6 +183,7 @@ docker run --rm --network "$run_network" --read-only --cap-drop ALL \
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
 [[ "${pipeline_status[0]}" == 0 ]] || exit "${pipeline_status[0]}"
+engine_active=0
 [[ "${pipeline_status[1]}" == 0 ]] || fail "cannot capture the staged $target lock within 16 MiB"
 check_file "$rendered"
 [[ "$(sha256sum -- "$intent" "$lock" "$renderer" "$renderer_ignore" "$compiler")" == "$input_digests" ]] ||

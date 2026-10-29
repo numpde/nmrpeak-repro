@@ -70,6 +70,8 @@ class MakeBoundaryTests(unittest.TestCase):
             ("runner/lock/check", ("TARGET",)),
             ("runner/lock/apply", ("TARGET",)),
             ("runner/image/build", ("RUNNER", "TARGET")),
+            ("provider/image/build", ("NETWORK_INTERFACE",)),
+            ("benchmark/image/build", ("NETWORK_INTERFACE",)),
             ("checkpoint/import", ("RUNNER", "RELEASE", "ARCHIVE")),
             ("checkpoint/recover", ("VOLUME", "CONFIRM")),
         )
@@ -77,15 +79,15 @@ class MakeBoundaryTests(unittest.TestCase):
             with self.subTest(target=target):
                 self._assert_dry_run_keeps_values_out_of_shell(target, values)
 
-    def test_image_builder_rejects_a_non_wireless_interface(self) -> None:
+    def test_image_builder_rejects_an_unavailable_interface(self) -> None:
         result = subprocess.run(
-            (str(REPOSITORY_ROOT / "scripts/test-image-base.sh"), str(REPOSITORY_ROOT), "lo"),
+            (str(REPOSITORY_ROOT / "scripts/test-image-base.sh"), str(REPOSITORY_ROOT), "not-an-interface"),
             check=False,
             capture_output=True,
             text=True,
         )
         self.assertEqual(result.returncode, 2)
-        self.assertIn("not a kernel wireless interface", result.stderr)
+        self.assertIn("does not exist", result.stderr)
 
 
 if __name__ == "__main__":

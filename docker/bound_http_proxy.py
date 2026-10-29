@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import re
 from pathlib import Path
 import secrets
 import select
@@ -192,7 +193,7 @@ def resolve_ipv4_bound(host: str, interface: str) -> tuple[str, ...]:
             errors.append(f"{server}: response contains no IPv4 address for {host}")
         except (OSError, UnicodeError, ValueError) as error:
             errors.append(f"{server}: {error}")
-    raise OSError("Wi-Fi-bound DNS resolution failed: " + "; ".join(errors))
+    raise OSError("Interface-bound DNS resolution failed: " + "; ".join(errors))
 
 
 def connect_bound(host: str, port: int, interface: str) -> socket.socket:
@@ -267,10 +268,9 @@ def main() -> None:
     args = parser.parse_args()
 
     interface = Path("/sys/class/net") / args.interface
-    if not interface.is_dir():
+    if (not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", args.interface)
+            or args.interface in {".", ".."} or not interface.is_dir()):
         raise SystemExit(f"network interface does not exist: {args.interface}")
-    if not (interface / "wireless").is_dir():
-        raise SystemExit(f"network interface is not wireless: {args.interface}")
 
     with ProxyServer(("127.0.0.1", args.port), args.interface) as server:
         port = server.server_address[1]

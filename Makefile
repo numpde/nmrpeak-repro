@@ -1,3 +1,7 @@
+unexport NETWORK_INTERFACE
+override export NMRPEAK_NETWORK_INTERFACE_INPUT := $(if $(filter command line,$(origin NETWORK_INTERFACE)),$(value NETWORK_INTERFACE))
+override export NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN := $(origin NETWORK_INTERFACE)
+
 override SHELL := bash
 override .SHELLFLAGS := -eu -o pipefail -c
 PYTHON ?= python3
@@ -30,11 +34,8 @@ export BENCHMARK_TIMEOUT = $(or $(TIMEOUT),7200)
 benchmark:
 	@$(PYTHON) -m benchmark_tools.host run
 
-benchmark/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 benchmark/image/build:
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
-	@$(PYTHON) -m benchmark_tools.host build
+	@source "$(REPOSITORY_ROOT)/scripts/network-interface.sh"; select_network_interface; $(PYTHON) -m benchmark_tools.host build
 
 benchmark/devices:
 	@$(PYTHON) -m benchmark_tools.host devices
@@ -53,7 +54,7 @@ help:
 		'NMR API provider' \
 		'' \
 		'Verify this checkout:' \
-		'  make benchmark/image/build' \
+		'  make benchmark/image/build [NETWORK_INTERFACE=<name|system>]' \
 		'  make benchmark [DEVICES="all|cpu|GPU-<uuid> ..."] [MODELS="hf chf"] [CASES="small medium long"]' \
 		'      Compare the current CPU stack and matched CPU/GPU stack; save benchmark/<UTC>-<sha>/.' \
 		'  make benchmark/devices' \
@@ -63,8 +64,8 @@ help:
 		'  make test' \
 		'      Run the complete default lane in the pinned, networkless test container.' \
 		'      One read-only source snapshot excludes credentials, deployment state, weights, and ignored files.' \
-		'  make test-image/base/build NMRPEAK_WIFI_INTERFACE=<name>' \
-		'      Prepare the content-keyed dependency image; apt, pip, and base pulls use the Wi-Fi-bound proxy.' \
+		'  make test-image/base/build [NETWORK_INTERFACE=<name|system>]' \
+		'      Prepare the dependency image using an explicitly selected network route.' \
 		'      Ordinary test targets never pull images or use the network.' \
 		'  make test/unit' \
 		'  make test/contract' \
@@ -104,16 +105,16 @@ help:
 		'      Repair an interrupted checkpoint volume after exact confirmation.' \
 		'' \
 		'Build provider and runner images:' \
-		'  make provider/image/build [NMRPEAK_WIFI_INTERFACE=<name>]' \
-		'      Build the provider from a clean committed checkout; an explicit interface binds dependency downloads to Wi-Fi.' \
-		'  make runner/lock/stage TARGET=<target> [NMRPEAK_WIFI_INTERFACE=<name>]' \
-		'      Resolve dependencies and stage a candidate outside the checkout; an explicit interface binds downloads to Wi-Fi.' \
+		'  make provider/image/build [NETWORK_INTERFACE=<name|system>]' \
+		'      Build the provider from a clean committed checkout; select an interface for dependency downloads.' \
+		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
+		'      Resolve dependencies and stage a candidate outside the checkout using the selected route.' \
 		'  make runner/lock/check TARGET=<target>' \
 		'      Verify the committed dependency lock without network access.' \
 		'  make runner/lock/apply TARGET=<target>' \
 		'      Replace the committed lock with the verified staged candidate.' \
-		'  make runner/image/build RUNNER=<runner> TARGET=<target> [NMRPEAK_WIFI_INTERFACE=<name>]' \
-		'      Build one runner image from committed inputs; an explicit interface binds dependency downloads to Wi-Fi.' \
+		'  make runner/image/build RUNNER=<runner> TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
+		'      Build one runner image from committed inputs; select an interface for dependency downloads.' \
 		'' \
 		'Operate a named deployment:' \
 		'  make provider/deployment/init DEPLOYMENT=<name>' \
@@ -150,11 +151,9 @@ test: check/test-image
 	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
 		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" all
 
-test-image/base/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 test-image/base/build:
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line -a -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
-	@"$(REPOSITORY_ROOT)/scripts/test-image-base.sh" \
-		"$(REPOSITORY_ROOT)" "$$NMRPEAK_WIFI_INTERFACE_INPUT"
+	@source "$(REPOSITORY_ROOT)/scripts/network-interface.sh"; select_network_interface; \
+		"$(REPOSITORY_ROOT)/scripts/test-image-base.sh" "$(REPOSITORY_ROOT)" "$$NETWORK_INTERFACE_SELECTED"
 
 check/test-image:
 	@$(NMRPEAK_TEST_NON_ROOT_GUARD); \
@@ -163,7 +162,7 @@ check/test-image:
 	image_id="$$(docker --context default image ls --quiet --no-trunc "$(NMRPEAK_TEST_IMAGE)")"; \
 	if [[ -z "$$image_id" ]]; then \
 		printf '%s\n' 'The exact local test dependency image is absent.' \
-			'Run: make test-image/base/build NMRPEAK_WIFI_INTERFACE=wlp10s0' >&2; exit 2; \
+			'Run: make test-image/base/build NETWORK_INTERFACE=wlp10s0' >&2; exit 2; \
 	fi; \
 	observed="$$(docker --context default image inspect "$$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"; \
 	if [[ "$$observed" != "$(NMRPEAK_TEST_BASE_KEY)" ]]; then \
@@ -286,29 +285,20 @@ upstream-contracts/check upstream-contracts/write:
 		$(PYTHON) -m repository_checks.nmr_api_projection "$(@F)" \
 		"$(REPOSITORY_ROOT)" "$$NMR_API_V1_DIR_INPUT" "$$RELEASE_INPUT"
 
-runner/lock/stage runner/lock/check runner/lock/apply: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 runner/lock/stage runner/lock/check runner/lock/apply: private export TARGET_INPUT := $(value TARGET)
 runner/lock/stage runner/lock/check runner/lock/apply:
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
-	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$$TARGET_INPUT"
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$$TARGET_INPUT"
 
-runner/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 runner/image/build: private export RUNNER_INPUT := $(value RUNNER)
 runner/image/build: private export TARGET_INPUT := $(value TARGET)
 runner/image/build:
 	@test "$(origin RUNNER)" = command\ line || { echo 'RUNNER must be set on the make command line' >&2; exit 2; }
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
-	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" "$$RUNNER_INPUT" "$$TARGET_INPUT"
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" "$$RUNNER_INPUT" "$$TARGET_INPUT"
 
-provider/image/build: private export NMRPEAK_WIFI_INTERFACE_INPUT := $(value NMRPEAK_WIFI_INTERFACE)
 provider/image/build:
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o "$(origin NMRPEAK_WIFI_INTERFACE)" = command\ line || { echo 'NMRPEAK_WIFI_INTERFACE must be set on the make command line' >&2; exit 2; }
-	@test "$(origin NMRPEAK_WIFI_INTERFACE)" = undefined -o -n "$$NMRPEAK_WIFI_INTERFACE_INPUT" || { echo 'NMRPEAK_WIFI_INTERFACE must not be empty when supplied' >&2; exit 2; }
-	@NMRPEAK_WIFI_INTERFACE="$$NMRPEAK_WIFI_INTERFACE_INPUT" PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"
 
 provider/deployment/init: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/init:

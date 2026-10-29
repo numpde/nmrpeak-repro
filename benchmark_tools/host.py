@@ -49,7 +49,7 @@ def admit_source():
     endpoint = docker("context", "inspect", "default", "--format", "{{.Endpoints.docker.Host}}",
                       stdout=subprocess.PIPE).stdout.decode().strip()
     if not endpoint.startswith("unix://"):
-        raise RuntimeError(f"Cannot benchmark using Docker endpoint {endpoint!r}; a local Unix socket is required")
+        raise RuntimeError("Cannot benchmark: Docker default context must use a local Unix socket")
     if os.getuid() == 0 or os.getgid() == 0:
         raise RuntimeError("Cannot run the benchmark as root; use a regular Docker-enabled user")
     return revision
@@ -109,28 +109,38 @@ def image_spec(role, input_id, revision):
 
 @contextmanager
 def build_network(scratch):
-    interface = os.environ.get("NMRPEAK_WIFI_INTERFACE_INPUT", "")
+    interface = os.environ.get("NETWORK_INTERFACE_SELECTED", "")
     if not interface:
-        yield ["--network", "default"]
+        raise ValueError("Cannot build benchmark images without a selected network interface")
+    if interface == "system":
+        yield ["--network", "default", "--build-arg", "HTTP_PROXY=", "--build-arg", "HTTPS_PROXY=",
+               "--build-arg", "http_proxy=", "--build-arg", "https_proxy=",
+               "--build-arg", "NO_PROXY=", "--build-arg", "no_proxy=",
+               "--build-arg", "ALL_PROXY=", "--build-arg", "all_proxy=",
+               "--build-arg", "FTP_PROXY=", "--build-arg", "ftp_proxy="]
         return
     ready = scratch / "proxy.port"
     proxy = subprocess.Popen([sys.executable, str(ROOT / "docker/bound_http_proxy.py"),
-                              "--interface", interface, "--ready-file", str(ready)], env=ENV)
+                              f"--interface={interface}", "--ready-file", str(ready)], env=ENV)
     failure = None
     try:
         deadline = time.monotonic() + 5
         while not ready.exists():
             if proxy.poll() is not None:
-                raise RuntimeError(f"Cannot build benchmark images: Wi-Fi proxy exited with status {proxy.returncode}")
+                raise RuntimeError(f"Cannot build benchmark images: Network proxy exited with status {proxy.returncode}")
             if time.monotonic() >= deadline:
-                raise TimeoutError("Cannot build benchmark images: Wi-Fi proxy did not become ready within five seconds")
+                raise TimeoutError("Cannot build benchmark images: Network proxy did not become ready within five seconds")
             time.sleep(0.05)
         port = int(ready.read_text())
         if not 1 <= port <= 65535:
-            raise ValueError(f"Cannot build benchmark images: Wi-Fi proxy published port {port}")
+            raise ValueError(f"Cannot build benchmark images: Network proxy published port {port}")
         url = f"http://127.0.0.1:{port}"
-        print(f"Benchmark dependency downloads through Wi-Fi interface {interface}", flush=True)
-        yield ["--network", "host", "--build-arg", f"HTTP_PROXY={url}", "--build-arg", f"HTTPS_PROXY={url}"]
+        print(f"Benchmark dependency downloads through network interface {interface}", flush=True)
+        yield ["--network", "host", "--build-arg", f"HTTP_PROXY={url}", "--build-arg", f"HTTPS_PROXY={url}",
+               "--build-arg", f"http_proxy={url}", "--build-arg", f"https_proxy={url}",
+               "--build-arg", "NO_PROXY=", "--build-arg", "no_proxy=",
+               "--build-arg", "ALL_PROXY=", "--build-arg", "all_proxy=",
+               "--build-arg", "FTP_PROXY=", "--build-arg", "ftp_proxy="]
     except BaseException as error:
         failure = error
         raise
@@ -145,7 +155,7 @@ def build_network(scratch):
         except Exception as cleanup_error:
             if failure is None:
                 raise
-            failure.add_note(f"Wi-Fi proxy cleanup failed: {cleanup_error}")
+            failure.add_note(f"Network proxy cleanup failed: {cleanup_error}")
 
 
 def prepare_images(revision, scratch, build=False, network_arguments=()):
@@ -387,10 +397,16 @@ def main():
     if options.action == "build":
         from repository_checks.nmrpeak_lock import check_lock
         check_lock(ROOT, "benchmark-cu128", ROOT / "containers/benchmark/requirements.lock")
-        with tempfile.TemporaryDirectory(prefix="nmrpeak-benchmark-build-") as temporary:
+        temporary = tempfile.mkdtemp(prefix="nmrpeak-benchmark-build-")
+        try:
             with build_network(Path(temporary)) as network_arguments:
                 print(json.dumps(prepare_images(revision, Path(temporary), build=True,
                                                 network_arguments=network_arguments), indent=2))
+        except BaseException:
+            print(f"Build retirement is unconfirmed; preserve inputs at {temporary} and inspect Docker before retrying.", file=sys.stderr)
+            raise
+        else:
+            shutil.rmtree(temporary)
         return
     options.devices = os.environ.get("BENCHMARK_DEVICES", "all").split()
     options.lanes = os.environ.get("BENCHMARK_MODELS", "hf chf").split()
