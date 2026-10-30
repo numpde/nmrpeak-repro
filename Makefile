@@ -118,11 +118,15 @@ help:
 		'' \
 		'Operate a named deployment:' \
 		'  make provider/deployment/init DEPLOYMENT=<name>' \
-		'      Create named configuration and a private interpreter-input directory.' \
+		'      Create config/deployments/<name>/deployment.toml and provider.toml templates.' \
+		'      Set provider.toml [shared].settings_file to <provider-tools-checkout>/config/deployments/localhost/settings.toml.' \
 		'  make provider/deployment/config DEPLOYMENT=<name>' \
-		'      Capture the provider API inputs and render the shared grants for review.' \
+		'      Read that configuration and print a reviewed plan using a temporary networkless projection container.' \
+		'      It changes no persistent deployment state or shared services.' \
+		'      The shared settings source is provider.toml [shared].settings_file.' \
 		'  make provider/deployment/up DEPLOYMENT=<name> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
-		'      Start the reviewed generation with its selected shared API and delivery binding.' \
+		'      Start or replace this NMRPeak provider deployment using its reviewed shared socket grants.' \
+		'      Borrows the shared proxy and outbox; it does not start, stop, or reconfigure them.' \
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
 		'      Report the owned provider and runner container state.' \
 		'  make provider/deployment/journal/inspect DEPLOYMENT=<name> [ATTEMPT_REF=<ref>]' \
