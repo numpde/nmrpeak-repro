@@ -784,6 +784,31 @@ class ProviderDeploymentTests(unittest.TestCase):
                     stop_deployment(repository, deployment)
                 self.assertFalse(remaining[0])
 
+    def test_down_refuses_multiple_orphan_api_route_volumes(self) -> None:
+        project = "nmrpeak-production"
+        volumes = [f"{project}-route-" + digit * 64 for digit in ("a", "b")]
+        with TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            state = repository / "secrets/deployments/production"
+            state.mkdir(parents=True, mode=0o700)
+            state.chmod(0o700)
+            with (
+                patch.object(provider_deployment, "_inspect_project_containers", return_value={}),
+                patch.object(
+                    provider_deployment,
+                    "_docker_command",
+                    return_value=subprocess.CompletedProcess(
+                        (), 0, ("\n".join(volumes) + "\n").encode(), b""
+                    ),
+                ),
+                patch.object(provider_deployment, "_run_compose_down") as compose,
+                self.assertRaisesRegex(
+                    DeploymentOperationRejected, "foreign or ambiguous session volume"
+                ),
+            ):
+                stop_deployment(repository, "production")
+            compose.assert_not_called()
+
     def test_down_refuses_route_named_volume_with_foreign_compose_label(self) -> None:
         project = "nmrpeak-production"
         volume = f"{project}-route-" + "a" * 64
