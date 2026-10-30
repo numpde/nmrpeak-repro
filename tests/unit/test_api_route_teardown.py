@@ -1,22 +1,33 @@
 """Admit original SDK mount evidence, including opaque long-namespace volumes."""
 
 from copy import deepcopy
+from dataclasses import asdict
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from deployment import provider_deployment as d
-from tests.unit.test_deployment_topology import binding_projection
+from provider_core.deployment_binding import load_deployment_bindings
+from provider_core.deployment_route import NamedRouteVolume, render_api_route
+from tests.unit.test_deployment_runtime import DEFINITION
 
 
 class ApiRouteTeardownTests(unittest.TestCase):
     def owners(self):
         deployment = "a" * 64
         namespace = "nmrpeak-" + deployment
-        projection = binding_projection(namespace=namespace)
-        route = projection["api_route"]
+        with TemporaryDirectory() as temporary:
+            definition = Path(temporary) / "bindings.toml"
+            definition.write_text(DEFINITION)
+            binding = load_deployment_bindings(definition).selected("first")
+            route = asdict(render_api_route(
+                binding, image="sha256:" + "a" * 64, interpreter="/usr/local/bin/python3.12",
+                namespace=namespace, uid=65532, gid=65532, storage=NamedRouteVolume(),
+                input_sources={}, service_name="api",
+            ))
         volume_key = route["client_mount"]["source"]
         name = route["compose"]["volumes"][volume_key]["name"]
         services = {}

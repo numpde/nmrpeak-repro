@@ -12,7 +12,6 @@ from provider_core.startup_file import StartupFileRejected
 
 from nmrpeak_provider import provider_config, provider_startup
 from nmrpeak_provider.local_input import LocalInputSnapshotError, read_bounded_regular_file
-from tests.unit.test_deployment_runtime import DEFINITION
 from tests.unit.test_provider_startup_inputs import credential_bytes
 from tests.unit.test_runtime_config_v2 import RUNTIME
 
@@ -37,10 +36,23 @@ class ProviderStartupTests(unittest.TestCase):
                         provider_startup.read_startup_input("/unused", maximum_bytes=100, label="API input")
                 self.assertIs(caught.exception, failure)
 
-    def test_maintenance_binding_admission_needs_no_science_envelope_or_interpreter_keys(self):
+    def fixture(self, directory, *, credential=None):
+        root = Path(directory)
+        config = root / "provider.toml"
+        original = Path("/run/config/nmrpeak-provider/grants") / provider_config.api_input_target(
+            "/run/credentials/first.json").name
+        config.write_bytes(RUNTIME.replace(str(original).encode(), str(provider_config.api_input_target(
+            "/run/credentials/first.json")).encode()))
+        key = Ed25519PrivateKey.generate()
+        captured = provider_config.api_input_target("/run/credentials/first.json")
+        captured.parent.mkdir()
+        captured.write_bytes(credential_bytes(key) if credential is None else credential)
+        captured.chmod(0o440)
+        return config, captured, key
+
+    def test_captured_credential_is_read_once_and_retained_for_publication(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(provider_config, "API_INPUT_ROOT", Path(directory) / "grants"):
-            config, definition, captured, _key = self.fixture(directory)
-            config.unlink()
+            config, captured, key = self.fixture(directory)
             observed = []
 
             def read(path, *, maximum_bytes):
@@ -48,41 +60,10 @@ class ProviderStartupTests(unittest.TestCase):
                 return read_bounded_regular_file(path, maximum_bytes=maximum_bytes)
 
             with patch.object(provider_startup, "read_bounded_regular_file", side_effect=read):
-                admitted, selected, settings = provider_startup.load_captured_api_binding(
-                    "first", "/routes/selected/proxy.sock", definition_path=definition,
-                )
-            self.assertIs(admitted.selected("first"), selected)
-            self.assertEqual(observed, [definition, captured])
-            self.assertEqual(settings.http.proxy_socket, "/routes/selected/proxy.sock")
-
-    def fixture(self, directory, *, credential=None):
-        root = Path(directory)
-        config = root / "provider.toml"
-        config.write_bytes(RUNTIME.replace(b'name = "nmrpeak"', b'name = "first"'))
-        definition = root / "bindings.toml"
-        definition.write_text(DEFINITION)
-        key = Ed25519PrivateKey.generate()
-        captured = provider_config.api_input_target("/run/credentials/first.json")
-        captured.parent.mkdir()
-        captured.write_bytes(credential_bytes(key) if credential is None else credential)
-        captured.chmod(0o440)
-        return config, definition, captured, key
-
-    def test_only_captured_selected_credential_is_parsed_and_route_is_required(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(provider_config, "API_INPUT_ROOT", Path(directory) / "grants"):
-            config, definition, captured, key = self.fixture(directory)
-            observed = []
-
-            def read(path, *, maximum_bytes):
-                observed.append(path)
-                return read_bounded_regular_file(definition if path == provider_config.BINDING_PATH else path,
-                                                 maximum_bytes=maximum_bytes)
-
-            with patch.object(provider_startup, "read_bounded_regular_file", side_effect=read):
                 startup = provider_startup.load_provider_startup(config)
-            self.assertEqual(observed, [config, provider_config.BINDING_PATH, captured])
-            self.assertEqual(startup.binding.name, "first")
-            self.assertEqual(startup.binding.api["provider_ref"], "provider:nmrpeak")
+            self.assertEqual(observed, [config, captured])
+            self.assertEqual(startup.provider_ref, "provider:nmrpeak")
+            self.assertEqual(startup.publication.credential_bytes, captured.read_bytes())
             self.assertEqual(startup.settings.expected_topology, "web")
             self.assertEqual(startup.settings.http.proxy_socket, "/routes/selected/proxy.sock")
             self.assertEqual(startup.settings.identity.private_key.public_key().public_bytes_raw(),
@@ -100,15 +81,9 @@ class ProviderStartupTests(unittest.TestCase):
     def test_sdk_rejects_credential_principal_mismatch(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(provider_config, "API_INPUT_ROOT", Path(directory) / "grants"):
             wrong = credential_bytes(Ed25519PrivateKey.generate()).replace(b'provider:nmrpeak', b'provider:other')
-            config, definition, _captured, _key = self.fixture(directory, credential=wrong)
-
-            def read(path, *, maximum_bytes):
-                return read_bounded_regular_file(definition if path == provider_config.BINDING_PATH else path,
-                                                 maximum_bytes=maximum_bytes)
-
-            with patch.object(provider_startup, "read_bounded_regular_file", side_effect=read):
-                with self.assertRaises(ApiConfigurationRejected):
-                    provider_startup.load_provider_startup(config)
+            config, _captured, _key = self.fixture(directory, credential=wrong)
+            with self.assertRaises(ApiConfigurationRejected):
+                provider_startup.load_provider_startup(config)
 
     def test_capture_refuses_symlink_instead_of_opening_its_target(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(provider_config, "API_INPUT_ROOT", Path(directory) / "grants"):

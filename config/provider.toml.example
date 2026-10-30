@@ -1,9 +1,18 @@
-# Select the shared binding file on the host; deployment freezes its contents.
-schema_id = "nmrpeak.provider.runtime_config.v2"
+# Provider API inputs and host-owned shared socket settings.
+schema_id = "nmrpeak.provider.runtime_config.v3"
 
-[binding]
-definition_file = "/absolute/path/to/shared-bindings.toml"
-name = "nmrpeak"
+[api]
+origin = "https://api.example.invalid"
+profile = "run"
+topology = "web"
+provider_ref = "provider:example"
+credential_file = "/absolute/path/to/provider-credential.json"
+ca_file = "/absolute/path/to/api-ca.pem"
+exchange_seconds = 30
+retirement_seconds = 10
+
+[shared]
+settings_file = "/absolute/path/to/shared-settings.toml"
 
 [process]
 feed_interval_seconds = 5

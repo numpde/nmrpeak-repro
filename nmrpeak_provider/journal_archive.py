@@ -89,7 +89,6 @@ def main(arguments=None):
     parser.add_argument('--reason', required=True)
     parser.add_argument('--expected-authority-id', required=True)
     parser.add_argument('--expected-provider-ref', required=True)
-    parser.add_argument('--binding', required=True)
     parser.add_argument('--proxy-socket', required=True)
     args = parser.parse_args(arguments)
     api = None
@@ -103,7 +102,7 @@ def main(arguments=None):
         if frozen.runtime.hf.generation.provider_ref != args.expected_provider_ref:
             raise ValueError('Frozen generation belongs to another provider; preserve the retained journal')
         api = load_journal_api(
-            binding_name=args.binding, proxy_socket=args.proxy_socket,
+            proxy_socket=args.proxy_socket,
             expected_provider_ref=args.expected_provider_ref,
             expected_authority_id=args.expected_authority_id,
         )

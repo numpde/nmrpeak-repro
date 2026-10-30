@@ -12,7 +12,7 @@ class ProviderCoreInstallationTests(unittest.TestCase):
     def test_supported_python_imports_the_released_sdk_from_installed_dependencies(self):
         self.assertGreaterEqual(sys.version_info[:2], (3, 12))
         installed = distribution("provider-core")
-        self.assertEqual(installed.version, "0.5.2")
+        self.assertEqual(installed.version, "0.5.3")
 
         import provider_core
 

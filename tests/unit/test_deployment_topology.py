@@ -6,8 +6,7 @@ import unittest
 from pathlib import Path
 import tempfile
 from copy import deepcopy
-from nmrpeak_provider.deployment_runtime import project_provider_binding
-from tests.unit.test_deployment_runtime import DEFINITION
+from provider_core.shared_grants import SharedGrants
 
 from nmrpeak_provider.canonical_json import parse_canonical_json_bytes
 from repository_checks.deployment_topology import (
@@ -24,12 +23,7 @@ CHECKPOINTS = DeploymentCheckpoints(SHA("7"), SHA("8"))
 
 
 def binding_projection(origin="https://api.example.test", *, namespace="nmrpeak-fixture"):
-    with tempfile.TemporaryDirectory() as directory:
-        definition = Path(directory) / "bindings.toml"
-        definition.write_text(DEFINITION.replace("https://api.example.test", origin)
-                              .replace("api.example.test=127.0.0.1", origin.split("://", 1)[1] + "=127.0.0.1"))
-        return project_provider_binding(definition, "first", image=IMAGES.provider,
-                                        namespace=namespace, input_sources={})
+    return {"api_origin": origin, "shared": SharedGrants(namespace, 1234).compose()}
 
 
 BINDING = binding_projection()
@@ -118,16 +112,20 @@ class DeploymentTopologyTests(unittest.TestCase):
         )
 
     def test_client_grants_must_match_the_actual_sdk_projection(self):
-        for change in ("group", "dependency", "route", "delivery"):
+        for change in ("group", "dependency", "route", "delivery", "duplicate"):
             document = compose_document()
             provider = document["services"]["provider"]
             if change == "group":
                 provider["group_add"] = ["1"]
             elif change == "dependency":
                 provider["depends_on"] = {}
+            elif change == "duplicate":
+                mounts = provider["volumes"]
+                targets = [item["target"] for item in BINDING["shared"]["mounts"]]
+                index = next(i for i, item in enumerate(mounts) if item["target"] == targets[1])
+                mounts[index] = deepcopy(next(item for item in mounts if item["target"] == targets[0]))
             else:
-                target = (BINDING["api_route"]["client_mount"]["target"] if change == "route"
-                          else str(Path(BINDING["delivery"]["socket_path"]).parent))
+                target = BINDING["shared"]["mounts"][0 if change == "route" else 1]["target"]
                 next(m for m in provider["volumes"] if m["target"] == target)["read_only"] = False
             with self.subTest(change=change), self.assertRaises(DeploymentTopologyRejected):
                 project_deployment_topology(document, IMAGES, CHECKPOINTS, binding_projection=BINDING)
@@ -163,12 +161,9 @@ def compose_document(binding=BINDING) -> dict[str, object]:
             mount("provider-journal", "/var/lib/nmrpeak-provider", "volume", False),
             mount("hf-session", "/run/nmrpeak-provider/hf", "volume", False),
             mount("chf-session", "/run/nmrpeak-provider/chf", "volume", False),
-            deepcopy(binding["api_route"]["client_mount"]),
-            mount("delivery-ipc", str(Path(binding["delivery"]["socket_path"]).parent), "volume", True),
+            *deepcopy(binding["shared"]["mounts"]),
         ],
-        "depends_on": {name: facts | {"required": True}
-                       for name, facts in binding["api_route"]["client_depends_on"].items()},
-        "group_add": [str(binding["delivery"]["socket_group_id"])],
+        "group_add": binding["shared"]["group_add"],
         "healthcheck": {
             "test": ["CMD", "python", "-m", "nmrpeak_provider.provider_readiness"],
             "timeout": "2s",
@@ -180,17 +175,14 @@ def compose_document(binding=BINDING) -> dict[str, object]:
     }
     return {
         "name": "deployment-name",
-        "networks": {"default": {"name": "deployment-name_default", "ipam": {}},
-                     **deepcopy(binding["api_route"]["compose"]["networks"])},
+        "networks": {"default": {"name": "deployment-name_default", "ipam": {}}},
         "services": {
-            **deepcopy(binding["api_route"]["compose"]["services"]),
             "provider": common,
             "hf-runner": runner("hf", IMAGES.hf, IMAGES.hf_input, CHECKPOINTS.hf),
             "chf-runner": runner("chf", IMAGES.chf, IMAGES.chf_input, CHECKPOINTS.chf),
         },
         "volumes": {
-            **deepcopy(binding["api_route"]["compose"]["volumes"]),
-            "delivery-ipc": {"external": True, "name": binding["delivery"]["ipc_volume"]},
+            **deepcopy(binding["shared"]["volumes"]),
             "provider-identity-lock": external_volume("engine-volume-lock"),
             "provider-journal": external_volume("engine-volume-journal"),
             "hf-checkpoint": external_volume("engine-volume-hf"),

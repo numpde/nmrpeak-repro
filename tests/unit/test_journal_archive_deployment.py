@@ -1,5 +1,6 @@
 """Archive admission preserves deployment, API and generation ownership."""
 from contextlib import ExitStack, nullcontext
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -34,6 +35,13 @@ class ArchiveDeploymentTests(unittest.TestCase):
                            return_value=nullcontext((policy, plan.binding_projection, runtime_file.parent))))
         stack.enter_context(patch.object(deployment, '_resolve_provider_image', return_value=IMAGES['provider']))
         command = stack.enter_context(patch.object(deployment, '_docker_command', return_value=subprocess.CompletedProcess((), 0, canonical_json_bytes(RESULT) + b'\n', b'')))
+        def docker(_docker, args, *, timeout):
+            if args[:2] == ('volume', 'inspect'):
+                return subprocess.CompletedProcess((), 0, json.dumps([{'Name': args[2]}]).encode(), b'')
+            if args[0] == 'create':
+                return subprocess.CompletedProcess((), 0, ('d' * 64 + '\n').encode(), b'')
+            return command.return_value
+        command.side_effect = docker
         return plan, command
 
     def archive(self, repository, plan):
@@ -54,7 +62,7 @@ class ArchiveDeploymentTests(unittest.TestCase):
         with render_repository() as repository, ExitStack() as stack:
             plan, command = self.setup_plan(stack, repository)
             self.assertEqual(self.archive(repository, plan), canonical_json_bytes(RESULT) + b'\n')
-            args = command.call_args.args[1]
+            args = next(call.args[1] for call in command.call_args_list if call.args[1][0] == 'create')
             self.assertIn('nmrpeak_provider.journal_archive', args)
             self.assertIn(plan.generation.frozen_generation_id, args)
             self.assertIn('type=volume,src=journal-volume,dst=/var/lib/nmrpeak-provider', args)
@@ -85,28 +93,35 @@ class ArchiveDeploymentTests(unittest.TestCase):
             with self.subTest(foreign=foreign), render_repository() as repository, ExitStack() as stack:
                 plan, command = self.setup_plan(stack, repository)
                 invocation = {}
+                removed = []
                 identifier = 'd' * 64
                 def docker(_, args, **kwargs):
-                    if args[0] == 'run':
+                    if args[:2] == ('volume', 'inspect'):
+                        return subprocess.CompletedProcess((), 0, json.dumps([{'Name': args[2]}]).encode(), b'')
+                    if args[0] == 'create':
                         invocation['name'] = args[args.index('--name') + 1]
                         invocation['label'] = args[args.index('--label') + 1]
+                        return subprocess.CompletedProcess((), 0, (identifier + '\n').encode(), b'')
+                    if args[0] == 'start':
                         raise deployment.DeploymentOperationRejected('Archive observation timed out')
                     if args[0] == 'ps':
-                        raw = (identifier + '\n').encode()
+                        raw = b'' if removed else (identifier + '\n').encode()
                     elif args[0] == 'inspect':
                         key, value = invocation['label'].split('=', 1)
                         raw = canonical_json_bytes([{'Id': identifier, 'Name': '/' + invocation['name'],
                                 'Config': {'Labels': {key: 'foreign' if foreign else value}}}])
                     else:
                         self.assertEqual(args, ('rm', '-f', identifier))
+                        removed.append(True)
                         raw = b''
                     return subprocess.CompletedProcess((), 0, raw, b'')
                 command.side_effect = docker
                 with self.assertRaises(deployment.DeploymentOperationRejected) as caught:
                     self.archive(repository, plan)
-                self.assertIn('unconfirmed', str(caught.exception))
+                self.assertIn('unconfirmed' if foreign else 'retired', str(caught.exception))
                 self.assertIn('timed out', deployment._render_deployment_failure('journal-archive-closed', 'production', caught.exception))
-                self.assertIn('inspect', str(caught.exception).lower())
+                if foreign:
+                    self.assertIn('inspect', str(caught.exception).lower())
                 removals = [c for c in command.call_args_list if c.args[1][0] == 'rm']
                 self.assertEqual(len(removals), 0 if foreign else 1)
 
@@ -129,4 +144,4 @@ class ArchiveDeploymentTests(unittest.TestCase):
             refused = subprocess.run(arguments + ['LOCALHOST_CA_CERTIFICATE=/tmp/private CA.pem'],
                                      cwd=repository, capture_output=True)
             self.assertNotEqual(refused.returncode, 0)
-            self.assertIn(b'selected shared binding', refused.stderr)
+            self.assertIn(b'Configure API trust in provider.toml', refused.stderr)

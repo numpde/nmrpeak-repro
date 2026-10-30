@@ -17,7 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 
 from deployment.local_image import (
     LocalImage,
@@ -37,7 +37,7 @@ from deployment.provider_volumes import (
 from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
 from nmrpeak_provider.local_input import LocalInputSnapshotError, read_bounded_regular_file
 from nmrpeak_provider.provider_config import (
-    CONFIG_PATH, api_input_target, decode_provider_template,
+    CONFIG_PATH, api_input_target, captured_api_fields, decode_provider_template,
     render_provider_runtime_config, runtime_config_id,
 )
 from nmrpeak_provider.inspection_document import validate_inspection_document
@@ -139,6 +139,10 @@ class DeploymentOperationRejected(RuntimeError):
     """A host deployment operation cannot prove its narrow write boundary."""
 
 
+class MaintenanceInvocationUnsettled(DeploymentOperationRejected):
+    """A journal reader may still be using its original captured inputs."""
+
+
 @dataclass(frozen=True, slots=True)
 class DeploymentPlan:
     """One read-only resolved Compose plan and its authenticated generation."""
@@ -231,28 +235,34 @@ def _read_capture_source(path: Path, *, secret: bool) -> bytes:
         raise DeploymentOperationRejected(f"Cannot capture startup input {path}: its bounded regular-file read failed; preserve the source and inspect its permissions") from cause
 
 
-def _contained_binding_projection(docker, image, definition, binding_name, namespace, *, input_sources):
-    """Run SDK binding/route admission as the source operator, without networking."""
+def _contained_shared_projection(docker, image, provider, shared_settings):
+    """Project the SDK grant inside the installed provider image."""
     with TemporaryDirectory() as temporary:
-        source = Path(temporary) / "bindings.toml"
-        source.write_bytes(definition)
-        source.chmod(0o600)
-        mappings = tuple(value for path, captured in sorted(input_sources.items())
-                         for value in ("--input-source", path, captured))
+        root = Path(temporary)
+        config, shared = root / "provider.toml", root / "shared.toml"
+        config.write_bytes(provider)
+        config.chmod(0o600)
+        if shared_settings is None:
+            mounts = ()
+            operation = ("project-api", "--provider", "/input/provider.toml")
+        else:
+            shared.write_bytes(shared_settings)
+            shared.chmod(0o600)
+            mounts = ("--mount", f"type=bind,source={shared},target=/input/shared.toml,readonly")
+            operation = ("project", "--provider", "/input/provider.toml", "--shared-settings", "/input/shared.toml")
         result = _docker_command(docker, (
             "run", "--pull", "never", "--rm", "--network", "none", "--read-only",
             "--user", f"{os.geteuid()}:{os.getegid()}", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges:true", "--pids-limit", "64",
             "--cpus", "1", "--memory", "256m", "--env", "PROVIDER_CORE_IN_CONTAINER=1",
-            "--mount", f"type=bind,source={source},target=/binding/definition.toml,readonly",
+            "--mount", f"type=bind,source={config},target=/input/provider.toml,readonly",
+            *mounts,
             "--entrypoint", "/usr/local/bin/python3.12", image,
-            "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", "project",
-            "--definition", "/binding/definition.toml", "--binding", binding_name,
-            "--image", image, "--namespace", namespace, *mappings,
+            "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", *operation,
         ), timeout=60)
-    document = _json_output(result.stdout, "Contained API binding projection")
+    document = _json_output(result.stdout, "Contained shared grant projection")
     if type(document) is not dict:
-        raise DeploymentOperationRejected("Contained API binding projection must be an object")
+        raise DeploymentOperationRejected("Contained shared grant projection must be an object")
     return document
 
 
@@ -280,18 +290,28 @@ def _capture_interpreter_inputs(state_root):
 
 def _validate_captured_runtime(docker, image, files, *, arguments=("validate",)):
     """Validate the exact private snapshot as the runtime UID before installation."""
-    with TemporaryDirectory() as temporary:
-        parent = Path(temporary)
+    parent = Path(mkdtemp(prefix="nmrpeak-validation-"))
+    token = secrets.token_hex(16)
+    name = "nmrpeak-journal-archive-" + token
+    retain = False
+    try:
         captured = _publish_retained_tree(parent, runtime_config_id(files), files)
-        result = _docker_command(docker, (
-            "run", "--pull", "never", "--rm", "--network", "none", "--read-only",
-            "--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-            "--pids-limit", "64", "--cpus", "1", "--memory", "256m",
-            "--env", "PROVIDER_CORE_IN_CONTAINER=1",
-            "--mount", f"type=bind,source={captured},target={CONFIG_PATH.parent},readonly",
-            "--entrypoint", "/usr/local/bin/python3.12", image,
-            "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", *arguments,
-        ), timeout=60)
+        try:
+            result = _run_owned_reader(docker, name, token, (
+                "--pull", "never", "--rm", "--network", "none", "--read-only", "--user", "65532:65532",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "64",
+                "--cpus", "1", "--memory", "256m", "--env", "PROVIDER_CORE_IN_CONTAINER=1",
+                "--mount", f"type=bind,source={captured},target={CONFIG_PATH.parent},readonly",
+                "--entrypoint", "/usr/local/bin/python3.12", image,
+                "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", *arguments,
+            ))
+        except MaintenanceInvocationUnsettled as cause:
+            retain = True
+            raise MaintenanceInvocationUnsettled(f"{cause}; retain validation inputs at {parent}") from cause
+
+    finally:
+        if not retain:
+            shutil.rmtree(parent)
     document = _json_output(result.stdout, "Contained captured runtime validation")
     if type(document) is not dict:
         raise DeploymentOperationRejected("Contained captured runtime validation must be an object")
@@ -299,101 +319,61 @@ def _validate_captured_runtime(docker, image, files, *, arguments=("validate",))
 
 
 def _journal_binding(repository, deployment, docker, image, provider_ref, *, namespace):
-    policy = decode_provider_template(_read_regular_file(
-        repository / "config/deployments" / deployment / "provider.toml"))
-    definition = _read_capture_source(policy.binding_definition, secret=False)
-    projection = _contained_binding_projection(docker, image.image_id, definition,
-                                               policy.binding_name, namespace, input_sources={})
+    raw = _read_regular_file(repository / "config/deployments" / deployment / "provider.toml")
+    policy = decode_provider_template(raw)
+    projection = _contained_shared_projection(docker, image.image_id, raw, None)
     if projection["provider_ref"] != provider_ref:
-        raise DeploymentOperationRejected("Selected API binding belongs to another journal provider")
-    return policy, definition, projection
-
-
-def _cleanup_maintenance_route(docker, repository, deployment, projection):
-    """Consume this invocation's original SDK grant through the existing teardown owner."""
-    route = projection["api_route"]["compose"]
-    volumes = tuple(item["name"] for item in route["volumes"].values())
-    services = _inspect_project_containers(docker, repository, deployment, roles=frozenset(route["services"]))
-    for role, record in services.items():
-        expected = route["services"][role]
-        labels = record["Config"]["Labels"]
-        if record.get("Image") != expected["image"] or any(labels.get(key) != value for key, value in expected["labels"].items()):
-            raise DeploymentOperationRejected("Maintenance API route no longer matches its original SDK image and labels")
-    observed = _api_route_volumes(deployment, services)
-    if not set(observed).issubset(volumes):
-        raise DeploymentOperationRejected("Maintenance API route mounts differ from this invocation's original grant")
-    _inspect_project_resources(docker, deployment, services, route_volumes=volumes, scientific_sessions=False)
-    _run_compose_down(docker, repository, deployment, route_volumes=volumes, api_route=route)
-    remaining = _inspect_project_containers(docker, repository, deployment, roles=frozenset(route["services"]))
-    resources = _inspect_project_resources(docker, deployment, remaining, route_volumes=volumes, scientific_sessions=False)
-    if remaining or resources:
-        raise DeploymentOperationRejected("Maintenance API route teardown left owned resources; preserve the journal")
+        raise DeploymentOperationRejected("Configured API belongs to another journal provider")
+    return policy, None, projection
 
 
 @contextmanager
 def _held_maintenance_api_route(docker, repository, deployment, image, provider_ref, authority_id):
-    """Capture API inputs and own the exact temporary route through bounded teardown."""
-    invocation = "maintenance-" + secrets.token_hex(16)
-    namespace = "nmrpeak-" + invocation
-    policy, definition, projection = _journal_binding(repository, deployment, docker, image,
-                                                      provider_ref, namespace=namespace)
+    """Capture private API inputs while borrowing the shared proxy."""
+    policy, _unused, facts = _journal_binding(repository, deployment, docker, image,
+                                              provider_ref, namespace="nmrpeak-" + deployment)
+    raw = _read_regular_file(repository / "config/deployments" / deployment / "provider.toml")
+    shared = _read_capture_source(policy.shared_settings, secret=False)
+    projection = _contained_shared_projection(docker, image.image_id, raw, shared)
+    if any(projection[key] != value for key, value in facts.items()):
+        raise DeploymentOperationRejected("Configured API changed during maintenance capture; preserve the journal")
     if projection["journal_authority_id"] != authority_id:
-        raise DeploymentOperationRejected("Selected API namespace changed before maintenance capture; preserve the journal")
-    files = {"bindings.toml": definition}
+        raise DeploymentOperationRejected("Configured API namespace changed before maintenance capture; preserve the journal")
+    files = {"api.json": json.dumps(captured_api_fields(policy.api), sort_keys=True,
+                                    separators=(",", ":"), allow_nan=False).encode("utf-8")}
     for source in projection["input_paths"]:
         leaf = api_input_target(source).relative_to(CONFIG_PATH.parent).as_posix()
         files[leaf] = _read_capture_source(Path(source), secret=source == projection["credential_file"])
-    with TemporaryDirectory() as temporary:
-        captured = _publish_retained_tree(Path(temporary), runtime_config_id(files), files)
-        sources = {source: str(captured / api_input_target(source).relative_to(CONFIG_PATH.parent))
-                   for source in projection["input_paths"]}
-        projection = _contained_binding_projection(docker, image.image_id, definition,
-                       policy.binding_name, namespace, input_sources=sources)
-        socket = projection["api_route"]["client_socket"]
+    temporary = Path(mkdtemp(prefix="nmrpeak-maintenance-"))
+    retain = False
+    try:
+        captured = _publish_retained_tree(temporary, runtime_config_id(files), files)
+        socket = projection["shared"]["proxy_socket"]
         validated = _validate_captured_runtime(docker, image.image_id, files,
-                    arguments=("validate-binding", "--binding", policy.binding_name, "--proxy-socket", socket))
+                                               arguments=("validate-api", "--proxy-socket", socket))
         expected = {key: projection[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")}
         if validated != expected | {"proxy_socket": socket}:
-            raise DeploymentOperationRejected("Maintenance API capture differs from its selected SDK binding")
-        compose = Path(temporary) / "api-route.json"
-        compose.write_bytes(canonical_json_bytes(projection["api_route"]["compose"]))
-        prefix = ("compose", "--env-file", "/dev/null", "--project-directory", str(repository),
-                  "--project-name", namespace, "--file", str(compose))
-        primary = None
-        try:
-            _docker_command(docker, (*prefix, "up", "--detach", "--wait", "--wait-timeout", "60",
-                                     "--no-build", "--pull", "never"), timeout=80)
-            yield policy, projection, captured
-        except BaseException as cause:
-            primary = cause
-            raise
-        finally:
-            try:
-                _cleanup_maintenance_route(docker, repository, invocation, projection)
-            except BaseException as cleanup:
-                cause = cleanup if primary is None or cleanup is primary else BaseExceptionGroup(
-                    "Maintenance operation and API route teardown failed", [primary, cleanup])
-                raise DeploymentOperationRejected(
-                    f"Cannot confirm maintenance route {namespace} was removed; preserve the journal and inspect that exact project before retrying") from cause
+            raise DeploymentOperationRejected("Maintenance API capture differs from its configured identity")
+        yield policy, projection, captured
+    except MaintenanceInvocationUnsettled as cause:
+        retain = True
+        raise MaintenanceInvocationUnsettled(
+            f"{cause}; retain its captured inputs at {temporary}"
+        ) from cause
+    finally:
+        if not retain:
+            shutil.rmtree(temporary)
 
 
 def _compose_binding_route(document, projection):
-    """Merge the exact SDK projection and grant its client/delivery endpoints."""
-    route = projection["api_route"]
-    for field in ("services", "networks", "volumes"):
-        fragment = route["compose"][field]
-        if document[field].keys() & fragment.keys():
-            raise DeploymentOperationRejected("SDK API route collides with an existing deployment role or resource")
-        document[field].update(fragment)
-    delivery = projection["delivery"]
-    document["volumes"]["delivery-ipc"] = {"external": True, "name": delivery["ipc_volume"]}
+    """Borrow the SDK's external API and outbox grants."""
+    shared = projection["shared"]
+    if document["volumes"].keys() & shared["volumes"].keys():
+        raise DeploymentOperationRejected("Shared socket grant collides with an existing deployment volume")
+    document["volumes"].update(shared["volumes"])
     provider = document["services"]["provider"]
-    provider.setdefault("volumes", []).extend((route["client_mount"], {
-        "type": "volume", "source": "delivery-ipc", "target": str(Path(delivery["socket_path"]).parent),
-        "read_only": True,
-    }))
-    provider["depends_on"] = route["client_depends_on"]
-    provider["group_add"] = [str(delivery["socket_group_id"])]
+    provider.setdefault("volumes", []).extend(shared["mounts"])
+    provider["group_add"] = list(dict.fromkeys(provider.get("group_add", []) + shared["group_add"]))
     return document
 
 
@@ -416,8 +396,9 @@ def render_deployment_plan(
     except OSError as cause:
         raise DeploymentOperationRejected(f"Deployment is not initialized: {deployment}") from cause
     selection = load_named_deployment(config_root / "deployment.toml")
-    policy = decode_provider_template(_read_regular_file(config_root / "provider.toml"))
-    definition = _read_capture_source(policy.binding_definition, secret=False)
+    provider = _read_regular_file(config_root / "provider.toml")
+    policy = decode_provider_template(provider)
+    shared_settings = _read_capture_source(policy.shared_settings, secret=False)
     upstream_revision = read_nmrpeak_source_revision(root / "families/nmrpeak/source-closure.paths")
     releases = admit_deployment_releases(
         selection,
@@ -432,15 +413,13 @@ def render_deployment_plan(
                               local_images["hf"].image_id, input_ids["hf"],
                               local_images["chf"].image_id, input_ids["chf"])
     checkpoints = DeploymentCheckpoints(releases.hf.checkpoint_sha256, releases.chf.checkpoint_sha256)
-    namespace = "nmrpeak-" + deployment
-    projection = _contained_binding_projection(docker, images.provider, definition, policy.binding_name,
-                                               namespace, input_sources={})
+    projection = _contained_shared_projection(docker, images.provider, provider, shared_settings)
     if projection["provider_ref"] != selection.provider_ref:
         raise DeploymentOperationRejected("Selected API binding belongs to another named provider generation")
     if policy.runner.ready_seconds > 600:
         raise DeploymentOperationRejected("Runner ready timeout exceeds the Compose health start window")
     state_root = root / "secrets/deployments" / deployment
-    runtime_files = {"bindings.toml": definition, **_capture_interpreter_inputs(state_root)}
+    runtime_files = _capture_interpreter_inputs(state_root)
     for path in projection["input_paths"]:
         leaf = api_input_target(path).relative_to(CONFIG_PATH.parent).as_posix()
         runtime_files[leaf] = _read_capture_source(Path(path), secret=path == projection["credential_file"])
@@ -458,23 +437,18 @@ def render_deployment_plan(
     )
     runtime_files["provider.toml"] = render_provider_runtime_config(
         policy, frozen_generation_id=generation.frozen_generation_id,
-        api_proxy_socket=projection["api_route"]["client_socket"],
+        api_proxy_socket=projection["shared"]["proxy_socket"], outbox_socket=projection["shared"]["outbox_socket"],
     )
     identity = runtime_config_id(runtime_files)
     runtime_root = state_root / "runtime-configs" / _retained_identity_name(identity)
-    sources = {path: str(runtime_root / api_input_target(path).relative_to(CONFIG_PATH.parent))
-               for path in projection["input_paths"]}
-    # Both passes use the same captured definition bytes. The second only
-    # relocates selected route inputs to their immutable retained destinations.
-    projection = _contained_binding_projection(docker, images.provider, definition, policy.binding_name,
-                                               namespace, input_sources=sources)
     validated = _validate_captured_runtime(docker, images.provider, runtime_files)
     expected = {"provider_ref": selection.provider_ref, "api_origin": projection["api_origin"],
                 "api_topology": projection["api_topology"], "journal_authority_id": projection["journal_authority_id"],
                 "frozen_generation_id": generation.frozen_generation_id,
-                "proxy_socket": projection["api_route"]["client_socket"]}
+                "proxy_socket": projection["shared"]["proxy_socket"],
+                "outbox_socket": projection["shared"]["outbox_socket"]}
     if validated != expected:
-        raise DeploymentOperationRejected("Captured runtime admission differs from its selected binding and frozen generation")
+        raise DeploymentOperationRejected("Captured runtime admission differs from its API identity and frozen generation")
     environment = _compose_environment(
         root, deployment, selection.provider_ref, images, checkpoints,
         provider_config=runtime_root / "provider.toml",
@@ -952,33 +926,51 @@ def inspect_provider_journal(
 
 def _run_journal_api_client(docker, image, projection, captured, module, arguments, *, mounts=()):
     """Run one bounded network-isolated reader with the SDK's captured client grant."""
-    route = projection["api_route"]
-    client = route["client_mount"]
-    volume = route["compose"]["volumes"][client["source"]]["name"]
+    shared = projection["shared"]
+    target = str(Path(shared["proxy_socket"]).parent)
+    client, = (item for item in shared["mounts"] if item["target"] == target)
+    volume = shared["volumes"][client["source"]]["name"]
+    inspected = _json_output(_docker_command(docker, ("volume", "inspect", volume), timeout=60).stdout,
+                             "Shared proxy volume inspection")
+    if (type(inspected) is not list or len(inspected) != 1 or type(inspected[0]) is not dict
+            or inspected[0].get("Name") != volume):
+        raise DeploymentOperationRejected("The exact shared proxy volume does not exist")
     token = secrets.token_hex(16)
     name = "nmrpeak-journal-archive-" + token
     grants = ("--mount", f"type=bind,src={captured},dst={CONFIG_PATH.parent},readonly",
               "--mount", f"type=volume,src={volume},dst={client['target']},readonly,volume-nocopy")
+    return _run_owned_reader(docker, name, token, (
+        "--rm", "--pull", "never", "--network", "none", "--read-only", "--user", "65532:65532",
+        "--group-add", str(shared["socket_group_id"]), "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges:true", "--pids-limit", "32", "--memory", "128m",
+        "--memory-swap", "128m", "--log-driver", "none", "--env", "PROVIDER_CORE_IN_CONTAINER=1",
+        *grants, *mounts, "--entrypoint", "/usr/local/bin/python3.12", image.image_id,
+        "-I", "-B", "-m", module, *arguments,
+    )).stdout
+
+
+def _run_owned_reader(docker, name, token, arguments):
+    """Establish an exact container identity before dispatching reader effects."""
     try:
-        return _docker_command(docker, (
-            "run", "--rm", "--name", name, "--label", "io.nmrpeak.archive=" + token,
-            "--pull", "never", "--network", "none", "--read-only", "--user", "65532:65532",
-            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "32",
-            "--memory", "128m", "--memory-swap", "128m", "--log-driver", "none",
-            "--env", "PROVIDER_CORE_IN_CONTAINER=1", *grants, *mounts,
-            "--entrypoint", "/usr/local/bin/python3.12", image.image_id,
-            "-I", "-B", "-m", module, *arguments,
-        ), timeout=60).stdout
+        created = _docker_command(docker, ("create", "--name", name, "--label", "io.nmrpeak.archive=" + token,
+                                           *arguments), timeout=60)
+        identifier = created.stdout.decode("ascii").strip()
+        if re.fullmatch(r"[0-9a-f]{64}", identifier) is None:
+            raise ValueError("Docker did not return an exact reader container identity")
+    except BaseException as cause:
+        raise MaintenanceInvocationUnsettled(
+            f"Reader creation is unconfirmed; inspect name={name}, label=io.nmrpeak.archive={token}"
+        ) from cause
+    try:
+        return _docker_command(docker, ("start", "--attach", identifier), timeout=60)
     except BaseException as original:
         try:
-            _remove_archive_invocation(docker, name, token)
+            _remove_archive_invocation(docker, name, token, identifier)
         except BaseException as cleanup:
-            raise DeploymentOperationRejected(
-                f"Journal maintenance result and cleanup are unconfirmed; preserve the journal and inspect name={name}, label=io.nmrpeak.archive={token} before retrying"
-            ) from BaseExceptionGroup("Maintenance invocation and cleanup failed", [original, cleanup])
-        raise DeploymentOperationRejected(
-            "Journal maintenance result is unconfirmed; invocation stopped. Preserve and inspect the journal and archive before retrying"
-        ) from original
+            raise MaintenanceInvocationUnsettled(
+                f"Reader retirement is unconfirmed; inspect name={name}, label=io.nmrpeak.archive={token}"
+            ) from BaseExceptionGroup("Reader and cleanup failed", [original, cleanup])
+        raise DeploymentOperationRejected("Reader failed after its original container was retired") from original
 
 
 def archive_provider_journal(repository: Path, deployment: str, *, execution_attempt_ref: str,
@@ -1016,7 +1008,7 @@ def archive_provider_journal(repository: Path, deployment: str, *, execution_att
                     "--execution-attempt-ref", execution_attempt_ref, "--record-digest", record_digest,
                     "--reason", reason, "--frozen-generation", frozen_generation,
                     "--expected-provider-ref", selection.provider_ref, "--expected-authority-id", authority,
-                    "--binding", policy.binding_name, "--proxy-socket", projection["api_route"]["client_socket"],
+                    "--proxy-socket", projection["shared"]["proxy_socket"],
                 ), mounts=mounts)
         try:
             if len(output) > 16385 or not output.endswith(b"\n"):
@@ -1029,13 +1021,13 @@ def archive_provider_journal(repository: Path, deployment: str, *, execution_att
         return output
 
 
-def _remove_archive_invocation(docker: Path, name: str, token: str) -> None:
+def _remove_archive_invocation(docker: Path, name: str, token: str, expected_id: str) -> None:
     """Stop only the inspected invocation when Docker observation failed."""
     identifiers = _docker_command(docker, ("ps", "-a", "--no-trunc", "--filter",
                     "name=^/" + name + "$", "--format", "{{.ID}}"), timeout=30).stdout.decode("ascii").splitlines()
     if not identifiers:
         return
-    if len(identifiers) != 1 or re.fullmatch(r"[0-9a-f]{64}", identifiers[0]) is None:
+    if len(identifiers) != 1 or identifiers[0] != expected_id:
         raise DeploymentOperationRejected("Archive container inventory is malformed")
     identifier = identifiers[0]
     records = _json_output(_docker_command(docker, ("inspect", identifier), timeout=30).stdout, "Archive cleanup")
@@ -1048,6 +1040,10 @@ def _remove_archive_invocation(docker: Path, name: str, token: str) -> None:
             or type(labels) is not dict or labels.get("io.nmrpeak.archive") != token):
         raise DeploymentOperationRejected("Archive container ownership does not match this invocation")
     _docker_command(docker, ("rm", "-f", identifier), timeout=30)
+    remaining = _docker_command(docker, ("ps", "-a", "--no-trunc", "--filter",
+                                "name=^/" + name + "$", "--format", "{{.ID}}"), timeout=30).stdout
+    if remaining:
+        raise DeploymentOperationRejected("Archive container remains after removal; retirement is unconfirmed")
 
 
 def retire_provider_journal(
@@ -1105,7 +1101,7 @@ def retire_provider_journal(
                       selection.provider_ref, authority_id) as (policy, projection, captured):
                 output = _run_journal_api_client(docker, provider_image, projection, captured,
                     "nmrpeak_provider.journal_api", (
-                        "--binding", policy.binding_name, "--proxy-socket", projection["api_route"]["client_socket"],
+                        "--proxy-socket", projection["shared"]["proxy_socket"],
                         "--expected-provider-ref", selection.provider_ref,
                         "--expected-authority-id", authority_id,
                         "--maximum-pages", str(policy.process.inventory_maximum_pages),

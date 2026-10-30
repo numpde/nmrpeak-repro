@@ -7,22 +7,24 @@ SDK binding and credential admission remain the only format authorities.
 """
 
 from dataclasses import dataclass, replace
+import json
+import re
 from pathlib import Path
 
-from provider_core.api_config import ApiSettings, api_settings
-from provider_core.deployment_binding import DeploymentBinding, DeploymentBindings, parse_deployment_bindings
+from provider_core.api_config import ApiPublicationMaterial, ApiSettings, api_settings_with_material
 from provider_core.startup_file import StartupFileRejected
 
 from .local_input import LocalInputFailureReason, LocalInputSnapshotError, read_bounded_regular_file
-from .provider_config import BINDING_PATH, CONFIG_PATH, ProviderRuntimeConfig, api_input_target, decode_provider_runtime_config
+from . import provider_config
+from .provider_config import CONFIG_PATH, ProviderRuntimeConfig, decode_provider_runtime_config
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderStartup:
     configured: ProviderRuntimeConfig
-    definition: DeploymentBindings
-    binding: DeploymentBinding
     settings: ApiSettings
+    provider_ref: str
+    publication: ApiPublicationMaterial
 
 
 def read_startup_input(path, *, maximum_bytes, label, secret=False):
@@ -44,26 +46,28 @@ def read_startup_input(path, *, maximum_bytes, label, secret=False):
 
 
 def read_captured_api_input(path, *, maximum_bytes, label, secret=False):
-    return read_startup_input(api_input_target(path), maximum_bytes=maximum_bytes, label=label, secret=secret)
+    target = Path(path)
+    if target.parent != provider_config.API_INPUT_ROOT or re.fullmatch(r"[0-9a-f]{64}", target.name) is None:
+        raise StartupFileRejected(f"Cannot read {label}: the API input is not a captured grant.")
+    return read_startup_input(target, maximum_bytes=maximum_bytes, label=label, secret=secret)
 
 
 def load_provider_startup(config_path=CONFIG_PATH):
     configured = decode_provider_runtime_config(read_startup_input(
         config_path, maximum_bytes=65536, label="NMRPeak runtime configuration",
     ))
-    definition, binding, settings = load_captured_api_binding(
-        configured.policy.binding_name, configured.api_proxy_socket,
-        definition_path=configured.policy.binding_definition,
-    )
-    return ProviderStartup(configured, definition, binding, settings)
+    settings, provider_ref, publication = load_captured_api(configured.policy.api, configured.api_proxy_socket)
+    return ProviderStartup(configured, settings, provider_ref, publication)
 
 
-def load_captured_api_binding(binding_name, proxy_socket, *, definition_path=BINDING_PATH):
-    """Return SDK definition, selected binding and settings without science input."""
-    definition = parse_deployment_bindings(read_startup_input(
-        definition_path, maximum_bytes=65536, label="NMRPeak captured API bindings",
-    ))
-    binding = definition.selected(binding_name)
-    settings, _provider_ref = api_settings(binding.api, read_captured_api_input)
+def load_captured_api(api, proxy_socket):
+    """Admit API settings and preserve the exact publication inputs once."""
+    settings, provider_ref, publication = api_settings_with_material(api, read_captured_api_input)
     settings = replace(settings, http=replace(settings.http, proxy_socket=proxy_socket))
-    return definition, binding, settings
+    return settings, provider_ref, publication
+
+
+def load_maintenance_api(proxy_socket):
+    """Admit the exact API inputs captured for one journal operation."""
+    raw = read_startup_input(CONFIG_PATH.parent / "api.json", maximum_bytes=65536, label="captured API settings")
+    return load_captured_api(json.loads(raw), proxy_socket)

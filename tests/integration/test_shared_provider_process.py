@@ -12,6 +12,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from provider_core.delivery_client import DeliveryClient, DeliveryEndpoint, DeliveryUnavailable
 from provider_core.delivery_ipc import DeliveryInbox
+from provider_core.api_config import api_settings_with_material
+from provider_core.shared_delivery_client import SharedDeliveryClient
+from provider_core.shared_delivery_ipc import SharedDeliveryInbox, SharedDeliverySocket
 from provider_core.delivery_store import DeliveryFull, DeliveryOutcome, DeliveryQueue, QueueLimits
 from provider_core.analysis import AnalysisOutcomeUnresolved
 from provider_core.attempt_record import TerminalOperation
@@ -38,6 +41,7 @@ from tests.fakes.runner import FakeRunnerFault
 from tests.unit.test_analysis_session import scientific_lane
 from tests.unit.test_input_interpreter import BoundEndpoints, HF_VALUE, VALUE, turn
 from tests.unit.test_analysis_session import interpreter
+from tests.unit.test_provider_startup_inputs import credential_bytes
 
 
 class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
@@ -455,7 +459,10 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_unavailable_delivery_retains_both_original_reports_until_reachable(self):
         await self._two_lane_stop(fill_queue=False, unavailable=True)
 
-    async def _two_lane_stop(self, *, fill_queue, unavailable=False):
+    async def test_lost_acceptance_reply_replays_the_original_shared_handoff(self):
+        await self._two_lane_stop(fill_queue=False, lost_ack=True)
+
+    async def _two_lane_stop(self, *, fill_queue, unavailable=False, lost_ack=False):
         hf, hf_runner, hf_channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
         chf, chf_runner, chf_channel, _ = await self.enterAsyncContext(scientific_lane("chf"))
         runtime = GenerationRuntime("sha256:" + "1" * 64, hf, chf)
@@ -478,13 +485,26 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
             (root / "ipc").mkdir(mode=0o700)
             endpoint = DeliveryEndpoint(api.origin, api.provider_ref, root / "ipc/http.sock")
             queue = DeliveryQueue(root / "state", limits=QueueLimits(4, 1048576, 4, 1048576))
+            fields = {"origin": api.origin, "profile": "run", "topology": "web",
+                      "provider_ref": api.provider_ref, "credential_file": "/fixture/credential",
+                      "exchange_seconds": 2, "retirement_seconds": 0.2}
+            credential = credential_bytes(api.identity.private_key)
+            _, _, publication = api_settings_with_material(fields, lambda *_args, **_kwargs: credential)
 
             def on_accepted(_endpoint):
                 accepted.append(True)
 
-            inbox = DeliveryInbox(queue, (endpoint,), request_seconds=2,
-                                  on_accepted=on_accepted, on_failure=Mock(),
-                                  binding_status=lambda _endpoint: {"state": "inbox_only"})
+            inbox = SharedDeliveryInbox(queue, SharedDeliverySocket(endpoint.socket_path, None), request_seconds=2,
+                                        on_accepted=on_accepted, on_failure=Mock())
+            original_respond = inbox._respond
+            replies_lost = []
+            async def respond(connection, writer, status, document):
+                if lost_ack and status == 200 and not replies_lost:
+                    replies_lost.append(True)
+                    writer.transport.abort()
+                    return
+                await original_respond(connection, writer, status, document)
+            inbox._respond = respond
             await inbox.start()
             try:
                 policy = ProviderProcessPolicy(0.01, 60, 2, 0.2, 20, ObservationPolicy(0.01, 1, 30))
@@ -492,7 +512,8 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                 service = ProviderProcess(
                     runtime=runtime, hf_session=hf_runner, chf_session=chf_runner,
                     interpreter=interpreter(), new_api=api.new_api,
-                    new_delivery=lambda: DeliveryClient(endpoint, exchange_seconds=2, retirement_seconds=0.2),
+                    new_delivery=lambda: SharedDeliveryClient(endpoint, publication, exchange_seconds=2,
+                                                               retirement_seconds=0.2),
                     policy=policy, announcement=ProviderAnnouncement("NMRPeak", "Scientific fixture", tuple(
                         AnalysisOffering(lane.generation.analysis_kind_ref, "Fixture offering")
                         for lane in (hf, chf))),
@@ -502,7 +523,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                 retry = service._delivery_retry
 
                 def retain_pressure(lane, cause):
-                    self.assertIsInstance(cause, DeliveryUnavailable if unavailable else DeliveryFull)
+                    self.assertIsInstance(cause, DeliveryUnavailable if (unavailable or lost_ack) else DeliveryFull)
                     retry(lane, cause)
                     if len(service._delivery_waiters) == 2:
                         pressure.set()
@@ -539,10 +560,13 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                             await inbox.start()
                         await asyncio.wait_for(original, 5)
                 ready.assert_called_once()
+                self.assertEqual(bool(replies_lost), lost_ack)
                 self.assertEqual(len(api.started), 2)
                 self.assertEqual(len(queue.inventory(api.origin, api.provider_ref)), 2)
                 for lane in (hf, chf):
-                    item = queue.next_pending(api.origin, api.provider_ref)
+                    handoff = queue.next_pending_handoff(api.origin, api.provider_ref)
+                    self.assertEqual(handoff.publication.credential_bytes, credential)
+                    item = handoff.outcome
                     import json
                     document = json.loads(item.body)
                     selected = hf if item.job_ref == "job:hf" else chf

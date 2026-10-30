@@ -225,7 +225,7 @@ class ArchiveTests(unittest.TestCase):
                            '--frozen-generation', generation_runtime().frozen_generation_id,
                            '--expected-authority-id', 'sha256:' + 'c'*64,
                            '--expected-provider-ref', 'provider:wrong',
-                           '--binding', 'selected', '--proxy-socket', '/route/api.sock'])
+                           '--proxy-socket', '/route/api.sock'])
         self.assertEqual(status, 2)
         api_factory.assert_not_called()
         acquire.assert_not_called()

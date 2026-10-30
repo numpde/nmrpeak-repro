@@ -41,15 +41,15 @@ class JournalApiTests(unittest.IsolatedAsyncioTestCase):
         binding = SimpleNamespace(api={'provider_ref': 'provider:nmrpeak',
                                        'origin': 'https://api.example', 'topology': 'web'})
         transport = Mock()
-        settings = SimpleNamespace(identity=object(), expected_topology='web',
+        settings = SimpleNamespace(identity=SimpleNamespace(origin='https://api.example'), expected_topology='web',
                                    http=SimpleNamespace(new_transport=transport))
         authority = journal_api_authority_id(origin=binding.api['origin'], topology='web')
         for provider, namespace in [('provider:other', authority), ('provider:nmrpeak', 'sha256:' + '0'*64)]:
             with self.subTest(provider=provider), \
-                 patch('nmrpeak_provider.journal_api.load_captured_api_binding',
-                       return_value=(None, binding, settings)), \
+                 patch('nmrpeak_provider.journal_api.load_maintenance_api',
+                       return_value=(settings, 'provider:nmrpeak', None)), \
                  self.assertRaises(AttemptJournalConflict):
-                load_journal_api(binding_name='selected', proxy_socket='/route/api.sock',
+                load_journal_api(proxy_socket='/route/api.sock',
                                  expected_provider_ref=provider, expected_authority_id=namespace)
         transport.assert_not_called()
 
@@ -83,7 +83,7 @@ class ArchiveIdentityLifetimeTests(unittest.TestCase):
                              '--frozen-generation', generation_runtime().frozen_generation_id,
                              '--expected-authority-id', 'sha256:' + 'c'*64,
                              '--expected-provider-ref', 'provider:nmrpeak',
-                             '--binding', 'selected', '--proxy-socket', '/route/api.sock']
+                             '--proxy-socket', '/route/api.sock']
                 try:
                     with patch('nmrpeak_provider.frozen_generation.load_frozen_generation',
                                return_value=SimpleNamespace(runtime=generation_runtime())), \
@@ -137,7 +137,7 @@ class EmptyLiveInventoryTests(unittest.IsolatedAsyncioTestCase):
         output = StringIO()
         with patch('nmrpeak_provider.journal_api.load_journal_api', return_value=api), \
              patch('sys.stdout', output), patch('sys.stderr'):
-            status = main(['--binding', 'selected', '--proxy-socket', '/route/api.sock',
+            status = main(['--proxy-socket', '/route/api.sock',
                            '--expected-provider-ref', 'provider:nmrpeak',
                            '--expected-authority-id', 'sha256:'+'a'*64, '--maximum-pages', '2'])
         self.assertEqual(status, 2)

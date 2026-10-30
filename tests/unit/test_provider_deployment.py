@@ -44,7 +44,9 @@ from repository_checks.hf_release import candidate_release_bytes as hf_release_b
 from tests.unit.test_deployment_topology import compose_document
 from tests.unit.test_provider_startup_inputs import credential_bytes
 from tests.unit.test_deployment_runtime import DEFINITION
-from nmrpeak_provider.deployment_runtime import project_provider_binding
+from nmrpeak_provider.deployment_runtime import project_provider_inputs
+from provider_core.deployment_binding import load_deployment_bindings
+from provider_core.deployment_route import NamedRouteVolume, render_api_route
 
 
 ROOT = Path(__file__).parents[2]
@@ -62,6 +64,130 @@ IMAGES = {
 
 
 class ProviderDeploymentTests(unittest.TestCase):
+    def test_unconfirmed_reader_creation_never_dispatches_start(self) -> None:
+        with patch.object(provider_deployment, "_docker_command", side_effect=TimeoutError("creation unknown")) as command, \
+             self.assertRaises(provider_deployment.MaintenanceInvocationUnsettled):
+            provider_deployment._run_owned_reader(Path("/usr/bin/docker"), "reader", "token", ("image",))
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[1][0], "create")
+
+    def test_unconfirmed_runtime_validation_retains_its_captured_inputs(self) -> None:
+        with TemporaryDirectory() as temporary:
+            retained = Path(temporary) / "retained"
+            retained.mkdir()
+            with (
+                patch.object(provider_deployment, "mkdtemp", return_value=str(retained)),
+                patch.object(provider_deployment, "_publish_retained_tree", return_value=retained),
+                patch.object(provider_deployment, "_docker_command", side_effect=TimeoutError("validation timed out")),
+                patch.object(provider_deployment, "_remove_archive_invocation", side_effect=OSError("retirement unknown")),
+                self.assertRaises(provider_deployment.MaintenanceInvocationUnsettled),
+            ):
+                provider_deployment._validate_captured_runtime(Path("/usr/bin/docker"), "image", {"api.json": b"{}"})
+            self.assertTrue(retained.is_dir())
+
+    def test_maintenance_capture_accepts_fractional_api_deadlines(self) -> None:
+        from types import SimpleNamespace
+        from tests.unit.test_runtime_config_v2 import POLICY
+        from tests.unit.test_deployment_topology import BINDING
+        from nmrpeak_provider.deployment_runtime import api_facts
+
+        api = dict(POLICY.api, exchange_seconds=0.5)
+        policy = SimpleNamespace(api=api, shared_settings=Path("/shared/settings.toml"))
+        facts = api_facts(api) | {"input_paths": [api["credential_file"]], "credential_file": api["credential_file"]}
+        projection = facts | {"shared": BINDING["shared"]}
+        files_seen = {}
+
+        def capture(_parent, _identity, files):
+            files_seen.update(files)
+            return Path("/tmp/captured-api")
+
+        expected = {key: facts[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")}
+        with (
+            patch.object(provider_deployment, "_journal_binding", return_value=(policy, None, facts)),
+            patch.object(provider_deployment, "_read_regular_file", return_value=b"provider config"),
+            patch.object(provider_deployment, "_read_capture_source", return_value=b"captured"),
+            patch.object(provider_deployment, "_contained_shared_projection", return_value=projection),
+            patch.object(provider_deployment, "_publish_retained_tree", side_effect=capture),
+            patch.object(provider_deployment, "_validate_captured_runtime", return_value=expected | {
+                "proxy_socket": BINDING["shared"]["proxy_socket"],
+            }),
+        ):
+            with provider_deployment._held_maintenance_api_route(
+                Path("/usr/bin/docker"), Path("/repo"), "production", IMAGES["provider"],
+                "provider:nmrpeak", facts["journal_authority_id"],
+            ):
+                stored = json.loads(files_seen["api.json"])
+                self.assertEqual(stored["exchange_seconds"], 0.5)
+                self.assertNotEqual(stored["credential_file"], api["credential_file"])
+
+    def test_maintenance_capture_survives_unconfirmed_reader_retirement(self) -> None:
+        from types import SimpleNamespace
+        from tests.unit.test_runtime_config_v2 import POLICY
+        from tests.unit.test_deployment_topology import BINDING
+        from nmrpeak_provider.deployment_runtime import api_facts
+
+        policy = SimpleNamespace(api=POLICY.api, shared_settings=Path("/shared/settings.toml"))
+        facts = api_facts(policy.api) | {
+            "input_paths": [policy.api["credential_file"]], "credential_file": policy.api["credential_file"],
+        }
+        projection = facts | {"shared": BINDING["shared"]}
+        expected = {key: facts[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")}
+        with TemporaryDirectory() as temporary:
+            retained = Path(temporary) / "retained"
+            retained.mkdir()
+            with (
+                patch.object(provider_deployment, "mkdtemp", return_value=str(retained)),
+                patch.object(provider_deployment, "_journal_binding", return_value=(policy, None, facts)),
+                patch.object(provider_deployment, "_read_regular_file", return_value=b"provider config"),
+                patch.object(provider_deployment, "_read_capture_source", return_value=b"captured"),
+                patch.object(provider_deployment, "_contained_shared_projection", return_value=projection),
+                patch.object(provider_deployment, "_publish_retained_tree", return_value=retained),
+                patch.object(provider_deployment, "_validate_captured_runtime", return_value=expected | {
+                    "proxy_socket": BINDING["shared"]["proxy_socket"],
+                }),
+                self.assertRaises(provider_deployment.MaintenanceInvocationUnsettled),
+            ):
+                with provider_deployment._held_maintenance_api_route(
+                    Path("/usr/bin/docker"), Path("/repo"), "production", IMAGES["provider"],
+                    "provider:nmrpeak", facts["journal_authority_id"],
+                ):
+                    raise provider_deployment.MaintenanceInvocationUnsettled("reader cleanup unconfirmed")
+            self.assertTrue(retained.is_dir())
+
+    def test_journal_client_checks_shared_volume_before_borrowing(self) -> None:
+        from tests.unit.test_deployment_topology import BINDING
+
+        shared = BINDING["shared"]
+        volume = shared["mounts"][0]["source"]
+        image = LocalImage("sha256:" + "1" * 64, "sha256:" + "2" * 64)
+        calls = []
+
+        def docker_command(_docker, arguments, *, timeout):
+            calls.append(arguments)
+            if arguments[:2] == ("volume", "inspect"):
+                return subprocess.CompletedProcess((), 0, json.dumps([{"Name": volume}]).encode(), b"")
+            if arguments[0] == "create":
+                return subprocess.CompletedProcess((), 0, ("d" * 64 + "\n").encode(), b"")
+            return subprocess.CompletedProcess((), 0, b"ok", b"")
+
+        with patch.object(provider_deployment, "_docker_command", side_effect=docker_command):
+            result = provider_deployment._run_journal_api_client(
+                Path("/usr/bin/docker"), image, BINDING, Path("/tmp/capture"), "module", (),
+            )
+        self.assertEqual(result, b"ok")
+        self.assertEqual(calls[0], ("volume", "inspect", volume))
+        self.assertIn("--group-add", calls[1])
+        self.assertIn(str(shared["socket_group_id"]), calls[1])
+        self.assertTrue(any("readonly,volume-nocopy" in value and volume in value for value in calls[1]))
+
+        with patch.object(provider_deployment, "_docker_command", return_value=subprocess.CompletedProcess(
+            (), 0, b"[]", b"",
+        )) as command, self.assertRaisesRegex(DeploymentOperationRejected, "exact shared proxy volume"):
+            provider_deployment._run_journal_api_client(
+                Path("/usr/bin/docker"), image, BINDING, Path("/tmp/capture"), "module", (),
+            )
+        self.assertEqual(command.call_count, 1)
+
     def test_initialization_copies_committed_examples_once(self) -> None:
         with committed_repository() as repository:
             destination = initialize_deployment(repository, "production-1")
@@ -749,11 +875,11 @@ class ProviderDeploymentTests(unittest.TestCase):
                 project = f"nmrpeak-{deployment}"
                 definition = repository / "bindings.toml"
                 definition.write_text(DEFINITION)
-                projection = project_provider_binding(
-                    definition, "first", image="sha256:" + "a" * 64,
-                    namespace=project, input_sources={},
-                )
-                volume, = projection["api_route"]["compose"]["volumes"]
+                binding = load_deployment_bindings(definition).selected("first")
+                route = render_api_route(binding, image="sha256:" + "a" * 64,
+                    interpreter="/usr/local/bin/python3.12", namespace=project, uid=65532, gid=65532,
+                    storage=NamedRouteVolume(), input_sources={}, service_name="api")
+                volume, = route.compose["volumes"]
                 remaining = [True]
 
                 def docker_command(_docker, arguments, *, timeout):
@@ -1623,17 +1749,15 @@ class render_repository:
         credential = external / "first.json"
         credential.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
         credential.chmod(0o600)
-        definition = external / "bindings.toml"
-        definition.write_text(
-            DEFINITION.replace('name = "first"', 'name = "first"', 1)
-            .replace('/run/credentials/first.json', str(credential)),
-            encoding="utf-8",
-        )
-        definition.chmod(0o600)
+        shared = external / "shared.toml"
+        shared.write_text('[deployment]\nproject = "shared-delivery"\ngid = 65532\n', encoding="utf-8")
+        shared.chmod(0o600)
         provider_template = (ROOT / "config/provider.toml.example").read_bytes()
         provider_template = provider_template.replace(
-            b"/absolute/path/to/shared-bindings.toml", str(definition).encode("utf-8")
-        ).replace(b'name = "nmrpeak"', b'name = "first"')
+            b"/absolute/path/to/shared-settings.toml", str(shared).encode("utf-8")
+        ).replace(b"/absolute/path/to/provider-credential.json", str(credential).encode("utf-8"))
+        provider_template = provider_template.replace(b'ca_file = "/absolute/path/to/api-ca.pem"\n', b"")
+        provider_template = provider_template.replace(b"provider:example", b"provider:nmrpeak")
         (root / "config/deployments/production/provider.toml").write_bytes(provider_template)
         (root / "config/deployments/production/deployment.toml").write_text(
             selection(),
@@ -1696,39 +1820,36 @@ class render_repository:
         endpoint = endpoint_root / "10-primary.toml"
         endpoint.write_text('id="primary"\nbase_url="https://example.test"\napi_key="test-secret"\nmodel="model"\n', encoding="utf-8")
         endpoint.chmod(0o600)
-        self._projection_patch = patch.object(provider_deployment, "_contained_binding_projection", side_effect=self._project_binding)
+        self._projection_patch = patch.object(provider_deployment, "_contained_shared_projection", side_effect=self._project_shared)
         self._projection_patch.start()
         self._validate_patch = patch.object(provider_deployment, "_validate_captured_runtime", side_effect=self._validate_captured)
         self._validate_patch.start()
         return root
 
-    def _project_binding(self, _docker, image, definition, binding_name, namespace, *, input_sources):
+    def _project_shared(self, _docker, _image, provider, shared):
+        from nmrpeak_provider.deployment_runtime import project_api_inputs
+        from nmrpeak_provider.provider_config import decode_provider_template
+        if shared is None:
+            return project_api_inputs(decode_provider_template(provider))
         with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "bindings.toml"
-            path.write_bytes(definition)
-            path.chmod(0o600)
-            image_id = image.image_id if isinstance(image, LocalImage) else image
-            return project_provider_binding(path, binding_name, image=image_id,
-                                            namespace=namespace, input_sources=input_sources)
+            root = Path(temporary)
+            provider_path, shared_path = root / "provider.toml", root / "shared.toml"
+            provider_path.write_bytes(provider)
+            shared_path.write_bytes(shared)
+            return project_provider_inputs(provider_path, shared_path)
 
-    def _validate_captured(self, _docker, image, files, *, arguments=("validate",)):
+    def _validate_captured(self, _docker, _image, files, *, arguments=("validate",)):
         import tomllib
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "bindings.toml"
-            path.write_bytes(files["bindings.toml"])
-            path.chmod(0o600)
-            image_id = image.image_id if isinstance(image, LocalImage) else image
-            name = "first"
-            projection = project_provider_binding(path, name, image=image_id,
-                namespace="nmrpeak-fixture", input_sources={})
+        from nmrpeak_provider.deployment_runtime import api_facts
         if arguments == ("validate",):
             configured = tomllib.loads(files["provider.toml"].decode("utf-8"))
-            return {key: projection[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")} | {
+            return api_facts(configured["api"]) | {
                 "frozen_generation_id": configured["frozen_generation_id"],
                 "proxy_socket": configured["api_route"]["proxy_socket"],
+                "outbox_socket": configured["api_route"]["outbox_socket"],
             }
-        proxy_socket = arguments[arguments.index("--proxy-socket") + 1]
-        return {key: projection[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")} | {"proxy_socket": proxy_socket}
+        api = json.loads(files["api.json"])
+        return api_facts(api) | {"proxy_socket": arguments[arguments.index("--proxy-socket") + 1]}
 
     def __exit__(self, *exc_info: object) -> None:
         self._validate_patch.stop()
@@ -1767,18 +1888,12 @@ def compose_for_environment(
 ) -> dict[str, object]:
     document = compose_document(binding_projection)
     provider = document["services"]["provider"]
-    client_mount = binding_projection["api_route"]["client_mount"]
-    delivery_target = str(Path(binding_projection["delivery"]["socket_path"]).parent)
-    provider["volumes"] = [mount for mount in provider["volumes"]
-                           if mount["target"] not in {client_mount["target"], delivery_target}]
-    provider.pop("depends_on", None)
+    shared = binding_projection["shared"]
+    targets = {mount["target"] for mount in shared["mounts"]}
+    provider["volumes"] = [mount for mount in provider["volumes"] if mount["target"] not in targets]
     provider.pop("group_add", None)
-    document["volumes"].pop(client_mount["source"], None)
-    document["volumes"].pop("delivery-ipc", None)
-    for name in binding_projection["api_route"]["compose"]["services"]:
-        document["services"].pop(name)
-    for name in binding_projection["api_route"]["compose"]["networks"]:
-        document["networks"].pop(name)
+    for name in shared["volumes"]:
+        document["volumes"].pop(name)
     document["name"] = f"nmrpeak-{deployment}"
     services = document["services"]
     services["provider"]["image"] = environment["PROVIDER_IMAGE_REF"]
@@ -1794,12 +1909,7 @@ def compose_for_environment(
     frozen = next(mount for mount in services["provider"]["volumes"]
                   if mount["target"] == "/run/nmrpeak-provider/frozen")
     frozen["source"] = environment["FROZEN_GENERATION_PATH"]
-    normalized = provider_deployment._compose_binding_route(document, binding_projection)
-    normalized["services"]["provider"]["depends_on"] = {
-        role: facts | {"required": True}
-        for role, facts in normalized["services"]["provider"]["depends_on"].items()
-    }
-    return normalized
+    return provider_deployment._compose_binding_route(document, binding_projection)
 
 
 def test_plan(repository: Path) -> DeploymentPlan:

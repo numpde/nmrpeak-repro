@@ -8,15 +8,15 @@ from .provider_diagnostics import describe_nmrpeak_failure
 
 from .attempt_journal_store import AttemptJournalConflict
 from .journal_identity import journal_api_authority_id
-from .provider_startup import load_captured_api_binding
+from .provider_startup import load_maintenance_api
 
 
-def load_journal_api(*, binding_name, proxy_socket, expected_provider_ref, expected_authority_id):
+def load_journal_api(*, proxy_socket, expected_provider_ref, expected_authority_id):
     """Construct one API owner from captured inputs, before any HTTP effect."""
-    _definition, binding, settings = load_captured_api_binding(binding_name, proxy_socket)
-    if binding.api["provider_ref"] != expected_provider_ref:
+    settings, provider_ref, _publication = load_maintenance_api(proxy_socket)
+    if provider_ref != expected_provider_ref:
         raise AttemptJournalConflict("Selected API binding belongs to another provider; preserve the retained journal")
-    authority = journal_api_authority_id(origin=binding.api["origin"], topology=binding.api["topology"])
+    authority = journal_api_authority_id(origin=settings.identity.origin, topology=settings.expected_topology)
     if authority != expected_authority_id:
         raise AttemptJournalConflict("Selected API namespace differs from the retained journal; inspect the matching deployment binding")
     return ProviderAPI(settings.identity, settings.http.new_transport(), expected_topology=settings.expected_topology)
@@ -84,7 +84,6 @@ def main(arguments=None):
     import sys
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binding', required=True)
     parser.add_argument('--proxy-socket', required=True)
     parser.add_argument('--expected-provider-ref', required=True)
     parser.add_argument('--expected-authority-id', required=True)
@@ -92,7 +91,7 @@ def main(arguments=None):
     args = parser.parse_args(arguments)
     api = None
     try:
-        api = load_journal_api(binding_name=args.binding, proxy_socket=args.proxy_socket,
+        api = load_journal_api(proxy_socket=args.proxy_socket,
                                expected_provider_ref=args.expected_provider_ref,
                                expected_authority_id=args.expected_authority_id)
         asyncio.run(_inventory(api, args.maximum_pages))

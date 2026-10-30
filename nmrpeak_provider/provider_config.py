@@ -12,9 +12,8 @@ from .canonical_json import canonical_json_bytes
 from .interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
 from .native_policy import RETIREMENT_SECONDS
 
-SCHEMA_ID = "nmrpeak.provider.runtime_config.v2"
+SCHEMA_ID = "nmrpeak.provider.runtime_config.v3"
 CONFIG_PATH = Path("/run/config/nmrpeak-provider/provider.toml")
-BINDING_PATH = Path("/run/config/nmrpeak-provider/bindings.toml")
 API_INPUT_ROOT = CONFIG_PATH.parent / "grants"
 FROZEN_ROOT = Path("/run/nmrpeak-provider/frozen")
 IDENTITY_LOCK_PATH = Path("/run/nmrpeak-provider-lock/provider.lock")
@@ -85,8 +84,8 @@ class ProviderProcessPolicy:
 class ProviderPolicy:
     """Operator selection and scientific policy without a transport route grant."""
 
-    binding_definition: Path
-    binding_name: str
+    api: dict
+    shared_settings: Path | None
     process: ProviderProcessPolicy
     runner: RunnerDeadlines
     interpreter: InterpreterPolicy
@@ -99,6 +98,7 @@ class ProviderRuntimeConfig:
     frozen_generation_id: str
     policy: ProviderPolicy
     api_proxy_socket: str
+    outbox_socket: str
 
 
 def _document(raw, fields):
@@ -110,16 +110,18 @@ def _document(raw, fields):
         raise ProviderConfigurationRejected("Provider configuration must be valid UTF-8 TOML") from cause
     _fields("top level", document, fields)
     if document["schema_id"] != SCHEMA_ID:
-        raise ProviderConfigurationRejected("Provider configuration schema is unsupported; startup requires v2")
+        raise ProviderConfigurationRejected("Provider configuration schema is unsupported; startup requires v3")
     return document
 
 
-_POLICY_FIELDS = {"schema_id", "binding", "process", "runner", "interpreter"}
+_POLICY_FIELDS = {"schema_id", "api", "process", "runner", "interpreter"}
 
 
 def decode_provider_template(raw: bytes) -> ProviderPolicy:
     """Admit operator input, refusing deployment-generated route fields."""
-    return _policy(_document(raw, _POLICY_FIELDS))
+    document = _document(raw, _POLICY_FIELDS | {"shared"})
+    shared = _table(document, "shared", {"settings_file"})
+    return _policy(document, _absolute_path(shared["settings_file"], "Shared settings"))
 
 
 def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
@@ -130,19 +132,17 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
         validate_frozen_generation_id(frozen_id)
     except ValueError as cause:
         raise ProviderConfigurationRejected(str(cause)) from cause
-    route = _table(document, "api_route", {"proxy_socket"})
+    route = _table(document, "api_route", {"proxy_socket", "outbox_socket"})
     socket = _absolute_path(route["proxy_socket"], "Generated API proxy socket")
-    policy = _policy(document)
-    if policy.binding_definition != BINDING_PATH:
-        raise ProviderConfigurationRejected(f"Provider runtime requires the captured binding at {BINDING_PATH}")
-    return ProviderRuntimeConfig(frozen_id, policy, str(socket))
+    outbox = _absolute_path(route["outbox_socket"], "Generated outbox socket")
+    return ProviderRuntimeConfig(frozen_id, _policy(document, None), str(socket), str(outbox))
 
 
-def render_provider_runtime_config(policy, *, frozen_generation_id, api_proxy_socket):
+def render_provider_runtime_config(policy, *, frozen_generation_id, api_proxy_socket, outbox_socket):
     """Encode admitted policy with the deployment's generated identity and grants."""
     process, observation = policy.process, policy.process.observation
     tables = (
-        ("binding", {"definition_file": str(BINDING_PATH), "name": policy.binding_name}),
+        ("api", captured_api_fields(policy.api)),
         ("process", {
             "feed_interval_seconds": process.feed_interval_seconds,
             "hello_interval_seconds": process.hello_interval_seconds,
@@ -159,7 +159,7 @@ def render_provider_runtime_config(policy, *, frozen_generation_id, api_proxy_so
             "turn_timeout_seconds": policy.interpreter.call_policy.turn_timeout_seconds,
             "interpretation_timeout_seconds": policy.interpreter.interpretation_timeout_seconds,
         }),
-        ("api_route", {"proxy_socket": api_proxy_socket}),
+        ("api_route", {"proxy_socket": api_proxy_socket, "outbox_socket": outbox_socket}),
     )
     lines = [f"schema_id = {json.dumps(SCHEMA_ID)}",
              f"frozen_generation_id = {json.dumps(frozen_generation_id)}"]
@@ -184,6 +184,14 @@ def api_input_target(path: str) -> Path:
     return API_INPUT_ROOT / sha256(path.encode("utf-8")).hexdigest()
 
 
+def captured_api_fields(api):
+    fields = dict(api)
+    for name in ("credential_file", "ca_file"):
+        if name in fields:
+            fields[name] = str(api_input_target(fields[name]))
+    return fields
+
+
 def _absolute_path(value, label):
     if type(value) is not str or not value or "\0" in value:
         raise ProviderConfigurationRejected(f"{label} must be an absolute normalized path")
@@ -193,12 +201,13 @@ def _absolute_path(value, label):
     return path
 
 
-def _policy(document):
-    binding = _table(document, "binding", {"definition_file", "name"})
-    definition = _absolute_path(binding["definition_file"], "Binding definition")
-    name = binding["name"]
-    if type(name) is not str or not name:
-        raise ProviderConfigurationRejected("Provider binding selection requires a nonempty name")
+def _policy(document, shared_settings):
+    api = document["api"]
+    if type(api) is not dict or "credential_file" not in api:
+        raise ProviderConfigurationRejected("Provider API input must include a credential file")
+    for field in ("credential_file", "ca_file"):
+        if field in api:
+            _absolute_path(api[field], f"API {field}")
     process = _table(document, "process", {
         "feed_interval_seconds", "hello_interval_seconds", "shutdown_drain_seconds",
         "forced_join_seconds", "inventory_maximum_pages", "observation_interval_seconds",
@@ -255,7 +264,7 @@ def _policy(document):
         )
     except ValueError as cause:
         raise ProviderConfigurationRejected(str(cause)) from cause
-    return ProviderPolicy(definition, name, process_policy, deadlines, interpreter_policy)
+    return ProviderPolicy(dict(api), shared_settings, process_policy, deadlines, interpreter_policy)
 
 def _table(
     document: dict[str, object],

@@ -81,15 +81,16 @@ class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
         async def serve(**arguments):
             self.assertTrue(held)
             guarded.assert_called_once()
-            self.assertIs(arguments["binding"], binding)
+            self.assertEqual(arguments["provider_ref"], "provider:nmrpeak")
             self.assertEqual(arguments["settings"].http.proxy_socket, "/routes/selected/proxy.sock")
             self.assertIsNone(settings.http.proxy_socket)
             arguments["identity_lock"].close()
 
         guarded, serving = Mock(side_effect=guard), AsyncMock(side_effect=serve)
         startup = ProviderStartup(
-            decode_provider_runtime_config(RUNTIME), definition, binding,
+            decode_provider_runtime_config(RUNTIME),
             replace(settings, http=replace(settings.http, proxy_socket="/routes/selected/proxy.sock")),
+            "provider:nmrpeak", object(),
         )
 
         def read_while_locked(result):
@@ -117,7 +118,7 @@ class ProviderEntrypointTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(caught.exception, blocked)
             serving.assert_awaited_once()
             previous_reads = replacements["load_frozen_generation"].call_count
-            binding.api["provider_ref"] = "provider:other"
+            startup = replace(startup, provider_ref="provider:other")
             with self.assertRaisesRegex(ValueError, "another provider identity lock"):
                 provider_main.run_provider()
             self.assertFalse(held)
@@ -184,7 +185,7 @@ with patch('nmrpeak_provider.provider_main.run_provider', run):
                 patch.object(provider_main.signal, "signal", side_effect=install):
             await provider_main._serve(
                 policy=policy, frozen=frozen, interpreter=object(), settings=object(),
-                binding=object(), delivery_seconds=5, announcement=object(),
+                provider_ref="provider:nmrpeak", publication=object(), outbox_socket="/outbox/http.sock", announcement=object(),
                 readiness=SimpleNamespace(publish=Mock()), identity_lock=Mock(),
             )
         return process

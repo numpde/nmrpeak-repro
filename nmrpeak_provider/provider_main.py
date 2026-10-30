@@ -7,7 +7,8 @@ from pathlib import Path
 import signal
 
 from provider_core.api import ProviderAPI
-from provider_core.delivery_client import DeliveryClient
+from provider_core.delivery_client import DeliveryEndpoint
+from provider_core.shared_delivery_client import SharedDeliveryClient
 from provider_core.diagnostics import failure_evidence
 from provider_core.hello import AnalysisOffering
 
@@ -49,8 +50,7 @@ def run_provider(config_path: Path = CONFIG_PATH) -> None:
             startup = load_provider_startup(config_path)
             configured = startup.configured
             policy = configured.policy
-            definition, binding, settings = startup.definition, startup.binding, startup.settings
-            provider_ref = binding.api["provider_ref"]
+            settings, provider_ref, publication = startup.settings, startup.provider_ref, startup.publication
             if provider_ref != identity_lock.provider_ref:
                 raise ProviderConfigurationRejected("Selected API binding belongs to another provider identity lock")
             frozen = load_frozen_generation(
@@ -73,7 +73,7 @@ def run_provider(config_path: Path = CONFIG_PATH) -> None:
             raise
         asyncio.run(_serve(
             policy=policy, frozen=frozen, interpreter=interpreter, settings=settings,
-            binding=binding, delivery_seconds=definition.request_seconds,
+            provider_ref=provider_ref, publication=publication, outbox_socket=configured.outbox_socket,
             announcement=announcement, readiness=readiness, identity_lock=identity_lock,
         ))
     except BaseException as cause:
@@ -98,7 +98,7 @@ def _require_empty_legacy_journal(path):
             )
 
 
-async def _serve(*, policy, frozen, interpreter, settings, binding, delivery_seconds,
+async def _serve(*, policy, frozen, interpreter, settings, provider_ref, publication, outbox_socket,
                  announcement, readiness, identity_lock):
     hf = chf = process = None
     primary = None
@@ -123,8 +123,9 @@ async def _serve(*, policy, frozen, interpreter, settings, binding, delivery_sec
                            expected_topology=settings.expected_topology)
 
     def new_delivery():
-        return DeliveryClient(binding.endpoint, exchange_seconds=delivery_seconds,
-                              retirement_seconds=settings.http.retirement_seconds)
+        endpoint = DeliveryEndpoint(settings.identity.origin, provider_ref, Path(outbox_socket))
+        return SharedDeliveryClient(endpoint, publication, exchange_seconds=settings.http.exchange_seconds,
+                                    retirement_seconds=settings.http.retirement_seconds)
 
     try:
         hf = await prepare_runner_session(HF_SOCKET_PATH, frozen.runtime.hf.result_facts,

@@ -120,7 +120,7 @@ help:
 		'  make provider/deployment/init DEPLOYMENT=<name>' \
 		'      Create named configuration and a private interpreter-input directory.' \
 		'  make provider/deployment/config DEPLOYMENT=<name>' \
-		'      Capture the selected shared binding and render the deployment for review.' \
+		'      Capture the provider API inputs and render the shared grants for review.' \
 		'  make provider/deployment/up DEPLOYMENT=<name> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
 		'      Start the reviewed generation with its selected shared API and delivery binding.' \
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
@@ -309,7 +309,7 @@ provider/deployment/init:
 provider/deployment/config: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/config:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
-	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust and routing in the selected shared binding instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment config "$$DEPLOYMENT_INPUT"
 
@@ -318,7 +318,7 @@ provider/deployment/up: private export EXPECTED_PLAN_SHA256_INPUT := $(value EXP
 provider/deployment/up:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin EXPECTED_PLAN_SHA256)" = command\ line || { echo 'EXPECTED_PLAN_SHA256 must be set on the make command line from the reviewed config output' >&2; exit 2; }
-	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust and routing in the selected shared binding instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
 	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment up "$$DEPLOYMENT_INPUT" \
 		--expected-plan-sha256 "$$EXPECTED_PLAN_SHA256_INPUT"
@@ -384,7 +384,7 @@ provider/deployment/journal/archive-closed: private export RECORD_DIGEST_INPUT :
 provider/deployment/journal/archive-closed: private export ARCHIVE_REASON_INPUT := $(value REASON)
 provider/deployment/journal/archive-closed: private export FROZEN_GENERATION_INPUT := $(value FROZEN_GENERATION)
 provider/deployment/journal/archive-closed:
-	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust and routing in the selected shared binding instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
 	@cd "$(CURDIR)" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(CURDIR)" \
 		$(PYTHON) -m deployment.provider_deployment journal-archive-closed "$$DEPLOYMENT_INPUT" \
 		--execution-attempt-ref "$$ATTEMPT_REF_INPUT" --record-digest "$$RECORD_DIGEST_INPUT" \

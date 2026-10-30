@@ -7,7 +7,7 @@ import json
 import tempfile
 import unittest
 
-from nmrpeak_provider.deployment_runtime import main, project_provider_binding
+from nmrpeak_provider.deployment_runtime import main, project_provider_inputs
 from nmrpeak_provider.journal_identity import journal_api_authority_id
 
 
@@ -45,46 +45,35 @@ addresses = ["api.example.test=127.0.0.1"]
 
 
 class DeploymentRuntimeTests(unittest.TestCase):
-    def test_failed_projection_reports_the_original_sdk_error(self):
+    def test_projects_shared_grants_without_reading_api_secrets(self):
+        from tests.unit.test_runtime_config_v2 import TEMPLATE
         with tempfile.TemporaryDirectory() as directory:
-            definition = Path(directory) / "bindings.toml"
-            definition.write_text(DEFINITION)
+            root = Path(directory)
+            provider, shared = root / "provider.toml", root / "shared.toml"
+            provider.write_bytes(TEMPLATE)
+            shared.write_text('[deployment]\nproject = "fixture"\ngid = 1234\n')
+            projection = project_provider_inputs(provider, shared)
+        self.assertEqual(projection["provider_ref"], "provider:nmrpeak")
+        self.assertEqual(projection["input_paths"], ["/run/credentials/first.json"])
+        grants = projection["shared"]
+        self.assertEqual(grants["group_add"], ["1234"])
+        self.assertEqual(set(grants["volumes"]), {"fixture-proxy-socket", "fixture-outbox-socket"})
+        for mount in grants["mounts"]:
+            self.assertTrue(mount["read_only"])
+            self.assertTrue(mount["volume"]["nocopy"])
+        self.assertEqual(projection["journal_authority_id"], journal_api_authority_id(
+            origin="https://api.example.test", topology="web"))
+
+    def test_invalid_sdk_grant_reports_failure(self):
+        from tests.unit.test_runtime_config_v2 import TEMPLATE
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider, shared = root / "provider.toml", root / "shared.toml"
+            provider.write_bytes(TEMPLATE)
+            shared.write_text('[deployment]\nproject = "fixture"\ngid = 0\n')
             output, errors = StringIO(), StringIO()
             with redirect_stdout(output), redirect_stderr(errors):
-                status = main([
-                    "project", "--definition", str(definition), "--binding", "missing",
-                    "--image", "sha256:" + "a" * 64, "--namespace", "nmrpeak-fixture",
-                ])
+                status = main(["project", "--provider", str(provider), "--shared-settings", str(shared)])
         self.assertEqual(status, 2)
         self.assertEqual(output.getvalue(), "")
-        self.assertEqual(json.loads(errors.getvalue())["failure"]["exception_type"], "BindingDefinitionRejected")
-
-    def project(self, definition, name):
-        return project_provider_binding(definition, name, image="sha256:" + "a" * 64,
-                                        namespace="nmrpeak-fixture", input_sources={})
-
-    def test_selected_binding_grants_exact_sdk_route_without_reading_credentials(self):
-        with tempfile.TemporaryDirectory() as directory:
-            definition = Path(directory) / "bindings.toml"
-            definition.write_text(DEFINITION)
-            projection = self.project(definition, "first")
-        self.assertEqual(projection["provider_ref"], "provider:nmrpeak")
-        self.assertEqual(projection["input_paths"], ("/run/credentials/first.json",))
-        self.assertEqual(projection["delivery"]["socket_path"], "/run/delivery/first/delivery.sock")
-        route = projection["api_route"]
-        self.assertEqual(set(route["compose"]["services"]), {"api", "api-init"})
-        self.assertEqual(route["compose"]["services"]["api"]["user"], "65532:65532")
-        self.assertTrue(route["client_mount"]["read_only"])
-        self.assertEqual(route["client_depends_on"], {"api": {"condition": "service_healthy"}})
-        self.assertNotIn("credentials", str(route["compose"]))
-
-    def test_delivery_principal_and_historical_journal_namespace_remain_distinct(self):
-        with tempfile.TemporaryDirectory() as directory:
-            definition = Path(directory) / "bindings.toml"
-            definition.write_text(DEFINITION)
-            first, second = self.project(definition, "first"), self.project(definition, "second")
-        expected = journal_api_authority_id(origin="https://api.example.test", topology="web")
-        self.assertEqual(first["journal_authority_id"], expected)
-        self.assertEqual(second["journal_authority_id"], expected)
-        self.assertNotEqual(first["delivery"]["ipc_volume"], second["delivery"]["ipc_volume"])
-        self.assertNotEqual(first["api_route"]["client_socket"], second["api_route"]["client_socket"])
+        self.assertIn("failure", json.loads(errors.getvalue()))

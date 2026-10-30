@@ -86,7 +86,7 @@ settings = ApiSettings(SharedApi({}).identity,
 binding = SimpleNamespace(api={"provider_ref": "provider:nmrpeak"})
 definition = SimpleNamespace(request_seconds=1)
 readiness = Mock()
-with patch.object(provider_main, "load_provider_startup", return_value=ProviderStartup(decode_provider_runtime_config(RUNTIME), definition, binding, settings)), \
+with patch.object(provider_main, "load_provider_startup", return_value=ProviderStartup(decode_provider_runtime_config(RUNTIME), settings, "provider:nmrpeak", object())), \
      patch.object(provider_main, "load_frozen_generation", return_value=FrozenGeneration("sha256:" + "1" * 64, runtime(), FILES)), \
      patch.object(provider_main, "InputInterpreter"), \
      patch.object(provider_main, "load_openai_chat_endpoint_specs", return_value=()), \
