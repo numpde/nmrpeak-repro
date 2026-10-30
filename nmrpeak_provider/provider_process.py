@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import secrets
+from time import monotonic
 
 from provider_core.api import ApiFailure
 from provider_core.analysis import AnalysisFailure, AnalysisSuccess
@@ -65,6 +66,7 @@ class ProviderProcess:
             raise ValueError("Provider lanes, API and delivery must share one provider binding")
         self._claims = AttemptClaims.live(limits=LiveAttemptLimits(2, 262144, 2 * MAXIMUM_TERMINAL_BYTES))
         self._admission = asyncio.Lock()
+        self._discovery_not_before = 0.0
         self._admission_paused = asyncio.Event()
         self._delivery_waiters = set()
         self._stop = asyncio.Event()
@@ -124,7 +126,7 @@ class ProviderProcess:
         while not self._stop.is_set():
             selected = await self._select(lane)
             if selected is None:
-                await self._pause(self.policy.feed_interval_seconds)
+                await self._pause(max(self.policy.feed_interval_seconds, self._discovery_not_before - monotonic()))
                 continue
             pending, instructions = selected
             session = NmrpeakAnalysisSession(lane.generation, lane.runner, self.interpreter,
@@ -170,6 +172,8 @@ class ProviderProcess:
         async with self._admission:
             if self._stop.is_set():
                 return None
+            if monotonic() < self._discovery_not_before:
+                return None
             self._clear_delivery_pressure()
             if self._admission_paused.is_set():
                 return None
@@ -200,6 +204,9 @@ class ProviderProcess:
                     await self.api.retire(owner=self)
                     if not (self.api.can_retry_job_discovery(cause) or self.api.can_retry_read(cause)):
                         raise
+                    retry_after = cause.retry_after_seconds
+                    if retry_after is not None:
+                        self._discovery_not_before = monotonic() + retry_after
                     self._notice("Job discovery temporarily unavailable", cause)
                     return None
                 if lane.cursor is None:
@@ -234,7 +241,7 @@ class ProviderProcess:
                 if not self.hello_api.can_refresh_hello(cause):
                     raise
                 self._notice("Provider Hello remains unconfirmed", cause)
-                await self._pause(self.policy.feed_interval_seconds)
+                await self._pause(max(self.policy.feed_interval_seconds, cause.retry_after_seconds or 0))
 
     async def _hello_loop(self):
         while not await self._pause(self.policy.hello_interval_seconds):

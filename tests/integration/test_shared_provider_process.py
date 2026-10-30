@@ -7,10 +7,12 @@ from dataclasses import replace
 from pathlib import Path
 import tempfile
 from threading import Barrier, Event
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from provider_core.delivery_client import DeliveryClient, DeliveryEndpoint, DeliveryUnavailable
+from provider_core.api import ApiFailure
 from provider_core.delivery_ipc import DeliveryInbox
 from provider_core.api_config import api_settings_with_material
 from provider_core.shared_delivery_client import SharedDeliveryClient
@@ -45,6 +47,33 @@ from tests.unit.test_provider_startup_inputs import credential_bytes
 
 
 class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retry_after_gates_discovery_for_both_lanes(self):
+        service = await self._idle_process()
+        failure = ApiFailure("discover", "rate limited", response=SimpleNamespace(
+            status=429, headers=((b"retry-after", b"30"),)))
+        empty = SimpleNamespace(jobs=(), next_cursor=None)
+        with patch("nmrpeak_provider.provider_process.monotonic", side_effect=[100, 100, 101, 130]), \
+             patch.object(service.api, "jobs", AsyncMock(side_effect=[failure, empty])) as jobs, \
+             patch.object(service.api, "retire", AsyncMock()), \
+             patch.object(service.api, "can_retry_job_discovery", return_value=True), \
+             patch.object(service, "_notice"):
+            self.assertIsNone(await service._select(service.lanes[0]))
+            self.assertIsNone(await service._select(service.lanes[1]))
+            self.assertEqual(jobs.await_count, 1)
+            self.assertIsNone(await service._select(service.lanes[1]))
+            self.assertEqual(jobs.await_count, 2)
+
+    async def test_hello_respects_server_retry_after(self):
+        service = await self._idle_process()
+        failure = ApiFailure("hello", "rate limited", response=SimpleNamespace(
+            status=429, headers=((b"retry-after", b"30"),)))
+        with patch.object(service.hello_api, "publish_hello", AsyncMock(side_effect=[failure, None])), \
+             patch.object(service.hello_api, "retire", AsyncMock()), \
+             patch.object(service.hello_api, "can_refresh_hello", return_value=True), \
+             patch.object(service, "_notice"), patch.object(service, "_pause", AsyncMock()) as pause:
+            await service._announce()
+            pause.assert_awaited_once_with(30)
+
     async def test_startup_does_not_read_outbox_inventory(self):
         service = await self._idle_process()
         ready = Mock(side_effect=service.request_stop)
