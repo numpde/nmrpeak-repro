@@ -1,0 +1,375 @@
+NMRPeak adoption of the shared API proxy
+========================================
+
+Status: NMRPeak design based on nmr-provider-tools note 020, 30 October 2026.
+This document describes intended changes, not implementation or deployment evidence.
+The shared-package owner owns the host proxy and convergence of 020; NMRPeak
+owns its provider, operational capture, maintenance clients and retirement.
+
+Outcome and completion boundary
+--------------------------------
+
+The first joint deployment uses the existing local API at nmr.localhost:
+all four providers AND shared delivery use one independently managed host API
+proxy, and the eight replaced proxies and unused private route resources are
+retired after their actual clients settle. A working NMRPeak client alone is
+not joint completion. Count proxy roles as well as running containers; stopping
+a scientific runner cannot stand in for removing an extra proxy.
+
+Configuration replacement and service interruption during this cutover are
+accepted, including interruption of delivery while results remain queued.
+Preserving old configuration during preparation, uninterrupted publication,
+old/new input staging and matching-selector rollback are not prerequisites.
+Use maintained configuration, deployment and retirement workflows. Existing
+storage ownership, signing/TLS, exact queued commands and retry/effect-uncertainty
+rules remain authoritative; no migration or continuity system is added.
+
+NMRPeak's provider and every maintained journal/archive/maintenance API client
+borrow the same external socket volume read-only, with its supplementary access
+group. None starts, initializes, stops, replaces or deletes the host proxy or
+its storage. Generation removal, runtime-config removal, ordinary down/up and
+provider SDK upgrades leave the shared proxy running and its volume intact.
+
+Settle the proxy capabilities required by all these clients during Tier 1.
+After the first joint deployment, later provider improvements must fit the
+deployed socket/group, destination/network, storage, capacity and lifecycle
+baseline. They cannot require proxy restart, replacement or reconfiguration.
+A separate deliberate host-baseline change is outside those improvement tiers.
+
+Keep signing, TLS verification, API origin/provider identity, journal namespace,
+original delivery bindings, exact pending commands, START uncertainty and
+HF/CHF model products under their current owners. A proxy outage does not
+justify another Attempt, unconditional START replay, science rerun, queue edits
+or weaker trust. Correctly retained retries can remain pending; a publisher
+paused by bad inputs must be repaired before calling delivery working.
+
+Current source and required changes
+------------------------------------
+
+nmrpeak_provider/deployment_runtime.py::project_provider_binding currently
+loads the SDK binding and calls render_api_route with NamedRouteVolume. The
+projection returns api/api-init services, their private volume and dependency,
+plus delivery intake and journal authority facts. Replace that production route
+rendering with the agreed SDK shared-client projection. Keep SDK admission in
+the actual installed provider image: the host must not implement its own binding
+parser or copy SDK source. This operation needs no proxy image, route namespace
+or initializer once it only projects a client grant.
+
+deployment/provider_deployment.py::_compose_binding_route currently merges
+route services/networks/volumes, assigns an API depends_on, and sets group_add
+to the delivery group alone. Project only the external API volume and client
+mount/group, alongside the existing delivery intake and scientific mounts.
+Add the API and delivery groups without losing either or duplicating the same
+numeric group. Remove cross-project API depends_on; consumers never start the
+host project. Keep the provider's existing network posture and interpreter
+access, and keep HF/CHF runners networkless with their existing grants.
+
+render_deployment_plan currently captures the binding definition and every SDK
+input_paths member, then projects again using the retained input paths. With
+today's SDK this includes an external route's resolver. In the new SDK capture
+only client-owned credentials/trust and the admitted shared socket settings in
+the existing operational capture. Router interface, resolver, address mapping
+and network settings belong only to the host proxy. The SDK's binding format
+and input enumeration must support that split; do not retain unused private
+route fields or add a parallel NMRPeak route-configuration file.
+
+nmrpeak_provider/provider_config.py and provider_startup.py retain the existing
+separation between operational runtime capture and frozen scientific inputs.
+The generated api_route socket setting already feeds captured ApiSettings;
+extend the operational grant only as needed for the agreed SDK contract.
+Keep original API origin/topology in journal_api_authority_id. Borrowing another
+socket neither retargets the journal nor creates a new provider identity.
+
+repository_checks/deployment_topology.py currently admits exactly the SDK's
+private services/networks, a delivery-only supplementary group and the private
+API dependency. Adapt that existing admission to the external API grant and
+both client groups. Do not bypass posture admission to make the new Compose
+pass. Continue excluding operational API/delivery mounts from scientific
+topology, while admitting their actual runtime grants. Preserve checkpoint,
+runner and model identities and the existing generation derivation. A rebuilt
+provider image can change the derived generation identity through its existing
+image/input facts; do not forge an old digest or add socket/network settings as
+new scientific parameters to force or disguise that change.
+
+Maintenance is a production API consumer
+-----------------------------------------
+
+_held_maintenance_api_route currently snapshots API inputs, starts a temporary
+proxy Compose project and tears it down. archive_provider_journal and
+retire_provider_journal use it for signed API reads before changing retained
+state. Convert that seam to capture/admit the client inputs and borrow the
+shared socket; delete its private proxy startup and _cleanup_maintenance_route
+when no longer used. Keep bounded snapshot lifetime and existing journal,
+provider identity and generation locks. Offline journal inspection stays offline.
+
+_run_journal_api_client currently uses docker run with a read-only named-volume
+mount and network none, but no supplementary API group. Add the admitted API
+group with --group-add and retain the runtime UID, isolation, bounds and exact
+invocation cleanup. Unlike Compose external volumes, docker run named-volume
+mounts can create missing storage: check that the exact borrowed volume exists
+before launching this client. volume-nocopy alone does not prevent creation.
+Use the maintained owning path, not a root initializer or a direct-network
+fallback. No broader volume-discovery or attestation system is needed.
+
+An already running archive keeps its original generation lock and route until
+its work settles. An interrupted Docker command is not proof that the daemon
+client exited. Preserve unacknowledged work and reconcile the exact invocation
+before removing its original route. Report that cleanup pending; other providers
+can continue. Do not relaunch an old image whose maintenance entrypoint still
+creates a private proxy after final retirement; recovery uses a compatible
+shared-grant client and current retained state.
+
+NMRPeak's current validate entrypoint admits captured inputs without opening a
+connection; it is not signed reachability evidence. Check the configured image's
+signed API path with its actual capture and shared group grant during bringup.
+Use an existing signed API read; no new pre-stop command or separate staging
+interface is required. Do not reuse journal-retirement's empty-inventory success
+condition as a connectivity test: live Attempts need not prevent a read.
+
+Retirement belongs to NMRPeak's maintained lifecycle
+-----------------------------------------------------
+
+Ordinary down currently discovers api/api-init mounts in _api_route_volumes,
+admits their ownership in _inspect_project_resources, and passes an owned-volume
+overlay into _run_compose_down with --volumes. compose/provider-teardown.yml
+still names the old roles. Preserve their original ownership evidence until
+the old clients, proxy and initializer can be retired through the maintained
+deployment path. Remove obsolete API definitions after retirement, without
+leaving a permanent private-proxy fallback or generic migration framework.
+_inspect_project_containers and deployment_status_bytes also recognize these
+roles today. Retire the admitted old roles before narrowing the steady-state
+inventory; otherwise the old containers become foreign and block maintained
+cleanup. Ordinary up must never render removed roles as a compatibility branch.
+
+The borrowed host API volume is never an owned route-volume candidate. Normal
+and custom removal must exclude it; external:true on the new Compose file is
+not sufficient for custom cleanup. Keep ownership/attachment checks for owned
+HF/CHF sessions, journal and identity-lock storage. Never relabel host storage
+to satisfy those guards. Generation/runtime-config deletion continues to honor
+retained journal references and locks and cannot remove shared API resources.
+
+Historical scientific snapshot housekeeping is separate from API route
+retirement and is not a prerequisite for this transport cutover.
+
+Configuration and delivery handoff
+------------------------------------
+
+Replace the operator definition and selected provider inputs through maintained
+configuration paths for the issued SDK. The old parser cannot read the new
+schema; stop and replace affected services as needed rather than adding an
+old-schema loader, staged selector or rollback mechanism. Generate the selected
+client capture with the installed SDK. Normal config/up retains its reviewed
+plan and operational-capture checks; maintenance uses the configured provider
+image and binding. Existing locks protect owned mutations and retained work.
+
+Delivery needs a client document containing every original binding. Its owner
+uses client_definition_bytes(definition, binding_name=None), exposed as
+client-definition --definition FILE --all; --all and --binding are mutually
+exclusive selections. NMRPeak continues using --binding NAME. Delivery's single
+daemon receives one API mount/GID for the shared socket, alongside its existing
+four delivery intake grants, queue and signer/trust inputs. It must not mount
+the same API target once per binding or initialize borrowed API storage.
+
+Bring up the shared host proxy, check a real signed API path, then convert
+delivery and ready providers through their maintained workflows. Services may
+be interrupted and configuration replaced in that process. Delivery's owner
+settles the old queue owner before opening the same queue with its replacement;
+pending exact commands retain their original binding identities and retry rules.
+Producers retain unacknowledged work through existing mechanisms while intake
+is unavailable. Do not require uninterrupted intake, publication, an empty queue
+or simultaneous provider readiness. Joint completion requires functioning
+delivery and all providers on the shared socket with old API resources retired.
+
+Shared SDK and host capabilities needed before deployment
+-----------------------------------------------------------
+
+020 records the agreed implementation contract below. It is not yet an issued
+SDK API:
+
+* The existing binding TOML gains top-level api_proxy project/uid/gid/origin
+  and api_proxy.route; repeated bindings.route disappears. Delivery identity,
+  limits and each bindings.api identity/trust/budget remain unchanged. Admitted
+  client origins must match the single host proxy origin.
+* render_api_client(binding) returns ApiClientProjection with exactly compose,
+  client_socket, client_mount and client_group_add. compose contains only the
+  shared-api external volume; it has no services/networks keys. Update NMRPeak's
+  merger and topology checker to consume this shape directly rather than retain
+  private-renderer assumptions or manufacture empty legacy fields.
+* Use the SDK CLI deployment_route client --definition FILE --binding NAME
+  where the installed-image boundary needs JSON. NMRPeak's installed adapter can
+  call render_api_client and add its existing delivery/journal facts. Remove
+  obsolete proxy-image/namespace/input-relocation arguments from that adapter.
+* Public example project is nmr-api-proxy, volume <api_proxy.project>-socket;
+  clients mount at /run/nmr-api-proxy and use its proxy.sock. The API GID arrives
+  as decimal strings in client_group_add. Compose combines those with the
+  delivery GID; one-offs resolve shared-api through compose.volumes, check the
+  exact volume exists and apply the same API group with --group-add.
+* input_paths grants selected credentials and optional CA only. The host render
+  owns resolver acquisition. Client mounts/capture need no resolver relocation.
+
+Use selected-binding capture through the SDK operation
+deployment_binding.client_definition_bytes(definition, *, binding_name), exposed
+as client-definition --definition FILE --binding NAME. Use that installed-image
+operation to replace the raw whole-definition bytes currently retained as
+bindings.toml in render_deployment_plan and maintenance capture. It emits the
+existing TOML shape with only the selected binding, unchanged delivery settings
+and api_proxy.project/gid. The selected DeploymentBinding.api_proxy also carries
+only project/gid. Host proxy uid/origin/route stay outside client captures;
+top-level delivery uid and the selected binding's own api origin remain.
+The client-definition CLI emits raw TOML bytes, not JSON. Keep that contained
+capture operation separate from _contained_binding_projection's JSON decoder;
+do not add definition bytes to the four-field ApiClientProjection. Use the SDK
+serializer through the installed image, then retain its bounded TOML output.
+
+NMRPeak's load_captured_api_binding reparses bindings.toml with the SDK, selects
+the same binding name and uses binding.api through api_settings and the captured
+file reader. Original credential/CA paths must stay unchanged so api_input_target's
+existing path mapping resolves the retained bytes. Provider ref, journal API
+authority, delivery socket/group/volume and selected budgets remain unchanged.
+Keeping original delivery limits with fewer captured bindings does not require
+reallocating quotas or changing the live delivery definition.
+
+Project from the admitted original definition and reparse the SDK-produced
+capture through the same installed client loader, using the existing capture
+comparison to check the four-field API grant and selected API/delivery facts.
+Do not retain the old resolver relocation pass now that client projection has
+no input relocation argument. Captured runtime validation still runs as the
+actual runtime UID and uses the existing ACL-aware bounded reader. Maintenance
+uses this same selected capture rather than another TOML shape or serializer.
+No host-side TOML stripping, private parser or new NMRPeak schema is needed.
+The reduced capture cannot drive host rendering; provider operations do not
+gain host lifecycle authority by accepting the same binding grammar.
+
+* One SDK-owned projection, usable in Compose and docker run, supplies the exact
+  external volume, read-only client mount, socket path and access GID. Use the
+  agreed interface and the owner's issued release; no guessed pin or competing API.
+* Client binding admission/input enumeration retains API identity, credential,
+  TLS trust and delivery intake without copied router network settings. Normal
+  provider capture and stopped-maintenance capture use the same admitted grant.
+* The shared owner initializes the volume with a distinct nonroot proxy UID and
+  group-connect permission at birth, preserving private lock/readiness state and
+  stale-socket safety. Clients receive access, never write/initializer authority.
+* Host routing supports the local API and TLS name before the baseline is frozen.
+  API origin/trust stay with the client; resolver/interface/network selection
+  stay with the proxy. NMRPeak's interpreter connections retain their own inputs.
+* The first tier settles bounded capacity for the combined normal traffic and
+  existing maintenance concurrency. No per-provider listener, attribution scheme
+  or speculative capacity framework is required. A later client improvement
+  cannot assume the proxy will be enlarged or restarted for it.
+
+Private instance volume names, groups, endpoints, paths and image/resource
+identifiers stay in existing operator inputs or private handoffs. Public notes
+record contracts, relative source references and intentionally public defaults.
+The agreed names above come from 020; they are not an issued release.
+
+Tier 1: smallest durable path to joint deployment
+---------------------------------------------------
+
+1. Use 020's SDK grant/capture contract, including one-off group access and
+   missing-volume behavior. Resolve concrete interface conflicts with the shared
+   owner before adoption; keep unrelated provider work unblocked.
+2. Convert provider projection/capture, topology admission, maintenance and
+   owned cleanup together. Update affected existing tests to require external
+   mounts/groups and no production API services. Preserve lock, retained-work,
+   signed-read, runtime capture and scientific-identity checks. Keep disposable
+   authored API routes only where tests actually own a fixture API.
+   Where a fixture still calls render_api_route, make its route input explicit
+   at that test-owned boundary; do not retain production binding.route or old
+   schema fallback. Fixtures never retarget the deployed host proxy.
+3. Adopt the shared owner's issued SDK via the maintained dependency pin/lock
+   and image workflows. Relevant records include pyproject.toml,
+   requirements.lock, dependencies/provider-core-api.lock and
+   dependencies/provider-core-source.txt; keep provider image-input declarations
+   coherent. Work in the main checkout. No SDK source overlay, side checkout,
+   guessed artifact or bundle transfer replaces the release workflow.
+4. Build using provider/image/build. Initialize a named deployment only if
+   absent. Replace configuration for the new SDK through maintained paths and
+   use provider/deployment/config with the original API/delivery identity.
+   Configuration replacement and service interruption are accepted; no separate
+   staged input or incumbent-preservation gate is required.
+5. Retire old provider/archive owners under existing drain and uncertainty
+   rules through maintained down/retirement, then use reviewed-plan
+   provider/deployment/up with the configured inputs and original binding.
+   Check the signed API path with TLS and actual runtime mount/group during
+   bringup through an existing read. Verify the observed image,
+   healthy provider and both runners, shared mount/group and usable delivery
+   intake. Check delivery progress where work exists with its owner. Listener
+   readiness, API reachability and delivery progress are separate observations.
+6. Retire NMRPeak's old API roles and unused owned route volumes through the
+   maintained cleanup, after their clients settle. Exercise ordinary replacement
+   and cleanup without touching the host proxy/volume. Record any remaining old
+   borrower explicitly; source/build readiness cannot close that milestone.
+7. Each remote host separately pulls the issued source/artifacts from GitHub and
+   builds/deploys there through maintained targets against its selected API.
+   Local integration does not prove a remote deployment. Carry completed
+   milestones forward rather than repeating them without evidence of a problem.
+
+Use the existing containerized make test/unit, test/repository and affected
+integration lanes proportionately. Focused files include test_deployment_runtime,
+test_deployment_topology, test_provider_deployment and
+test_journal_archive_deployment under tests/unit. Checks must show both normal
+provider and one-off client wiring, missing-volume refusal and shared-storage
+preservation. Use existing authorized local scenarios for real API/delivery
+evidence; a new full-topology harness, science campaign or empty queue is not a
+prerequisite.
+
+Alternatives, later work and shared boundaries
+-----------------------------------------------
+
+Keep a private maintenance proxy: rejected because it retains provider-owned
+routing and validates a different path. Borrowing the host grant covers both
+normal and maintenance clients and removes their lifecycle burden.
+
+Share delivery's private proxy or move signing into the router: rejected because
+these couple independently owned lifetimes or identities. A separately managed
+tunnel needs neither signing keys nor new delivery registration.
+
+Use host networking, root clients or writable/world-accessible sockets: rejected
+because the read-only mount plus supplementary group supplies the needed access
+without changing the established client/scientific boundaries.
+
+Add a standalone route schema, registry, legacy aliases or generic migration
+tool: rejected for this controlled host and one target API. Extend the existing
+SDK definition and NMRPeak operational capture, then delete obsolete production
+route ownership. Preserve real scientific/interpreter grants.
+
+Wait for simultaneous conversion or an empty queue: rejected because ready
+consumers can move independently with their shared dependencies ready. Pending
+exact commands remain with the same functioning publisher. Whole-project
+completion still includes every provider, delivery and old-proxy retirement.
+
+Tier 2, owned by NMRPeak: improve client status/help and small regression cases
+for faults exposed by integration, within the fixed proxy baseline. Trigger:
+the joint deployment works and a concrete client need remains. Nonessential
+copy and unrelated historical cleanup are outside first-tier completion.
+
+Tier 3: multiple APIs, route discovery/registration, fairness/accounting and new
+load/chaos infrastructure remain excluded unless a concrete need reopens them.
+A demonstrated correctness problem is Tier 1 regardless of its category.
+
+Related designs:
+Magnet notes/048_shared_api_proxy_adoption_20261030.txt;
+NMRNet notes/023_shared_api_proxy_adoption_20261030.txt;
+SECS notes/010_shared_api_proxy_adoption_20261030.txt.
+
+The common contract is one SDK-admitted external read-only grant for production
+and maintained real-API clients, additive API/delivery groups, client-owned
+signing/TLS, preserved scientific routes, independent host lifecycle, first local
+joint deployment and retirement, and no later proxy disturbance.
+
+Retirement must remove unused private storage as well as containers. Admitting
+old roles before narrowing the steady-state inventory preserves cleanup, and a
+signed API read need not start another provider. Scientific resolver inputs
+remain distinct from obsolete API resolver capture; stopped borrowers still
+retain their grants. NMRPeak has an existing owned-volume teardown, NMRNet uses
+a private bind directory, and SECS needs an explicit owned-resource retirement
+path. Each repository retains its own storage/lifecycle owner.
+
+The helper/result fields, selected client-definition capture/readback and example
+paths follow 020. Adoption requires an issued SDK release and operator-selected
+host settings; this design does not select a release or private instance values.
+The agreed compose shape requires changing NMRPeak's old merger, not adding
+absent legacy keys to the SDK result.
+NMRPeak requires both Compose and one-off use, an explicit supplementary API group
+and refusal to auto-create a missing shared volume. No additional proxy feature
+is required by Tier 2.
