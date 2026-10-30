@@ -10,7 +10,7 @@ from threading import Barrier, Event
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from provider_core.delivery_client import DeliveryClient, DeliveryEndpoint
+from provider_core.delivery_client import DeliveryClient, DeliveryEndpoint, DeliveryUnavailable
 from provider_core.delivery_ipc import DeliveryInbox
 from provider_core.delivery_store import DeliveryFull, DeliveryOutcome, DeliveryQueue, QueueLimits
 from provider_core.analysis import AnalysisOutcomeUnresolved
@@ -452,7 +452,10 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_delivery_backpressure_retains_both_original_reports_until_space_is_available(self):
         await self._two_lane_stop(fill_queue=True)
 
-    async def _two_lane_stop(self, *, fill_queue):
+    async def test_unavailable_delivery_retains_both_original_reports_until_reachable(self):
+        await self._two_lane_stop(fill_queue=False, unavailable=True)
+
+    async def _two_lane_stop(self, *, fill_queue, unavailable=False):
         hf, hf_runner, hf_channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
         chf, chf_runner, chf_channel, _ = await self.enterAsyncContext(scientific_lane("chf"))
         runtime = GenerationRuntime("sha256:" + "1" * 64, hf, chf)
@@ -499,7 +502,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                 retry = service._delivery_retry
 
                 def retain_pressure(lane, cause):
-                    self.assertIsInstance(cause, DeliveryFull)
+                    self.assertIsInstance(cause, DeliveryUnavailable if unavailable else DeliveryFull)
                     retry(lane, cause)
                     if len(service._delivery_waiters) == 2:
                         pressure.set()
@@ -515,6 +518,9 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                                     reference, TerminalOperation.FAIL, fail_body(reference, 'fixture_failure', 'Fixture retained report.'))
                                 queue.enqueue(item)
                                 fillers.append(item)
+                        if unavailable:
+                            await inbox.close()
+                        if fill_queue or unavailable:
                             release.set()
                             await asyncio.wait_for(pressure.wait(), 2)
                             self.assertEqual(len(api.started), 2)
@@ -529,6 +535,8 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                         if fill_queue:
                             for item in fillers:
                                 queue.remove_published(item)
+                        if unavailable:
+                            await inbox.start()
                         await asyncio.wait_for(original, 5)
                 ready.assert_called_once()
                 self.assertEqual(len(api.started), 2)
