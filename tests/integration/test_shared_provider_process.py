@@ -3,6 +3,7 @@
 import asyncio
 from base64 import b64decode
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 from threading import Barrier, Event
@@ -14,11 +15,12 @@ from provider_core.delivery_ipc import DeliveryInbox
 from provider_core.delivery_store import DeliveryFull, DeliveryOutcome, DeliveryQueue, QueueLimits
 from provider_core.analysis import AnalysisOutcomeUnresolved
 from provider_core.attempt_record import TerminalOperation
-from provider_core.attempt_request import fail_body
+from provider_core.attempt_request import fail_body, start_body
 from provider_core.controller import ControllerFailed
 from provider_core.execution import AttemptExecutor, ExecutionRefused, ExecutionStopRequested
 from provider_core.hello import AnalysisOffering
 from provider_core.producer_checkpoint import SuppressedCheckpoint
+from provider_core.ownership import AttemptClaims, LiveAttemptLimits
 
 from nmrpeak_provider.analysis_session import NmrpeakAnalysisSession
 from nmrpeak_provider.input_interpreter import InputInterpreter
@@ -39,6 +41,71 @@ from tests.unit.test_analysis_session import interpreter
 
 
 class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_does_not_read_outbox_inventory(self):
+        service = await self._idle_process()
+        ready = Mock(side_effect=service.request_stop)
+        with patch.object(service.delivery, "pending", AsyncMock(side_effect=AssertionError("push-only intake"))):
+            await asyncio.wait_for(service.run(on_ready=ready), 5)
+        ready.assert_called_once()
+        self.assertTrue(service.shutdown_ready)
+
+    async def test_job_discovery_does_not_read_outbox_inventory(self):
+        service = await self._idle_process()
+        with patch.object(service.delivery, "pending", AsyncMock(side_effect=AssertionError("push-only intake"))):
+            self.assertIsNone(await service._select(service.lanes[0]))
+        await service.api.retire(owner=service)
+
+    async def test_duplicate_selection_settles_without_starting_another_attempt(self):
+        service = await self._idle_process(with_job=True)
+        lane = service.lanes[0]
+        selection = await service._select(lane)
+        pending, _instructions = selection
+        owner = Mock()
+        claim = service._claims.claim_live(pending, lifecycle_owner=owner,
+                                          maximum_terminal_bytes=131072)
+
+        async def stop_after_retry(_seconds):
+            service.request_stop()
+
+        try:
+            with patch.object(service, "_select", AsyncMock(side_effect=[selection, None])) as select, \
+                 patch.object(service, "_pause", side_effect=stop_after_retry):
+                await asyncio.wait_for(service._lane_loop(lane), 5)
+            self.assertEqual(select.await_count, 1)
+            self.assertTrue(lane.controller.shutdown_ready)
+            self.assertIsNone(lane.controller.operation)
+            self.assertTrue(service._claims.owns_job(pending.scope, pending.input.job_ref))
+        finally:
+            claim.release(owner=owner)
+            await service.api.retire(owner=service)
+
+    async def test_full_live_claims_settle_selection_without_starting_an_attempt(self):
+        service = await self._idle_process(with_job=True)
+        lane = service.lanes[0]
+        selection = await service._select(lane)
+        pending, _instructions = selection
+        service._claims = AttemptClaims.live(limits=LiveAttemptLimits(1, 262144, 131072))
+        occupied = replace(pending, input=replace(pending.input, job_ref="job:occupied"),
+                           body=start_body("job:occupied", "nmrpeak-provider.v1:" + "a" * 64))
+        owner = Mock()
+        claim = service._claims.claim_live(occupied, lifecycle_owner=owner,
+                                          maximum_terminal_bytes=131072)
+
+        async def stop_after_retry(_seconds):
+            service.request_stop()
+
+        try:
+            with patch.object(service, "_select", AsyncMock(side_effect=[selection, None])) as select, \
+                 patch.object(service, "_pause", side_effect=stop_after_retry):
+                await asyncio.wait_for(service._lane_loop(lane), 5)
+            self.assertEqual(select.await_count, 1)
+            self.assertTrue(lane.controller.shutdown_ready)
+            self.assertIsNone(lane.controller.operation)
+            self.assertFalse(service._claims.owns_job(pending.scope, pending.input.job_ref))
+        finally:
+            claim.release(owner=owner)
+            await service.api.retire(owner=service)
+
     async def test_interpreter_deadline_during_validation_keeps_attempt_without_terminal_report(self):
         hf, hf_runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
         chf, chf_runner, _, _ = await self.enterAsyncContext(scientific_lane("chf"))
@@ -286,7 +353,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_before_run_performs_no_inventory_or_hello_exchange(self):
         service = await self._idle_process()
         ready = Mock()
-        with patch.object(service, "_pending", new=AsyncMock()) as pending, \
+        with patch.object(service.delivery, "pending", new=AsyncMock()) as pending, \
                 patch.object(service, "_announce", new=AsyncMock()) as announce:
             service.request_stop()
             await service.run(on_ready=ready)
@@ -295,26 +362,24 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
         ready.assert_not_called()
         self.assertTrue(service.shutdown_ready)
 
-    async def test_stop_during_inventory_backoff_does_not_start_another_exchange(self):
+    async def test_stop_during_announcement_does_not_start_lanes(self):
         service = await self._idle_process()
         ready = Mock()
 
-        async def pause(_seconds):
+        async def announce():
             service.request_stop()
 
-        with patch.object(service, "_pending", new=AsyncMock(return_value=None)) as pending, \
-                patch.object(service, "_announce", new=AsyncMock()) as announce, \
-                patch.object(service, "_pause", side_effect=pause):
+        with patch.object(service, "_announce", side_effect=announce) as called:
             await service.run(on_ready=ready)
-        pending.assert_awaited_once()
-        announce.assert_not_awaited()
+        called.assert_awaited_once()
         ready.assert_not_called()
         self.assertTrue(service.shutdown_ready)
 
-    async def _idle_process(self):
+    async def _idle_process(self, *, with_job=False):
         hf, hf_runner, _, _ = await self.enterAsyncContext(scientific_lane("hf"))
         chf, chf_runner, _, _ = await self.enterAsyncContext(scientific_lane("chf"))
-        api = SharedApi({})
+        api = SharedApi({"job:hf": (hf.generation.analysis_kind_ref, canonical_json_bytes(HF_VALUE))}
+                        if with_job else {})
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         endpoint = DeliveryEndpoint(api.origin, api.provider_ref, root / "report.sock")
         return ProviderProcess(
@@ -372,9 +437,9 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_independent_cleanup_failure_retains_the_primary_failure(self):
         service = await self._idle_process()
-        primary = RuntimeError("Original provider inventory failure")
+        primary = RuntimeError("Original provider announcement failure")
         cleanup = BaseExceptionGroup("Independent API cleanup failure", [SystemExit(7)])
-        with patch.object(service, "_pending", AsyncMock(side_effect=primary)), \
+        with patch.object(service, "_announce", AsyncMock(side_effect=primary)), \
              patch.object(service.api, "retire", AsyncMock(side_effect=cleanup)):
             with self.assertRaises(BaseExceptionGroup) as caught:
                 await service.run(on_ready=Mock())

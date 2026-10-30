@@ -9,12 +9,11 @@ from provider_core.api import ApiFailure
 from provider_core.analysis import AnalysisFailure, AnalysisSuccess
 from provider_core.attempt_record import RecoveryScope, StartPending
 from provider_core.attempt_request import start_body
-from provider_core.controller import AttemptController, LiveStartPolicy
-from provider_core.delivery_client import DeliveryUnavailable
+from provider_core.controller import AttemptController, ControllerFailed, LiveStartPolicy
 from provider_core.task_boundary import contain_task_exit
 from provider_core.diagnostics import failure_evidence
 from provider_core.execution import AttemptExecutor, ConditionRecovery, ExecutionRefused, ObservationRecovery
-from provider_core.ownership import AttemptClaims, LiveAttemptLimits, LiveCapacityFull
+from provider_core.ownership import AttemptClaims, LiveAttemptLimits, LiveCapacityFull, OwnershipRefused
 from provider_core.producer_checkpoint import DeliveryAcceptedCheckpoint
 
 from .provider_diagnostics import describe_nmrpeak_failure
@@ -96,15 +95,6 @@ class ProviderProcess:
         try:
             if self._stop.is_set():
                 return
-            inventory = await self._pending()
-            while inventory is None and not self._stop.is_set():
-                await self._pause(self.policy.feed_interval_seconds)
-                if not self._stop.is_set():
-                    inventory = await self._pending()
-            if inventory is not None:
-                capacity = inventory["capacity"]
-                if capacity["provider_items"] < 2 or capacity["provider_bytes"] < 2 * MAXIMUM_TERMINAL_BYTES:
-                    raise ValueError("Delivery binding must reserve two NMR reports and at least 262144 bytes")
             if not self._stop.is_set():
                 await self._announce()
             if not self._stop.is_set():
@@ -142,8 +132,13 @@ class ProviderProcess:
             lane.controller = self._controller(lane, session, pending, instructions)
             try:
                 result = await lane.controller.run(pending)
-            except LiveCapacityFull:
-                await session.retire()
+            except ControllerFailed as failure:
+                duplicate = (type(failure.cause) is OwnershipRefused
+                             and self._claims.owns_job(pending.scope, pending.input.job_ref))
+                if failure.cleanup_failures or not (type(failure.cause) is LiveCapacityFull or duplicate):
+                    raise
+                await lane.controller.settle()
+                await self._pause(self.policy.feed_interval_seconds)
             else:
                 if type(result) is DeliveryAcceptedCheckpoint:
                     self._delivery_waiters.discard(lane.controller)
@@ -173,13 +168,11 @@ class ProviderProcess:
 
     async def _select(self, lane):
         async with self._admission:
-            inventory = await self._pending()
-            if inventory is None or self._stop.is_set():
+            if self._stop.is_set():
                 return None
             self._clear_delivery_pressure()
-            if self._admission_paused.is_set() or not self._room(inventory):
+            if self._admission_paused.is_set():
                 return None
-            queued_jobs = {item["job_ref"] for item in inventory["items"]}
             generation = lane.generation.generation
             scope = RecoveryScope(self.api.origin, generation.provider_ref,
                                   lane.generation.result_facts.identity.runner_ref,
@@ -191,7 +184,7 @@ class ProviderProcess:
                                                cursor=lane.cursor, owner=self)
                     lane.cursor = page.next_cursor
                     for job in page.jobs:
-                        if (not generation.scope.contains(job.created_at) or job.input.job_ref in queued_jobs
+                        if (not generation.scope.contains(job.created_at)
                                 or self._claims.owns_job(scope, job.input.job_ref)):
                             continue
                         instructions = await self.api.job_input(job.input,
@@ -212,23 +205,6 @@ class ProviderProcess:
                 if lane.cursor is None:
                     return None
             return None
-
-    async def _pending(self):
-        try:
-            return await self.delivery.pending()
-        except DeliveryUnavailable as cause:
-            self._admission_paused.set()
-            await self.delivery.retire()
-            if not self.delivery.can_retry(cause):
-                raise
-            self._notice("Delivery inventory temporarily unavailable", cause)
-            return None
-
-    def _room(self, inventory):
-        reserved = len(self._claims.live_owners()) + 1
-        return (len(inventory["items"]) + reserved <= inventory["capacity"]["provider_items"]
-                and sum(item["body_bytes"] for item in inventory["items"])
-                + reserved * MAXIMUM_TERMINAL_BYTES <= inventory["capacity"]["provider_bytes"])
 
     def _delivery_retry(self, lane, cause):
         self._admission_paused.set()
