@@ -119,11 +119,11 @@ help:
 		'Operate a named deployment:' \
 		'  make provider/deployment/init DEPLOYMENT=<name>' \
 		'      Create config/deployments/<name>/deployment.toml and provider.toml templates.' \
-		'      Set provider.toml [shared].settings_file to <provider-tools-checkout>/config/deployments/localhost/settings.toml.' \
+		'      Set provider.toml [shared].project and gid to the host shared deployment values.' \
 		'  make provider/deployment/config DEPLOYMENT=<name>' \
 		'      Read that configuration and print a reviewed plan using a temporary networkless projection container.' \
 		'      It changes no persistent deployment state or shared services.' \
-		'      The shared settings source is provider.toml [shared].settings_file.' \
+		'      The shared package derives both socket grants from provider.toml [shared].' \
 		'  make provider/deployment/up DEPLOYMENT=<name> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
 		'      Start or replace this NMRPeak provider deployment using its reviewed shared socket grants.' \
 		'      Borrows the shared proxy and outbox; it does not start, stop, or reconfigure them.' \

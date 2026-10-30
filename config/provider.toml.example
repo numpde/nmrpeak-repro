@@ -12,7 +12,9 @@ exchange_seconds = 30
 retirement_seconds = 10
 
 [shared]
-settings_file = "/absolute/path/to/shared-settings.toml"
+# Match the shared proxy/outbox Compose project and socket group on this host.
+project = "replace-me"
+gid = 1000
 
 [process]
 feed_interval_seconds = 5

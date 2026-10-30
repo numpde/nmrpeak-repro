@@ -92,7 +92,7 @@ class ProviderDeploymentTests(unittest.TestCase):
         from nmrpeak_provider.deployment_runtime import api_facts
 
         api = dict(POLICY.api, exchange_seconds=0.5)
-        policy = SimpleNamespace(api=api, shared_settings=Path("/shared/settings.toml"))
+        policy = SimpleNamespace(api=api, shared_project="nmrpeak-fixture", shared_gid=1234)
         facts = api_facts(api) | {"input_paths": [api["credential_file"]], "credential_file": api["credential_file"]}
         projection = facts | {"shared": BINDING["shared"]}
         files_seen = {}
@@ -126,7 +126,7 @@ class ProviderDeploymentTests(unittest.TestCase):
         from tests.unit.test_deployment_topology import BINDING
         from nmrpeak_provider.deployment_runtime import api_facts
 
-        policy = SimpleNamespace(api=POLICY.api, shared_settings=Path("/shared/settings.toml"))
+        policy = SimpleNamespace(api=POLICY.api, shared_project="nmrpeak-fixture", shared_gid=1234)
         facts = api_facts(policy.api) | {
             "input_paths": [policy.api["credential_file"]], "credential_file": policy.api["credential_file"],
         }
@@ -1749,13 +1749,10 @@ class render_repository:
         credential = external / "first.json"
         credential.write_bytes(credential_bytes(Ed25519PrivateKey.generate()))
         credential.chmod(0o600)
-        shared = external / "shared.toml"
-        shared.write_text('[deployment]\nproject = "shared-delivery"\ngid = 65532\n', encoding="utf-8")
-        shared.chmod(0o600)
         provider_template = (ROOT / "config/provider.toml.example").read_bytes()
         provider_template = provider_template.replace(
-            b"/absolute/path/to/shared-settings.toml", str(shared).encode("utf-8")
-        ).replace(b"/absolute/path/to/provider-credential.json", str(credential).encode("utf-8"))
+            b"/absolute/path/to/provider-credential.json", str(credential).encode("utf-8")
+        )
         provider_template = provider_template.replace(b'ca_file = "/absolute/path/to/api-ca.pem"\n', b"")
         provider_template = provider_template.replace(b"provider:example", b"provider:nmrpeak")
         (root / "config/deployments/production/provider.toml").write_bytes(provider_template)
@@ -1826,17 +1823,15 @@ class render_repository:
         self._validate_patch.start()
         return root
 
-    def _project_shared(self, _docker, _image, provider, shared):
+    def _project_shared(self, _docker, _image, provider, *, include_shared=True):
         from nmrpeak_provider.deployment_runtime import project_api_inputs
         from nmrpeak_provider.provider_config import decode_provider_template
-        if shared is None:
+        if not include_shared:
             return project_api_inputs(decode_provider_template(provider))
         with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            provider_path, shared_path = root / "provider.toml", root / "shared.toml"
+            provider_path = Path(temporary) / "provider.toml"
             provider_path.write_bytes(provider)
-            shared_path.write_bytes(shared)
-            return project_provider_inputs(provider_path, shared_path)
+            return project_provider_inputs(provider_path)
 
     def _validate_captured(self, _docker, _image, files, *, arguments=("validate",)):
         import tomllib

@@ -49,10 +49,9 @@ class DeploymentRuntimeTests(unittest.TestCase):
         from tests.unit.test_runtime_config_v2 import TEMPLATE
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            provider, shared = root / "provider.toml", root / "shared.toml"
+            provider = root / "provider.toml"
             provider.write_bytes(TEMPLATE)
-            shared.write_text('[deployment]\nproject = "fixture"\ngid = 1234\n')
-            projection = project_provider_inputs(provider, shared)
+            projection = project_provider_inputs(provider)
         self.assertEqual(projection["provider_ref"], "provider:nmrpeak")
         self.assertEqual(projection["input_paths"], ["/run/credentials/first.json"])
         grants = projection["shared"]
@@ -68,12 +67,11 @@ class DeploymentRuntimeTests(unittest.TestCase):
         from tests.unit.test_runtime_config_v2 import TEMPLATE
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            provider, shared = root / "provider.toml", root / "shared.toml"
-            provider.write_bytes(TEMPLATE)
-            shared.write_text('[deployment]\nproject = "fixture"\ngid = 0\n')
+            provider = root / "provider.toml"
+            provider.write_bytes(TEMPLATE.replace(b"gid = 1234", b"gid = 0"))
             output, errors = StringIO(), StringIO()
             with redirect_stdout(output), redirect_stderr(errors):
-                status = main(["project", "--provider", str(provider), "--shared-settings", str(shared)])
+                status = main(["project", "--provider", str(provider)])
         self.assertEqual(status, 2)
         self.assertEqual(output.getvalue(), "")
         self.assertIn("failure", json.loads(errors.getvalue()))

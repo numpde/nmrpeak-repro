@@ -235,30 +235,23 @@ def _read_capture_source(path: Path, *, secret: bool) -> bytes:
         raise DeploymentOperationRejected(f"Cannot capture startup input {path}: its bounded regular-file read failed; preserve the source and inspect its permissions") from cause
 
 
-def _contained_shared_projection(docker, image, provider, shared_settings):
+def _contained_shared_projection(docker, image, provider, *, include_shared=True):
     """Project the SDK grant inside the installed provider image."""
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
-        config, shared = root / "provider.toml", root / "shared.toml"
+        config = root / "provider.toml"
         config.write_bytes(provider)
         config.chmod(0o600)
-        if shared_settings is None:
-            mounts = ()
-            operation = ("project-api", "--provider", "/input/provider.toml")
-        else:
-            shared.write_bytes(shared_settings)
-            shared.chmod(0o600)
-            mounts = ("--mount", f"type=bind,source={shared},target=/input/shared.toml,readonly")
-            operation = ("project", "--provider", "/input/provider.toml", "--shared-settings", "/input/shared.toml")
+        operation = "project" if include_shared else "project-api"
         result = _docker_command(docker, (
             "run", "--pull", "never", "--rm", "--network", "none", "--read-only",
             "--user", f"{os.geteuid()}:{os.getegid()}", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges:true", "--pids-limit", "64",
             "--cpus", "1", "--memory", "256m", "--env", "PROVIDER_CORE_IN_CONTAINER=1",
             "--mount", f"type=bind,source={config},target=/input/provider.toml,readonly",
-            *mounts,
             "--entrypoint", "/usr/local/bin/python3.12", image,
-            "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", *operation,
+            "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", operation,
+            "--provider", "/input/provider.toml",
         ), timeout=60)
     document = _json_output(result.stdout, "Contained shared grant projection")
     if type(document) is not dict:
@@ -321,7 +314,7 @@ def _validate_captured_runtime(docker, image, files, *, arguments=("validate",))
 def _journal_binding(repository, deployment, docker, image, provider_ref, *, namespace):
     raw = _read_regular_file(repository / "config/deployments" / deployment / "provider.toml")
     policy = decode_provider_template(raw)
-    projection = _contained_shared_projection(docker, image.image_id, raw, None)
+    projection = _contained_shared_projection(docker, image.image_id, raw, include_shared=False)
     if projection["provider_ref"] != provider_ref:
         raise DeploymentOperationRejected("Configured API belongs to another journal provider")
     return policy, None, projection
@@ -333,8 +326,7 @@ def _held_maintenance_api_route(docker, repository, deployment, image, provider_
     policy, _unused, facts = _journal_binding(repository, deployment, docker, image,
                                               provider_ref, namespace="nmrpeak-" + deployment)
     raw = _read_regular_file(repository / "config/deployments" / deployment / "provider.toml")
-    shared = _read_capture_source(policy.shared_settings, secret=False)
-    projection = _contained_shared_projection(docker, image.image_id, raw, shared)
+    projection = _contained_shared_projection(docker, image.image_id, raw)
     if any(projection[key] != value for key, value in facts.items()):
         raise DeploymentOperationRejected("Configured API changed during maintenance capture; preserve the journal")
     if projection["journal_authority_id"] != authority_id:
@@ -398,7 +390,6 @@ def render_deployment_plan(
     selection = load_named_deployment(config_root / "deployment.toml")
     provider = _read_regular_file(config_root / "provider.toml")
     policy = decode_provider_template(provider)
-    shared_settings = _read_capture_source(policy.shared_settings, secret=False)
     upstream_revision = read_nmrpeak_source_revision(root / "families/nmrpeak/source-closure.paths")
     releases = admit_deployment_releases(
         selection,
@@ -413,7 +404,7 @@ def render_deployment_plan(
                               local_images["hf"].image_id, input_ids["hf"],
                               local_images["chf"].image_id, input_ids["chf"])
     checkpoints = DeploymentCheckpoints(releases.hf.checkpoint_sha256, releases.chf.checkpoint_sha256)
-    projection = _contained_shared_projection(docker, images.provider, provider, shared_settings)
+    projection = _contained_shared_projection(docker, images.provider, provider)
     if projection["provider_ref"] != selection.provider_ref:
         raise DeploymentOperationRejected("Selected API binding belongs to another named provider generation")
     if policy.runner.ready_seconds > 600:

@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import math
 from pathlib import Path
+import re
 import tomllib
 
 from .attempt_journal import validate_frozen_generation_id
@@ -85,7 +86,8 @@ class ProviderPolicy:
     """Operator selection and scientific policy without a transport route grant."""
 
     api: dict
-    shared_settings: Path | None
+    shared_project: str | None
+    shared_gid: int | None
     process: ProviderProcessPolicy
     runner: RunnerDeadlines
     interpreter: InterpreterPolicy
@@ -120,8 +122,13 @@ _POLICY_FIELDS = {"schema_id", "api", "process", "runner", "interpreter"}
 def decode_provider_template(raw: bytes) -> ProviderPolicy:
     """Admit operator input, refusing deployment-generated route fields."""
     document = _document(raw, _POLICY_FIELDS | {"shared"})
-    shared = _table(document, "shared", {"settings_file"})
-    return _policy(document, _absolute_path(shared["settings_file"], "Shared settings"))
+    shared = _table(document, "shared", {"project", "gid"})
+    project, gid = shared["project"], shared["gid"]
+    if type(project) is not str or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,48}", project) is None:
+        raise ProviderConfigurationRejected("Shared deployment project must be a lowercase container project name")
+    if type(gid) is not int or not 0 < gid <= 4294967294:
+        raise ProviderConfigurationRejected("Shared socket group ID must be a nonzero unsigned group ID")
+    return _policy(document, project, gid)
 
 
 def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
@@ -135,7 +142,7 @@ def decode_provider_runtime_config(raw: bytes) -> ProviderRuntimeConfig:
     route = _table(document, "api_route", {"proxy_socket", "outbox_socket"})
     socket = _absolute_path(route["proxy_socket"], "Generated API proxy socket")
     outbox = _absolute_path(route["outbox_socket"], "Generated outbox socket")
-    return ProviderRuntimeConfig(frozen_id, _policy(document, None), str(socket), str(outbox))
+    return ProviderRuntimeConfig(frozen_id, _policy(document, None, None), str(socket), str(outbox))
 
 
 def render_provider_runtime_config(policy, *, frozen_generation_id, api_proxy_socket, outbox_socket):
@@ -201,7 +208,7 @@ def _absolute_path(value, label):
     return path
 
 
-def _policy(document, shared_settings):
+def _policy(document, shared_project, shared_gid):
     api = document["api"]
     if type(api) is not dict or "credential_file" not in api:
         raise ProviderConfigurationRejected("Provider API input must include a credential file")
@@ -264,7 +271,7 @@ def _policy(document, shared_settings):
         )
     except ValueError as cause:
         raise ProviderConfigurationRejected(str(cause)) from cause
-    return ProviderPolicy(dict(api), shared_settings, process_policy, deadlines, interpreter_policy)
+    return ProviderPolicy(dict(api), shared_project, shared_gid, process_policy, deadlines, interpreter_policy)
 
 def _table(
     document: dict[str, object],

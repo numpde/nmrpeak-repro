@@ -7,7 +7,7 @@ import sys
 
 from provider_core.diagnostics import failure_evidence
 from provider_core.api_config import require_api_fields
-from provider_core.shared_grants import shared_grants
+from provider_core.shared_grants import SharedGrants
 
 from .journal_identity import journal_api_authority_id
 from .provider_config import decode_provider_template
@@ -23,9 +23,9 @@ def api_facts(api):
     }
 
 
-def project_provider_inputs(provider_file, settings_file):
+def project_provider_inputs(provider_file):
     policy = decode_provider_template(Path(provider_file).read_bytes())
-    grants = shared_grants(settings_file).compose()
+    grants = SharedGrants(policy.shared_project, policy.shared_gid).compose()
     return project_api_inputs(policy) | {"shared": grants}
 
 
@@ -63,7 +63,6 @@ def main(arguments=None):
     commands = parser.add_subparsers(dest="operation", required=True)
     project = commands.add_parser("project")
     project.add_argument("--provider", type=Path, required=True)
-    project.add_argument("--shared-settings", type=Path, required=True)
     api_project = commands.add_parser("project-api")
     api_project.add_argument("--provider", type=Path, required=True)
     commands.add_parser("validate")
@@ -78,7 +77,7 @@ def main(arguments=None):
         elif options.operation == "project-api":
             projection = project_api_inputs(decode_provider_template(options.provider.read_bytes()))
         else:
-            projection = project_provider_inputs(options.provider, options.shared_settings)
+            projection = project_provider_inputs(options.provider)
         print(json.dumps(projection, ensure_ascii=True, sort_keys=True))
         return 0
     except BaseException as cause:

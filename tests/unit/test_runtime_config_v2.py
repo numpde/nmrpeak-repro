@@ -16,7 +16,8 @@ credential_file = "/run/credentials/first.json"
 exchange_seconds = 5
 retirement_seconds = 5
 [shared]
-settings_file = "/host/shared/settings.toml"
+project = "fixture"
+gid = 1234
 [process]
 feed_interval_seconds = 5
 hello_interval_seconds = 3600
@@ -48,14 +49,15 @@ RUNTIME = provider_config.render_provider_runtime_config(
 class RuntimeConfigTests(unittest.TestCase):
     def test_operator_example_and_generated_runtime(self):
         raw = (Path(__file__).parents[2] / "config/provider.toml.example").read_bytes()
-        self.assertIsNotNone(provider_config.decode_provider_template(raw).shared_settings)
+        self.assertEqual(provider_config.decode_provider_template(raw).shared_project, "replace-me")
+        self.assertEqual(provider_config.decode_provider_template(raw).shared_gid, 1000)
         configured = provider_config.decode_provider_runtime_config(RUNTIME)
         self.assertEqual(configured.policy, replace(
-            POLICY, shared_settings=None, api=provider_config.captured_api_fields(POLICY.api)))
+            POLICY, shared_project=None, shared_gid=None, api=provider_config.captured_api_fields(POLICY.api)))
         self.assertEqual(configured.frozen_generation_id, FROZEN_ID)
         self.assertEqual(configured.api_proxy_socket, "/routes/selected/proxy.sock")
         self.assertEqual(configured.outbox_socket, "/outbox/http.sock")
-        self.assertNotIn(b"/host/shared/settings.toml", RUNTIME)
+        self.assertNotIn(b"[shared]", RUNTIME)
         self.assertNotIn(b"/run/credentials/first.json", RUNTIME)
         with self.assertRaises(ValueError):
             provider_config.decode_provider_runtime_config(TEMPLATE)
@@ -73,14 +75,19 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertNotEqual(identity, provider_config.runtime_config_id(files | {"grants/key": b"rotated key"}))
 
     def test_api_and_socket_paths_are_absolute(self):
-        for raw in (TEMPLATE.replace(b"/run/credentials/first.json", b"relative.json"),
-                    TEMPLATE.replace(b"/host/shared/settings.toml", b"relative.toml")):
-            with self.subTest(raw=raw), self.assertRaises(ValueError):
-                provider_config.decode_provider_template(raw)
+        raw = TEMPLATE.replace(b"/run/credentials/first.json", b"relative.json")
+        with self.assertRaises(ValueError):
+            provider_config.decode_provider_template(raw)
         for raw in (RUNTIME.replace(b"/routes/selected/proxy.sock", b"relative.sock"),
                     RUNTIME.replace(b"/outbox/http.sock", b"relative.sock")):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 provider_config.decode_provider_runtime_config(raw)
+
+    def test_shared_grant_identity_is_admitted(self):
+        for raw in (TEMPLATE.replace(b'project = "fixture"', b'project = "Invalid Project"'),
+                    TEMPLATE.replace(b"gid = 1234", b"gid = 0")):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                provider_config.decode_provider_template(raw)
 
     def test_no_static_binding_compatibility_and_bounded_observation(self):
         with self.assertRaises(ValueError):
