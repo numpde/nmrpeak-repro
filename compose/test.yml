@@ -50,6 +50,8 @@ services:
 
   live-test-runner:
     <<: *test-common
+    extra_hosts:
+      - "nmr.localhost:host-gateway"
     volumes:
       - type: bind
         source: ${NMRPEAK_TEST_CHECKOUT:?set NMRPEAK_TEST_CHECKOUT}

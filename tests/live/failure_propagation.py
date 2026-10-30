@@ -365,6 +365,7 @@ def _validate_state_shape(
     schema_id: str,
     *,
     extra_top_level: frozenset[str] = frozenset(),
+    expected_lanes: frozenset[str] = frozenset({"hf", "chf"}),
 ) -> None:
     top_level = {
         "schema_id", "api_origin", "expected_topology", "project_ref",
@@ -376,8 +377,8 @@ def _validate_state_shape(
         if not isinstance(value.get(key), str) or not value[key]:
             raise LiveTestError(f"state {key} is invalid")
     jobs = value.get("jobs")
-    if not isinstance(jobs, list) or len(jobs) != 2:
-        raise LiveTestError("state must contain exactly two Jobs")
+    if not isinstance(jobs, list) or len(jobs) != len(expected_lanes):
+        raise LiveTestError("state Job count differs from the selected lanes")
     expected_kinds = {lane: kind for lane, kind, _ in LANES}
     offerings = {lane: offering for lane, _, offering in LANES}
     observed_lanes: set[str] = set()
@@ -422,8 +423,8 @@ def _validate_state_shape(
             parse_job_input(request["specification"].encode("utf-8"), offerings[lane])
         except (UnicodeError, ValueError) as error:
             raise LiveTestError("state Job specification is not admitted by its lane") from error
-    if observed_lanes != set(expected_kinds):
-        raise LiveTestError("state Job lanes are not exactly HF and CHF")
+    if observed_lanes != expected_lanes:
+        raise LiveTestError("state Job lanes differ from the selected lanes")
 
 
 def _assert_binding(

@@ -63,6 +63,8 @@ def _new_state(api: SignedApi, args: argparse.Namespace) -> dict[str, object]:
     jobs = []
     offerings = {"hf": HF_OFFERING, "chf": NMRPEAK_PRODUCT.offerings[1]}
     for lane, analysis_kind, _ in LANES:
+        if getattr(args, "lane", "both") not in ("both", lane):
+            continue
         specification = _success_input_document(lane)
         parse_job_input(specification.encode("utf-8"), offerings[lane])
         operation_ref = f"operation:live-nmrpeak-success-{lane}-{uuid4()}"
@@ -122,14 +124,15 @@ def _success_input_document(lane: str) -> str:
     })
 
 
-def _load(path: Path) -> dict[str, object]:
+def _load(path: Path, *, lane: str = "both") -> dict[str, object]:
     _state_permissions(path, must_exist=True)
     try:
         value = _strict_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError, RecursionError) as error:
         raise LiveTestError(f"state loading failed: {type(error).__name__}") from error
     _validate_state_shape(
-        value, STATE_SCHEMA_ID, extra_top_level=frozenset({"expected_artifacts"})
+        value, STATE_SCHEMA_ID, extra_top_level=frozenset({"expected_artifacts"}),
+        expected_lanes=frozenset({"hf", "chf"} if lane == "both" else {lane}),
     )
     if not isinstance(value.get("expected_artifacts"), dict):
         raise LiveTestError("state expected artifacts are invalid")
@@ -341,7 +344,7 @@ def _observe(api: SignedApi, state: dict[str, object], path: Path, args: argpars
                 }))
             return
         if monotonic() >= deadline:
-            raise LiveTestError("timed out waiting for both successful Analysis Results")
+            raise LiveTestError("timed out waiting for the selected successful Analysis Results")
         sleep(args.poll_seconds)
 
 
@@ -360,6 +363,7 @@ def _arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--expected-hf-image-input", required=True)
     parser.add_argument("--expected-chf-image-input", required=True)
     parser.add_argument("--ca-certificate", type=Path)
+    parser.add_argument("--lane", choices=("hf", "chf", "both"), default="both")
     parser.add_argument("--confirm-persistent-jobs", action="store_true")
     parser.add_argument("--wait-seconds", type=float, default=900)
     parser.add_argument("--poll-seconds", type=float, default=5)
@@ -375,7 +379,7 @@ def main(argv: list[str]) -> int:
         api = SignedApi(args.api_origin, args.credential, args.expected_topology,
                         args.ca_certificate, args.request_timeout)
         if args.state.exists():
-            state = _load(args.state)
+            state = _load(args.state, lane=args.lane)
         elif args.mode == "observe":
             raise LiveTestError("observe requires an existing state file")
         else:

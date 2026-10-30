@@ -77,6 +77,12 @@ artifact identities are required reviewed inputs; they bind successful output
 to the intended checkpoint and runner image inputs instead of accepting any
 syntactically valid deployment provenance.
 
+Set `LIVE_LANE=hf` or `LIVE_LANE=chf` to create and verify just that lane's
+single Job. Omit it to retain the two-lane default. Use the same selection when
+observing or resuming an existing state file.
+The live-test container resolves `nmr.localhost` to the Docker host gateway,
+allowing a local API published there without sharing the host network namespace.
+
 Use `make test/live/success-propagation/observe` with the same `LIVE_*` arguments
 and expected artifact identities to recheck retained results without creating or
 opening Jobs.

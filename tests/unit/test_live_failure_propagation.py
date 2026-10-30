@@ -31,6 +31,7 @@ from tests.live.failure_propagation import (
     _write_state,
 )
 from tests.live.success_propagation import (
+    _new_state as _new_success_state,
     _success_input_document,
     _validate_product_result,
     _validate_result,
@@ -38,6 +39,19 @@ from tests.live.success_propagation import (
 
 
 class LiveFailurePropagationTests(unittest.TestCase):
+    def test_single_lane_success_intent_contains_only_one_job(self) -> None:
+        from types import SimpleNamespace
+        digest = "sha256:" + "a" * 64
+        args = SimpleNamespace(
+            lane="hf", project_ref="project:test", provider_ref="provider:test", run_label="fixture",
+            expected_topology="web", expected_hf_checkpoint=digest, expected_chf_checkpoint=digest,
+            expected_hf_image_input=digest, expected_chf_image_input=digest,
+        )
+        state = _new_success_state(SimpleNamespace(origin="https://api.example.test"), args)
+        self.assertEqual([job["lane"] for job in state["jobs"]], ["hf"])
+        _validate_state_shape(state, state["schema_id"], extra_top_level=frozenset({"expected_artifacts"}),
+                              expected_lanes=frozenset({"hf"}))
+
     def test_signing_credential_requires_private_regular_owned_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -256,8 +270,11 @@ class LiveFailurePropagationTests(unittest.TestCase):
             "run_label": "test",
             "jobs": [entry],
         }
-        with self.assertRaisesRegex(LiveTestError, "exactly two"):
+        with self.assertRaisesRegex(LiveTestError, "Job count"):
             _validate_state_shape(state, state["schema_id"])
+        _validate_state_shape(state, state["schema_id"], expected_lanes=frozenset({"hf"}))
+        with self.assertRaisesRegex(LiveTestError, "selected lanes"):
+            _validate_state_shape(state, state["schema_id"], expected_lanes=frozenset({"chf"}))
 
     def test_positive_result_reuses_exact_production_contract(self) -> None:
         artifact = {

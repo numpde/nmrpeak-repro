@@ -219,6 +219,7 @@ test/live/success-propagation test/live/success-propagation/observe: private exp
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_RUN_LABEL_INPUT := $(value LIVE_RUN_LABEL)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_STATE_INPUT := $(value LIVE_STATE)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_CA_CERTIFICATE_INPUT := $(value LIVE_CA_CERTIFICATE)
+test/live/success-propagation test/live/success-propagation/observe: private export LIVE_LANE_INPUT := $(value LIVE_LANE)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_HF_CHECKPOINT_INPUT := $(value LIVE_EXPECTED_HF_CHECKPOINT)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_CHF_CHECKPOINT_INPUT := $(value LIVE_EXPECTED_CHF_CHECKPOINT)
 test/live/success-propagation test/live/success-propagation/observe: private export LIVE_EXPECTED_HF_IMAGE_INPUT_ID_INPUT := $(value LIVE_EXPECTED_HF_IMAGE_INPUT_ID)
@@ -253,6 +254,7 @@ test/live/success-propagation test/live/success-propagation/observe:
 		--expected-hf-image-input "$$LIVE_EXPECTED_HF_IMAGE_INPUT_ID_INPUT" \
 		--expected-chf-image-input "$$LIVE_EXPECTED_CHF_IMAGE_INPUT_ID_INPUT"; \
 	if test -n "$$LIVE_CA_CERTIFICATE_INPUT"; then set -- "$$@" --ca-certificate /run/nmrpeak-live/ca.pem; fi; \
+	if test -n "$$LIVE_LANE_INPUT"; then set -- "$$@" --lane "$$LIVE_LANE_INPUT"; fi; \
 	if test "$@" = test/live/success-propagation; then set -- "$$@" --confirm-persistent-jobs; fi; \
 	"$(REPOSITORY_ROOT)/scripts/container-live-test.sh" \
 		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" \
