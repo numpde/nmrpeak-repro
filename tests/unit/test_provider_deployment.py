@@ -742,6 +742,108 @@ class ProviderDeploymentTests(unittest.TestCase):
 
             compose.assert_not_called()
 
+    def test_down_retries_owned_api_volume_after_containers_are_gone(self) -> None:
+        for deployment in ("production", "x" * 60):
+            with self.subTest(deployment=deployment), TemporaryDirectory() as temporary:
+                repository = Path(temporary).resolve()
+                project = f"nmrpeak-{deployment}"
+                definition = repository / "bindings.toml"
+                definition.write_text(DEFINITION)
+                projection = project_provider_binding(
+                    definition, "first", image="sha256:" + "a" * 64,
+                    namespace=project, input_sources={},
+                )
+                volume, = projection["api_route"]["compose"]["volumes"]
+                remaining = [True]
+
+                def docker_command(_docker, arguments, *, timeout):
+                    if arguments[:2] == ("volume", "ls"):
+                        output = (volume + "\n").encode() if remaining[0] else b""
+                    elif arguments[:2] == ("volume", "inspect"):
+                        output = json.dumps([{
+                            "Name": volume, "Driver": "local", "Options": {},
+                            "Labels": {"com.docker.compose.project": project,
+                                       "com.docker.compose.volume": volume},
+                        }]).encode()
+                    elif arguments[0] in {"ps", "network"}:
+                        output = b""
+                    else:
+                        self.fail(f"Unexpected Docker operation: {arguments[:2]}")
+                    return subprocess.CompletedProcess((), 0, output, b"")
+
+                def down(*_args, route_volumes):
+                    self.assertEqual(route_volumes, (volume,))
+                    remaining[0] = False
+
+                state = repository / "secrets/deployments" / deployment
+                state.mkdir(parents=True, mode=0o700)
+                state.chmod(0o700)
+                with patch.object(provider_deployment, "_inspect_project_containers", return_value={}), \
+                     patch.object(provider_deployment, "_docker_command", side_effect=docker_command), \
+                     patch.object(provider_deployment, "_run_compose_down", side_effect=down):
+                    stop_deployment(repository, deployment)
+                self.assertFalse(remaining[0])
+
+    def test_down_refuses_route_named_volume_with_foreign_compose_label(self) -> None:
+        project = "nmrpeak-production"
+        volume = f"{project}-route-" + "a" * 64
+
+        def docker_command(_docker, arguments, *, timeout):
+            if arguments[:2] == ("volume", "ls"):
+                output = (volume + "\n").encode()
+            elif arguments[:2] == ("volume", "inspect"):
+                output = json.dumps([{
+                    "Name": volume, "Driver": "local", "Options": {},
+                    "Labels": {"com.docker.compose.project": project,
+                               "com.docker.compose.volume": "foreign"},
+                }]).encode()
+            else:
+                self.fail(f"Unexpected Docker operation: {arguments[:2]}")
+            return subprocess.CompletedProcess((), 0, output, b"")
+
+        with TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            state = repository / "secrets/deployments/production"
+            state.mkdir(parents=True, mode=0o700)
+            state.chmod(0o700)
+            with patch.object(provider_deployment, "_inspect_project_containers", return_value={}), \
+                 patch.object(provider_deployment, "_docker_command", side_effect=docker_command), \
+                 patch.object(provider_deployment, "_run_compose_down") as compose, \
+                 self.assertRaisesRegex(DeploymentOperationRejected, "volume ownership is invalid"):
+                stop_deployment(repository, "production")
+            compose.assert_not_called()
+
+    def test_down_refuses_orphan_api_volume_with_foreign_borrower(self) -> None:
+        project = "nmrpeak-production"
+        volume = f"{project}-route-" + "a" * 64
+
+        def docker_command(_docker, arguments, *, timeout):
+            if arguments[:2] == ("volume", "ls"):
+                output = (volume + "\n").encode()
+            elif arguments[:2] == ("volume", "inspect"):
+                output = json.dumps([{
+                    "Name": volume, "Driver": "local", "Options": {},
+                    "Labels": {"com.docker.compose.project": project,
+                               "com.docker.compose.volume": volume},
+                }]).encode()
+            elif arguments[0] == "ps":
+                output = ("b" * 64 + "\n").encode()
+            else:
+                self.fail(f"Unexpected Docker operation: {arguments[:2]}")
+            return subprocess.CompletedProcess((), 0, output, b"")
+
+        with TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            state = repository / "secrets/deployments/production"
+            state.mkdir(parents=True, mode=0o700)
+            state.chmod(0o700)
+            with patch.object(provider_deployment, "_inspect_project_containers", return_value={}), \
+                 patch.object(provider_deployment, "_docker_command", side_effect=docker_command), \
+                 patch.object(provider_deployment, "_run_compose_down") as compose, \
+                 self.assertRaisesRegex(DeploymentOperationRejected, "foreign attachment"):
+                stop_deployment(repository, "production")
+            compose.assert_not_called()
+
     def test_resource_inspection_accepts_only_owned_disposable_resources(self) -> None:
         project = "nmrpeak-production"
         provider_id = "a" * 64
@@ -835,6 +937,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                     "_inspect_project_resources",
                     side_effect=((), ()),
                 ) as resources,
+                patch.object(provider_deployment, "_docker_command", return_value=subprocess.CompletedProcess((), 0, b"", b"")),
                 patch.object(provider_deployment, "_run_compose_down") as compose,
             ):
                 stop_deployment(repository, "production")

@@ -1139,6 +1139,8 @@ def stop_deployment(
     with _locked_deployment_state(state_root):
         services = _inspect_project_containers(docker, root, deployment)
         route_volumes = _api_route_volumes(deployment, services)
+        if not route_volumes and not ({"api", "api-init"} & services.keys()):
+            route_volumes = _orphaned_api_route_volumes(docker, deployment)
         _inspect_project_resources(docker, deployment, services, route_volumes=route_volumes)
         _run_compose_down(docker, root, deployment, route_volumes=route_volumes)
         remaining = _inspect_project_containers(docker, root, deployment)
@@ -1839,6 +1841,19 @@ def _api_route_volumes(deployment, services):
     if len(names) > 1 or len(bindings) > 1:
         raise DeploymentOperationRejected("API proxy and initializer retain different original route grants")
     return tuple(sorted(names))
+
+
+def _orphaned_api_route_volumes(docker, deployment):
+    """Find the SDK-named route after its original containers were removed."""
+    project = f"nmrpeak-{deployment}"
+    prefix = (f"{project}-route-" if len(project) <= 63
+              else "r-" + sha256(project.encode("ascii")).hexdigest() + "-")
+    names = _docker_command(docker, (
+        "volume", "ls", "--quiet", "--filter", f"label=com.docker.compose.project={project}",
+    ), timeout=60).stdout.decode("ascii", errors="strict").splitlines()
+    candidates = tuple(name for name in names if re.fullmatch(re.escape(prefix) + r"[0-9a-f]{64}", name))
+    # Resource inspection still proves the Compose labels, driver and attachments.
+    return candidates if len(candidates) == 1 else ()
 
 
 def _admit_session_volumes(docker: Path, deployment: str, services: dict[str, dict[str, object]]) -> None:
