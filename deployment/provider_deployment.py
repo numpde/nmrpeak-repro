@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from tempfile import TemporaryDirectory, mkdtemp
 
 from deployment.local_image import (
@@ -88,6 +89,9 @@ _DOCKER = Path("/usr/bin/docker")
 _SETFACL = Path("/usr/bin/setfacl")
 _GETFACL = Path("/usr/bin/getfacl")
 _MAX_FILE_BYTES = 1_048_576
+_MAX_UID_MAP_BYTES = 65_536
+_PROVIDER_UID_RECEIPT = ".provider-uids.json"
+_MAX_AUTHORIZED_PROVIDER_UIDS = 16
 _SESSION_VOLUME_OPTIONS = {
     "device": "tmpfs", "o": "size=1m,uid=65532,gid=65532,mode=0700", "type": "tmpfs",
 }
@@ -152,6 +156,8 @@ class DeploymentPlan:
     releases: DeploymentReleases
     provider_ref: str
     runtime_config_id: str
+    runtime_provider_uids: tuple[int, ...] = field(repr=False)
+    generation_provider_uids: tuple[int, ...] = field(repr=False)
     runtime_files: dict[str, bytes] = field(repr=False)
     binding_projection: dict = field(repr=False)
 
@@ -223,10 +229,13 @@ def _read_capture_source(path: Path, *, secret: bool) -> bytes:
             raise DeploymentOperationRejected(f"Cannot capture startup input {path}: expected a regular file owned by root or operator UID {os.geteuid()}; found UID {metadata.st_uid} and mode {stat.S_IMODE(metadata.st_mode):04o}")
         if secret:
             access = _read_acl(path, "Captured private startup input")
-            if metadata.st_uid != os.geteuid() or (stat.S_IMODE(metadata.st_mode), access) not in {
-                (0o600, _PRIVATE_WRITABLE_FILE_ACL), (0o400, _PRIVATE_READONLY_FILE_ACL),
-                (0o440, _PROVIDER_READONLY_FILE_ACL), (0o640, _PROVIDER_WRITABLE_FILE_ACL),
-            }:
+            private_access = (stat.S_IMODE(metadata.st_mode), access) in {
+                (0o600, _PRIVATE_WRITABLE_FILE_ACL),
+                (0o400, _PRIVATE_READONLY_FILE_ACL),
+            }
+            if metadata.st_uid != os.geteuid() or not (
+                private_access
+            ):
                 raise DeploymentOperationRejected(f"Cannot capture private startup input {path}: UID {metadata.st_uid}, mode {stat.S_IMODE(metadata.st_mode):04o} and its ACL must match operator-private or provider-read-only access")
         elif metadata.st_mode & 0o022:
             raise DeploymentOperationRejected(f"Cannot capture public startup input {path}: mode {stat.S_IMODE(metadata.st_mode):04o} permits group or other users to change it")
@@ -235,13 +244,368 @@ def _read_capture_source(path: Path, *, secret: bool) -> bytes:
         raise DeploymentOperationRejected(f"Cannot capture startup input {path}: its bounded regular-file read failed; preserve the source and inspect its permissions") from cause
 
 
-def _contained_shared_projection(docker, image, provider, *, include_shared=True):
+def _container_uid_map(docker: Path, image: str) -> tuple[tuple[int, int, int], ...]:
+    """Read this engine's host-visible UID map from one owned probe process."""
+    token = secrets.token_hex(16)
+    name = "nmrpeak-uid-map-" + token
+    label = "io.nmrpeak.uid-map"
+    identifier = None
+    create_unsettled = False
+    process_identity = None
+    try:
+        try:
+            created = _docker_command(docker, (
+                "create", "--name", name, "--label", f"{label}={token}",
+                "--rm", "--network", "none", "--read-only", "--user", "65532:65532",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                "--pids-limit", "4", "--cpus", "0.25", "--memory", "32m",
+                "--memory-swap", "32m", "--entrypoint", "/usr/local/bin/python3.12",
+                image, "-I", "-B", "-c", "import time; time.sleep(30)",
+            ), timeout=30)
+        except BaseException:
+            # Once `docker create` was dispatched, a client error does not prove
+            # the daemon rejected it. An empty immediate inventory is not proof
+            # against a delayed create.
+            create_unsettled = True
+            raise
+        identifier = created.stdout.decode("ascii").strip()
+        if re.fullmatch(r"[0-9a-f]{64}", identifier) is None:
+            create_unsettled = True
+            raise ValueError("Docker did not return one exact UID-map probe identity")
+        _require_uid_map_probe(docker, name, token, identifier, image, running=False)
+        _docker_command(docker, ("start", identifier), timeout=30)
+        record = _require_uid_map_probe(docker, name, token, identifier, image, running=True)
+        pid = record["State"]["Pid"]
+        before = _uid_map_process_start_time(pid)
+        process_identity = (pid, before)
+        mappings = _read_host_uid_map(pid)
+        after = _uid_map_process_start_time(pid)
+        if before != after:
+            raise DeploymentOperationRejected("Selected-engine UID-map probe process changed while its host map was read")
+        current = _require_uid_map_probe(docker, name, token, identifier, image, running=True)
+        if current["State"]["Pid"] != pid:
+            raise DeploymentOperationRejected("Selected-engine UID-map probe process changed while its host map was read")
+    except BaseException as error:
+        failure = error
+    else:
+        failure = None
+    try:
+        probe_found = _remove_uid_map_probe(
+            docker,
+            name,
+            token,
+            identifier,
+            image,
+            process_identity=process_identity,
+        )
+    except BaseException as cleanup:
+        cause = cleanup if failure is None else BaseExceptionGroup(
+            "UID-map probe and retirement failed", [failure, cleanup],
+        )
+        process = (
+            f"; host_pid={process_identity[0]} start_time={process_identity[1]}"
+            if process_identity is not None
+            else ""
+        )
+        raise MaintenanceInvocationUnsettled(
+            f"UID-map probe retirement is unconfirmed; inspect name={name}, "
+            f"label={label}={token}{process}"
+        ) from cause
+    if create_unsettled and not probe_found:
+        raise MaintenanceInvocationUnsettled(
+            f"UID-map probe creation is unconfirmed; inspect name={name}, label={label}={token}"
+        ) from failure
+    if failure is not None:
+        if not isinstance(failure, Exception):
+            raise failure
+        if isinstance(failure, DeploymentOperationRejected):
+            raise failure
+        raise DeploymentOperationRejected("Selected-engine UID-map probe failed; no input ACLs were changed") from failure
+    return mappings
+
+
+def _require_uid_map_probe(docker, name, token, identifier, image, *, running):
+    records = _json_output(
+        _docker_command(docker, ("inspect", identifier), timeout=30).stdout,
+        "UID-map probe inspection",
+    )
+    if type(records) is not list or len(records) != 1 or type(records[0]) is not dict:
+        raise DeploymentOperationRejected("Selected-engine UID-map probe inspection has an invalid shape")
+    record = records[0]
+    config = record.get("Config")
+    labels = config.get("Labels") if type(config) is dict else None
+    state = record.get("State")
+    host_config = record.get("HostConfig")
+    if (
+        record.get("Id") != identifier
+        or record.get("Name") != "/" + name
+        or record.get("Image") != image
+        or type(config) is not dict
+        or config.get("User") != "65532:65532"
+        or type(labels) is not dict
+        or labels.get("io.nmrpeak.uid-map") != token
+        or type(state) is not dict
+        or type(state.get("Running")) is not bool
+        or (running is not None and state["Running"] is not running)
+        or (state["Running"] and (type(state.get("Pid")) is not int or state["Pid"] <= 0))
+        or (not state["Running"] and state.get("Status") not in {"created", "exited"})
+        or (not state["Running"] and state.get("Pid") not in {0, None})
+        or type(host_config) is not dict
+        or host_config.get("NetworkMode") != "none"
+        or host_config.get("ReadonlyRootfs") is not True
+        or host_config.get("PidMode") not in {None, ""}
+        or host_config.get("Privileged") is not False
+        or host_config.get("CapDrop") != ["ALL"]
+        or host_config.get("PidsLimit") != 4
+        or host_config.get("Memory") != 33_554_432
+        or host_config.get("MemorySwap") != 33_554_432
+        or host_config.get("NanoCpus") != 250_000_000
+        or host_config.get("SecurityOpt") != ["no-new-privileges:true"]
+        or host_config.get("CapAdd") not in (None, [])
+        or host_config.get("Devices") not in (None, [])
+        or host_config.get("DeviceRequests") not in (None, [])
+        or type(host_config.get("RestartPolicy")) is not dict
+        or host_config["RestartPolicy"].get("Name") not in {"", "no"}
+        or host_config.get("AutoRemove") is not True
+        or config.get("Entrypoint") != ["/usr/local/bin/python3.12"]
+        or config.get("Cmd") != ["-I", "-B", "-c", "import time; time.sleep(30)"]
+        or record.get("Mounts") != []
+        or (state.get("Running") and state.get("Status") != "running")
+    ):
+        raise DeploymentOperationRejected("Selected-engine UID-map probe identity or isolation changed")
+    return record
+
+
+def _remove_uid_map_probe(docker, name, token, identifier, image, *, process_identity=None):
+    """Retire only this probe and prove the selected engine has no residue."""
+    label = "io.nmrpeak.uid-map"
+    inventory = _uid_map_probe_inventory(docker, name, token)
+    matches = inventory["labelled"]
+    if len(matches) > 1 or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in matches):
+        raise DeploymentOperationRejected("Selected-engine UID-map probe inventory is ambiguous")
+    if matches:
+        selected = matches[0]
+        if identifier is not None and selected != identifier:
+            raise DeploymentOperationRejected("Selected-engine UID-map probe inventory changed")
+        record = _require_uid_map_probe(docker, name, token, selected, image, running=None)
+        pid = record["State"].get("Pid")
+        if process_identity is None:
+            process_identity = (
+                (pid, _uid_map_process_start_time(pid))
+                if type(pid) is int and pid > 0 and record["State"].get("Running")
+                else None
+            )
+        elif record["State"].get("Running") and pid != process_identity[0]:
+            raise DeploymentOperationRejected("Selected-engine UID-map probe PID changed before retirement")
+        _docker_command(docker, ("rm", "--force", selected), timeout=30)
+    elif inventory["named"]:
+        raise DeploymentOperationRejected("Selected-engine UID-map probe name is occupied by a foreign container")
+    remaining = _uid_map_probe_inventory(docker, name, token)
+    if remaining["labelled"] or remaining["named"] or (identifier is not None and _uid_map_probe_exists(docker, identifier)):
+        raise DeploymentOperationRejected("Selected-engine UID-map probe remains after removal")
+    if process_identity is not None:
+        _require_uid_map_process_retired(*process_identity)
+    return bool(matches)
+
+
+def _uid_map_probe_inventory(docker, name, token):
+    def list_containers(*filters):
+        result = _docker_command(docker, (
+            "ps", "--all", "--no-trunc", "--quiet", *filters,
+        ), timeout=30)
+        identifiers = result.stdout.decode("ascii", errors="strict").splitlines()
+        if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in identifiers):
+            raise DeploymentOperationRejected("Selected-engine UID-map probe inventory is malformed")
+        return identifiers
+
+    return {
+        "labelled": list_containers("--filter", f"label=io.nmrpeak.uid-map={token}"),
+        "named": list_containers("--filter", f"name=^/{name}$"),
+    }
+
+
+def _uid_map_probe_exists(docker, identifier):
+    return bool(_docker_command(docker, (
+        "ps", "--all", "--no-trunc", "--quiet", "--filter", f"id={identifier}",
+    ), timeout=30).stdout)
+
+
+def _uid_map_process_start_time(pid):
+    if type(pid) is not int or pid <= 0:
+        raise DeploymentOperationRejected("Selected-engine UID-map probe returned an invalid host PID")
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+        if len(raw) > 4096:
+            raise ValueError("process status exceeded its bound")
+        closing = raw.rfind(b")")
+        fields = raw[closing + 2:].split()
+        if closing < 0 or len(fields) <= 19:
+            raise ValueError("process status has invalid framing")
+        start_time = int(fields[19], 10)
+        if start_time < 0:
+            raise ValueError("process start time is negative")
+        return start_time
+    except (OSError, ValueError) as error:
+        raise DeploymentOperationRejected("Cannot prove the selected-engine UID-map probe PID is stable") from error
+
+
+def _require_uid_map_process_retired(pid, start_time):
+    if type(pid) is not int or pid <= 0 or type(start_time) is not int:
+        raise DeploymentOperationRejected("Selected-engine UID-map probe retirement identity is incomplete")
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_bytes()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise DeploymentOperationRejected("Cannot verify selected-engine UID-map probe process retirement") from error
+        if len(raw) > 4096:
+            raise DeploymentOperationRejected("Selected-engine UID-map probe process status exceeds its read bound")
+        closing = raw.rfind(b")")
+        fields = raw[closing + 2:].split()
+        if closing < 0 or len(fields) <= 19:
+            raise DeploymentOperationRejected("Selected-engine UID-map probe process status is malformed")
+        if fields[19] != str(start_time).encode("ascii") or fields[0] in {b"Z", b"X"}:
+            return
+        if time.monotonic() >= deadline:
+            raise DeploymentOperationRejected("Selected-engine UID-map probe process remains after container removal")
+        time.sleep(0.05)
+
+
+def _read_host_uid_map(pid):
+    try:
+        with Path(f"/proc/{pid}/uid_map").open("rb") as source:
+            output = source.read(_MAX_UID_MAP_BYTES + 1)
+        if len(output) > _MAX_UID_MAP_BYTES:
+            raise ValueError("mapping exceeds its read bound")
+        return _parse_container_uid_map(output)
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        raise DeploymentOperationRejected("Cannot read a valid host-visible UID map for the selected engine") from error
+
+
+def _parse_container_uid_map(output: bytes) -> tuple[tuple[int, int, int], ...]:
+    lines = output.decode("ascii").splitlines()
+    mappings = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) != 3:
+            raise ValueError("invalid mapping row")
+        inside, outside, count = (int(value, 10) for value in fields)
+        if min(inside, outside) < 0 or count < 1 or max(inside + count, outside + count) > 0x1_0000_0000:
+            raise ValueError("mapping row is out of range")
+        mappings.append((inside, outside, count))
+    if not mappings:
+        raise ValueError("empty UID map")
+    for index, (inside, outside, count) in enumerate(mappings):
+        for other_inside, other_outside, other_count in mappings[index + 1:]:
+            if (inside < other_inside + other_count and other_inside < inside + count
+                    or outside < other_outside + other_count and other_outside < outside + count):
+                raise ValueError("overlapping UID map ranges")
+    return tuple(mappings)
+
+
+def _mapped_host_uid(container_uid: int, uid_map: tuple[tuple[int, int, int], ...]) -> int:
+    matches = [outside + container_uid - inside for inside, outside, count in uid_map
+               if inside <= container_uid < inside + count]
+    if len(matches) == 1:
+        return matches[0]
+    raise DeploymentOperationRejected("Selected Docker engine did not map the required container UID exactly once")
+
+
+def _provider_directory_acl(provider_uids: tuple[int, ...]) -> tuple[str, ...]:
+    return (
+        "user::rwx",
+        *(f"user:{uid}:r-x" for uid in sorted(set(provider_uids))),
+        "group::---",
+        "mask::r-x",
+        "other::---",
+    )
+
+
+def _provider_file_acl(provider_uids: tuple[int, ...], *, owner_write: bool = False) -> tuple[str, ...]:
+    owner = "user::rw-" if owner_write else "user::r--"
+    return (
+        owner,
+        *(f"user:{uid}:r--" for uid in sorted(set(provider_uids))),
+        "group::---",
+        "mask::r--",
+        "other::---",
+    )
+
+
+def _provider_file_acl_for_uids(uids: tuple[int, ...]) -> tuple[str, ...]:
+    return (
+        "user::r--",
+        *(f"user:{uid}:r--" for uid in uids),
+        "group::---",
+        "mask::r--",
+        "other::---",
+    )
+
+
+def _provider_acl_uids(provider_host_uid: int) -> tuple[int, ...]:
+    if type(provider_host_uid) is not int or not 0 < provider_host_uid <= 0xFFFFFFFF:
+        raise DeploymentOperationRejected("Selected engine mapped the provider UID outside the host UID range")
+    return (provider_host_uid,)
+
+
+def _recognized_provider_uids(
+    access: tuple[str, ...],
+    *,
+    directory: bool,
+    owner_write: bool = False,
+    authorized_uids: tuple[int, ...],
+) -> tuple[int, ...] | None:
+    """Recover only the exact reader set already present on an owned tree."""
+    permission = "r-x" if directory else "r--"
+    named_uids = []
+    try:
+        for entry in access:
+            if not entry.startswith("user:") or entry.startswith("user::"):
+                continue
+            kind, raw_uid, rights = entry.split(":")
+            if kind != "user" or rights != permission:
+                return None
+            named_uids.append(int(raw_uid, 10))
+    except ValueError:
+        return None
+    uids = tuple(sorted(set(named_uids)))
+    if (
+        not uids
+        or len(uids) != len(named_uids)
+        or any(not 0 < uid <= 0xFFFFFFFF for uid in uids)
+        or not set(uids).issubset(authorized_uids)
+    ):
+        return None
+    expected = _provider_directory_acl(uids) if directory else _provider_file_acl(
+        uids, owner_write=owner_write,
+    )
+    return uids if access == expected else None
+
+
+def _contained_shared_projection(
+    docker,
+    image,
+    provider,
+    *,
+    include_shared=True,
+    projection_host_uid=None,
+):
     """Project the SDK grant inside the installed provider image."""
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
         config = root / "provider.toml"
         config.write_bytes(provider)
-        config.chmod(0o600)
+        config.chmod(0o400)
+        if projection_host_uid is None:
+            uid_map = _container_uid_map(docker, image)
+            projection_host_uid = _mapped_host_uid(os.geteuid(), uid_map)
+        projection_uids = (
+            () if projection_host_uid == os.geteuid() else (projection_host_uid,)
+        )
+        if projection_uids:
+            _replace_acl(config, _provider_file_acl_for_uids(projection_uids), directory=False)
         operation = "project" if include_shared else "project-api"
         result = _docker_command(docker, (
             "run", "--pull", "never", "--rm", "--network", "none", "--read-only",
@@ -281,14 +645,30 @@ def _capture_interpreter_inputs(state_root):
         raise DeploymentOperationRejected("Cannot capture the interpreter endpoint directory") from cause
 
 
-def _validate_captured_runtime(docker, image, files, *, arguments=("validate",)):
+def _validate_captured_runtime(
+    docker,
+    image,
+    files,
+    *,
+    arguments=("validate",),
+    provider_host_uid=None,
+):
     """Validate the exact private snapshot as the runtime UID before installation."""
     parent = Path(mkdtemp(prefix="nmrpeak-validation-"))
     token = secrets.token_hex(16)
     name = "nmrpeak-journal-archive-" + token
     retain = False
     try:
-        captured = _publish_retained_tree(parent, runtime_config_id(files), files)
+        if provider_host_uid is None:
+            uid_map = _container_uid_map(docker, image)
+            provider_host_uid = _mapped_host_uid(65532, uid_map)
+        provider_uids = _provider_acl_uids(provider_host_uid)
+        captured = _publish_retained_tree(
+            parent,
+            runtime_config_id(files),
+            files,
+            provider_uids=provider_uids,
+        )
         try:
             result = _run_owned_reader(docker, name, token, (
                 "--pull", "never", "--rm", "--network", "none", "--read-only", "--user", "65532:65532",
@@ -311,10 +691,19 @@ def _validate_captured_runtime(docker, image, files, *, arguments=("validate",))
     return document
 
 
-def _journal_binding(repository, deployment, docker, image, provider_ref, *, namespace):
+def _journal_binding(repository, deployment, docker, image, provider_ref, *, namespace, uid_map=None):
     raw = _read_regular_file(repository / "config/deployments" / deployment / "provider.toml")
     policy = decode_provider_template(raw)
-    projection = _contained_shared_projection(docker, image.image_id, raw, include_shared=False)
+    if uid_map is None:
+        uid_map = _container_uid_map(docker, image.image_id)
+    projection_host_uid = _mapped_host_uid(os.geteuid(), uid_map)
+    projection = _contained_shared_projection(
+        docker,
+        image.image_id,
+        raw,
+        include_shared=False,
+        projection_host_uid=projection_host_uid,
+    )
     if projection["provider_ref"] != provider_ref:
         raise DeploymentOperationRejected("Configured API belongs to another journal provider")
     return policy, None, projection
@@ -323,10 +712,17 @@ def _journal_binding(repository, deployment, docker, image, provider_ref, *, nam
 @contextmanager
 def _held_maintenance_api_route(docker, repository, deployment, image, provider_ref, authority_id):
     """Capture private API inputs while borrowing the shared proxy."""
+    uid_map = _container_uid_map(docker, image.image_id)
     policy, _unused, facts = _journal_binding(repository, deployment, docker, image,
-                                              provider_ref, namespace="nmrpeak-" + deployment)
+                                              provider_ref, namespace="nmrpeak-" + deployment,
+                                              uid_map=uid_map)
     raw = _read_regular_file(repository / "config/deployments" / deployment / "provider.toml")
-    projection = _contained_shared_projection(docker, image.image_id, raw)
+    provider_host_uid = _mapped_host_uid(65532, uid_map)
+    provider_uids = _provider_acl_uids(provider_host_uid)
+    projection_host_uid = _mapped_host_uid(os.geteuid(), uid_map)
+    projection = _contained_shared_projection(
+        docker, image.image_id, raw, projection_host_uid=projection_host_uid,
+    )
     if any(projection[key] != value for key, value in facts.items()):
         raise DeploymentOperationRejected("Configured API changed during maintenance capture; preserve the journal")
     if projection["journal_authority_id"] != authority_id:
@@ -339,10 +735,16 @@ def _held_maintenance_api_route(docker, repository, deployment, image, provider_
     temporary = Path(mkdtemp(prefix="nmrpeak-maintenance-"))
     retain = False
     try:
-        captured = _publish_retained_tree(temporary, runtime_config_id(files), files)
+        captured = _publish_retained_tree(
+            temporary,
+            runtime_config_id(files),
+            files,
+            provider_uids=provider_uids,
+        )
         socket = projection["shared"]["proxy_socket"]
         validated = _validate_captured_runtime(docker, image.image_id, files,
-                                               arguments=("validate-api", "--proxy-socket", socket))
+                                               arguments=("validate-api", "--proxy-socket", socket),
+                                               provider_host_uid=provider_host_uid)
         expected = {key: projection[key] for key in ("provider_ref", "api_origin", "api_topology", "journal_authority_id")}
         if validated != expected | {"proxy_socket": socket}:
             raise DeploymentOperationRejected("Maintenance API capture differs from its configured identity")
@@ -404,7 +806,12 @@ def render_deployment_plan(
                               local_images["hf"].image_id, input_ids["hf"],
                               local_images["chf"].image_id, input_ids["chf"])
     checkpoints = DeploymentCheckpoints(releases.hf.checkpoint_sha256, releases.chf.checkpoint_sha256)
-    projection = _contained_shared_projection(docker, images.provider, provider)
+    uid_map = _container_uid_map(docker, images.provider)
+    provider_host_uid = _mapped_host_uid(65532, uid_map)
+    projection_host_uid = _mapped_host_uid(os.geteuid(), uid_map)
+    projection = _contained_shared_projection(
+        docker, images.provider, provider, projection_host_uid=projection_host_uid,
+    )
     if projection["provider_ref"] != selection.provider_ref:
         raise DeploymentOperationRejected("Selected API binding belongs to another named provider generation")
     if policy.runner.ready_seconds > 600:
@@ -432,7 +839,30 @@ def render_deployment_plan(
     )
     identity = runtime_config_id(runtime_files)
     runtime_root = state_root / "runtime-configs" / _retained_identity_name(identity)
-    validated = _validate_captured_runtime(docker, images.provider, runtime_files)
+    runtime_provider_uids = _retained_provider_uids(
+        runtime_root,
+        runtime_files,
+        _provider_acl_uids(provider_host_uid),
+    )
+    frozen_files = {"frozen/manifest.json": generation.manifest}
+    frozen_files.update({
+        f"frozen/{frozen_file.path}": frozen_file.content
+        for frozen_file in generation.files
+    })
+    generation_root = state_root / "generations" / _retained_identity_name(
+        generation.frozen_generation_id
+    )
+    generation_provider_uids = _retained_provider_uids(
+        generation_root,
+        frozen_files,
+        _provider_acl_uids(provider_host_uid),
+    )
+    validated = _validate_captured_runtime(
+        docker,
+        images.provider,
+        runtime_files,
+        provider_host_uid=provider_host_uid,
+    )
     expected = {"provider_ref": selection.provider_ref, "api_origin": projection["api_origin"],
                 "api_topology": projection["api_topology"], "journal_authority_id": projection["journal_authority_id"],
                 "frozen_generation_id": generation.frozen_generation_id,
@@ -448,7 +878,17 @@ def render_deployment_plan(
     compose = _render_compose(root, deployment, environment, docker, binding_projection=projection)
     if project_deployment_topology(compose, images, checkpoints, binding_projection=projection) != topology:
         raise DeploymentOperationRejected("Final operational grants changed the frozen scientific topology")
-    return DeploymentPlan(compose, generation, releases, selection.provider_ref, identity, runtime_files, projection)
+    return DeploymentPlan(
+        compose,
+        generation,
+        releases,
+        selection.provider_ref,
+        identity,
+        runtime_provider_uids,
+        generation_provider_uids,
+        runtime_files,
+        projection,
+    )
 
 
 def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
@@ -472,6 +912,10 @@ def deployment_plan_bytes(plan: DeploymentPlan) -> bytes:
             "kind": "read_only_preview",
             "frozen_generation_id": plan.generation.frozen_generation_id,
             "runtime_config_id": plan.runtime_config_id,
+            "bind_access_host_uids": {
+                "runtime_config": list(plan.runtime_provider_uids),
+                "frozen_generation": list(plan.generation_provider_uids),
+            },
             "compose": plan.compose,
             "artifacts": {
                 "provider.toml": provider_config,
@@ -708,6 +1152,10 @@ def remove_frozen_generation(
                 raise DeploymentOperationRejected(
                     "Provider journal still references the frozen generation"
                 )
+            _require_snapshot_unmounted(
+                docker,
+                state_root / "generations" / _retained_identity_name(frozen_generation),
+            )
             _remove_retained_generation(state_root, frozen_generation)
 
 
@@ -747,14 +1195,38 @@ def remove_runtime_config(
 
 
 def _require_snapshot_unmounted(docker: Path, target: Path) -> None:
-    """Reject any default-engine container retaining an overlapping host mount."""
-    identifiers = _docker_command(docker, ("ps", "--all", "--no-trunc", "--quiet"), timeout=60).stdout.decode("ascii").splitlines()
+    """Reject overlapping mounts from every local Unix-socket engine."""
+    selected = docker_host()
+    endpoints = _local_docker_endpoints(docker)
+    if selected not in endpoints:
+        raise DeploymentOperationRejected(
+            "Selected Docker socket is absent from the local context inventory"
+        )
+    for endpoint in endpoints:
+        _require_snapshot_unmounted_at(
+            docker,
+            target,
+            endpoint if endpoint != selected else None,
+        )
+
+
+def _require_snapshot_unmounted_at(
+    docker: Path,
+    target: Path,
+    endpoint: str | None,
+) -> None:
+    def command(arguments):
+        if endpoint is None:
+            return _docker_command(docker, arguments, timeout=60)
+        return _docker_command(docker, arguments, timeout=60, endpoint=endpoint)
+
+    identifiers = command(("ps", "--all", "--no-trunc", "--quiet")).stdout.decode("ascii").splitlines()
     if len(identifiers) != len(set(identifiers)) or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in identifiers):
         raise DeploymentOperationRejected("Docker returned an invalid container inventory")
     records = []
     for offset in range(0, len(identifiers), 8):
         batch = identifiers[offset:offset + 8]
-        inspected = _json_output(_docker_command(docker, ("inspect", *batch), timeout=60).stdout, "Snapshot borrower inventory")
+        inspected = _json_output(command(("inspect", *batch)).stdout, "Snapshot borrower inventory")
         if type(inspected) is not list or len(inspected) != len(batch):
             raise DeploymentOperationRejected("Docker returned an incomplete snapshot borrower inventory")
         records.extend(inspected)
@@ -774,27 +1246,38 @@ def _require_snapshot_unmounted(docker: Path, target: Path) -> None:
                 raise DeploymentOperationRejected("Docker returned an invalid container mount source")
             path = Path(source).resolve()
             if path == target or path in target.parents or target in path.parents:
-                raise DeploymentOperationRejected("A container still mounts the retained runtime config")
+                raise DeploymentOperationRejected("A container still mounts the retained deployment input")
             if mount["Type"] == "volume":
                 name = mount.get("Name")
                 if type(name) is not str or not name:
                     raise DeploymentOperationRejected("Docker returned an invalid container volume name")
                 volumes.add(name)
-    volume_names = _docker_command(docker, ("volume", "ls", "--quiet"), timeout=60).stdout.decode("utf-8").splitlines()
+    volume_names = command(("volume", "ls", "--quiet")).stdout.decode("utf-8").splitlines()
     if (len(volume_names) != len(set(volume_names))
             or any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None for name in volume_names)
             or not volumes.issubset(volume_names)):
         raise DeploymentOperationRejected("Docker returned an invalid volume inventory")
     if volume_names:
-        _require_volume_sources_unmounted(docker, set(volume_names), target)
+        _require_volume_sources_unmounted(docker, set(volume_names), target, endpoint=endpoint)
 
 
-def _require_volume_sources_unmounted(docker: Path, names: set[str], target: Path) -> None:
+def _require_volume_sources_unmounted(
+    docker: Path,
+    names: set[str],
+    target: Path,
+    *,
+    endpoint: str | None = None,
+) -> None:
     records = []
     ordered = sorted(names)
     for offset in range(0, len(ordered), 8):
         batch = ordered[offset:offset + 8]
-        output = _docker_command(docker, ("volume", "inspect", *batch), timeout=60).stdout
+        output = _docker_command(
+            docker,
+            ("volume", "inspect", *batch),
+            timeout=60,
+            **({} if endpoint is None else {"endpoint": endpoint}),
+        ).stdout
         inspected = _json_output(output, "Snapshot volume borrower inventory")
         if type(inspected) is not list or len(inspected) != len(batch):
             raise DeploymentOperationRejected("Docker returned an incomplete snapshot volume inventory")
@@ -818,7 +1301,7 @@ def _require_volume_sources_unmounted(docker: Path, names: set[str], target: Pat
                 raise DeploymentOperationRejected("A bind-backed volume has an invalid host source")
             source = Path(device).resolve()
             if source == target or source in target.parents or target in source.parents:
-                raise DeploymentOperationRejected("A Docker volume still references the retained runtime config")
+                raise DeploymentOperationRejected("A Docker volume still references the retained deployment input")
 
 
 def _remove_retained_runtime_config(target: Path, identity: str) -> None:
@@ -842,6 +1325,8 @@ def _remove_retained_runtime_config(target: Path, identity: str) -> None:
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(path)
                 elif entry.is_file(follow_symlinks=False):
+                    if path == target / _PROVIDER_UID_RECEIPT:
+                        continue
                     content = _read_regular_file(path)
                     total += len(content)
                     if total > 8 * 1024 * 1024:
@@ -1141,6 +1626,19 @@ def stop_deployment(
 def _validate_deployment_plan(plan: DeploymentPlan) -> None:
     if type(plan) is not DeploymentPlan:
         raise TypeError("Deployment materialization requires one resolved plan")
+    for provider_uids in (
+        plan.runtime_provider_uids,
+        plan.generation_provider_uids,
+    ):
+        if (
+            type(provider_uids) is not tuple
+            or not provider_uids
+            or any(type(uid) is not int or not 0 < uid <= 0xFFFFFFFF for uid in provider_uids)
+            or tuple(sorted(set(provider_uids))) != provider_uids
+        ):
+            raise DeploymentOperationRejected(
+                "Deployment plan provider ACL identities are invalid"
+            )
     if runtime_config_id(plan.runtime_files) != plan.runtime_config_id:
         raise DeploymentOperationRejected(
             "Deployment runtime config identity does not match its bytes"
@@ -1163,6 +1661,7 @@ def _materialize_locked(
         runtime_root,
         plan.runtime_config_id,
         plan.runtime_files,
+        provider_uids=plan.runtime_provider_uids,
     )
     frozen_files = {"frozen/manifest.json": plan.generation.manifest}
     frozen_files.update(
@@ -1175,6 +1674,7 @@ def _materialize_locked(
         generation_root,
         plan.generation.frozen_generation_id,
         frozen_files,
+        provider_uids=plan.generation_provider_uids,
     )
     return runtime_config, frozen_generation
 
@@ -2067,17 +2567,27 @@ def _docker_command(
     arguments: tuple[str, ...],
     *,
     timeout: int,
+    endpoint: str | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
+    selected_endpoint = docker_host() if endpoint is None else endpoint
+    if (
+        not selected_endpoint.startswith("unix:///")
+        or len(selected_endpoint) == len("unix:///")
+        or any(char.isspace() for char in selected_endpoint)
+    ):
+        raise DeploymentOperationRejected(
+            "Docker operation requires one local Unix-socket endpoint"
+        )
     try:
         result = subprocess.run(
-            (str(docker), "--host", docker_host(), *arguments),
+            (str(docker), "--host", selected_endpoint, *arguments),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env={
                 "PATH": "/usr/bin:/bin",
                 "HOME": "/tmp",
-                "NMRPEAK_DOCKER_HOST": docker_host(),
+                "NMRPEAK_DOCKER_HOST": selected_endpoint,
             },
             timeout=timeout,
         )
@@ -2106,6 +2616,72 @@ def _docker_command(
             f"{result.returncode}{detail}"
         )
     return result
+
+
+def _local_docker_endpoints(docker: Path) -> tuple[str, ...]:
+    environment = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp")}
+    try:
+        listed = subprocess.run(
+            (str(docker), "context", "ls", "--format", "{{.Name}}"),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as cause:
+        raise DeploymentOperationRejected(
+            "Cannot prove local Docker contexts before removing retained provider inputs"
+        ) from cause
+    if listed.returncode != 0 or len(listed.stdout) > 65_536:
+        raise DeploymentOperationRejected(
+            "Docker context inventory is unavailable before retained input removal"
+        )
+    try:
+        names = listed.stdout.decode("utf-8", errors="strict").splitlines()
+    except UnicodeDecodeError as cause:
+        raise DeploymentOperationRejected(
+            "Docker returned an invalid local context inventory"
+        ) from cause
+    if not names or len(names) != len(set(names)) or any(
+        re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) is None for name in names
+    ):
+        raise DeploymentOperationRejected("Docker returned an invalid local context inventory")
+    endpoints = set()
+    for name in names:
+        try:
+            inspected = subprocess.run(
+                (
+                    str(docker), "--context", name, "context", "inspect", name,
+                    "--format", "{{.Endpoints.docker.Host}}",
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as cause:
+            raise DeploymentOperationRejected(
+                "Cannot inspect Docker context endpoints before retained input removal"
+            ) from cause
+        if inspected.returncode != 0 or len(inspected.stdout) > 65_536:
+            raise DeploymentOperationRejected(
+                "Docker context endpoint inventory is incomplete before retained input removal"
+            )
+        try:
+            endpoint = inspected.stdout.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError as cause:
+            raise DeploymentOperationRejected(
+                "Docker returned an invalid context endpoint"
+            ) from cause
+        if endpoint.startswith("unix:///") and not any(char.isspace() for char in endpoint):
+            endpoints.add(endpoint)
+    if not endpoints:
+        raise DeploymentOperationRejected(
+            "No local Unix-socket Docker endpoints are available for retained input removal"
+        )
+    return tuple(sorted(endpoints))
 
 
 def _bounded_docker_diagnostic(raw: bytes) -> str | None:
@@ -2211,19 +2787,31 @@ def _publish_retained_tree(
     parent: Path,
     identity: str,
     files: dict[str, bytes],
+    *,
+    provider_uids: tuple[int, ...],
 ) -> Path:
+    if (
+        type(provider_uids) is not tuple
+        or not provider_uids
+        or any(type(uid) is not int or not 0 < uid <= 0xFFFFFFFF for uid in provider_uids)
+    ):
+        raise DeploymentOperationRejected("Retained provider ACL identities are incomplete")
+    provider_uids = tuple(sorted(set(provider_uids)))
     if re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
         raise DeploymentOperationRejected("Retained input identity is malformed")
     retained_name = _retained_identity_name(identity)
     destination = parent / retained_name
     if destination.exists() or destination.is_symlink():
         _require_retained_tree(destination, files)
-        _grant_provider_tree_access(destination)
-        _require_retained_tree(destination, files, require_provider_access=True)
+        provider_uids = tuple(sorted(set(_read_provider_uid_receipt(destination)) | set(provider_uids)))
+        _write_provider_uid_receipt(destination, provider_uids)
+        _grant_provider_tree_access(destination, provider_uids)
+        _require_retained_tree(destination, files, provider_uids=provider_uids)
         return destination
     stage = parent / f".{retained_name}.{secrets.token_hex(16)}.staging"
     stage.mkdir(mode=0o700)
     try:
+        _write_provider_uid_receipt(stage, provider_uids)
         for relative, content in files.items():
             candidate = Path(relative)
             if (
@@ -2251,7 +2839,7 @@ def _publish_retained_tree(
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        _grant_provider_tree_access(stage)
+        _grant_provider_tree_access(stage, provider_uids)
         _fsync_tree(stage)
         os.rename(stage, destination)
         _fsync_directory(parent)
@@ -2259,7 +2847,7 @@ def _publish_retained_tree(
         if stage.exists() and not stage.is_symlink():
             shutil.rmtree(stage)
         raise
-    _require_retained_tree(destination, files, require_provider_access=True)
+    _require_retained_tree(destination, files, provider_uids=provider_uids)
     return destination
 
 
@@ -2271,7 +2859,7 @@ def _require_retained_tree(
     path: Path,
     expected: dict[str, bytes],
     *,
-    require_provider_access: bool = False,
+    provider_uids: tuple[int, ...] | None = None,
 ) -> None:
     if path.is_symlink() or not path.is_dir():
         raise DeploymentOperationRejected(
@@ -2279,6 +2867,7 @@ def _require_retained_tree(
         )
     actual_files: dict[str, bytes] = {}
     actual_directories: set[str] = set()
+    authorized_uids = _read_provider_uid_receipt(path)
     for directory, names, filenames in os.walk(path, followlinks=False):
         current = Path(directory)
         metadata = current.stat(follow_symlinks=False)
@@ -2289,14 +2878,18 @@ def _require_retained_tree(
         mode = stat.S_IMODE(metadata.st_mode)
         access = _read_acl(current, "Retained deployment directory")
         private_access = mode == 0o700 and access == _PRIVATE_DIRECTORY_ACL
-        provider_access = mode == 0o750 and access == _PROVIDER_DIRECTORY_ACL
-        if (
-            (require_provider_access and not provider_access)
-            or (
-                not require_provider_access
-                and not (private_access or provider_access)
-            )
-        ):
+        recognized_uids = _recognized_provider_uids(
+            access, directory=True, authorized_uids=authorized_uids,
+        )
+        provider_access = mode == 0o750 and (
+            access == _provider_directory_acl(provider_uids)
+            if provider_uids is not None
+            else recognized_uids is not None
+        )
+        valid_access = provider_access or (
+            provider_uids is None and private_access
+        )
+        if not valid_access:
             raise DeploymentOperationRejected(
                 f"Retained deployment directory posture has drifted: {path.name}"
             )
@@ -2311,6 +2904,8 @@ def _require_retained_tree(
                 )
         for name in filenames:
             child = current / name
+            if child == path / _PROVIDER_UID_RECEIPT:
+                continue
             try:
                 descriptor = os.open(
                     child,
@@ -2335,16 +2930,20 @@ def _require_retained_tree(
                 private_access = (
                     mode == 0o400 and access == _PRIVATE_READONLY_FILE_ACL
                 )
-                provider_access = (
-                    mode == 0o440 and access == _PROVIDER_READONLY_FILE_ACL
+                recognized_uids = _recognized_provider_uids(
+                    access,
+                    directory=False,
+                    authorized_uids=authorized_uids,
                 )
-                if (
-                    (require_provider_access and not provider_access)
-                    or (
-                        not require_provider_access
-                        and not (private_access or provider_access)
-                    )
-                ):
+                provider_access = mode == 0o440 and (
+                    access == _provider_file_acl(provider_uids)
+                    if provider_uids is not None
+                    else recognized_uids is not None
+                )
+                valid_access = provider_access or (
+                    provider_uids is None and private_access
+                )
+                if not valid_access:
                     raise DeploymentOperationRejected(
                         f"Retained deployment file posture has drifted: {path.name}"
                     )
@@ -2365,7 +2964,134 @@ def _require_retained_tree(
         )
 
 
-def _grant_provider_tree_access(root: Path) -> None:
+def _retained_provider_uids(
+    path: Path,
+    files: dict[str, bytes],
+    provider_uids: tuple[int, ...],
+) -> tuple[int, ...]:
+    uids = set(provider_uids)
+    if path.exists() or path.is_symlink():
+        _require_retained_tree(path, files)
+        uids.update(_read_provider_uid_receipt(path))
+    return tuple(sorted(uids))
+
+
+def _read_provider_uid_receipt(root: Path) -> tuple[int, ...]:
+    receipt = root / _PROVIDER_UID_RECEIPT
+    try:
+        descriptor = os.open(
+            receipt,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except FileNotFoundError:
+        # Before the receipt was introduced, deployment trees granted only the
+        # provider's fixed container UID. Do not infer authority from arbitrary
+        # named ACL entries on those trees.
+        access = _read_acl(root, "Retained deployment directory")
+        if (
+            stat.S_IMODE(root.stat(follow_symlinks=False).st_mode) == 0o700
+            and access == _PRIVATE_DIRECTORY_ACL
+        ):
+            return ()
+        legacy = _recognized_provider_uids(
+            access,
+            directory=True,
+            authorized_uids=(65532,),
+        )
+        if legacy is None:
+            raise DeploymentOperationRejected(
+                f"Retained deployment ACL has no operator-owned UID receipt: {root.name}"
+            )
+        return legacy
+    except OSError as cause:
+        raise DeploymentOperationRejected(
+            f"Retained deployment UID receipt is unavailable: {root.name}"
+        ) from cause
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or _read_acl(receipt, "Retained deployment UID receipt") != _PRIVATE_READONLY_FILE_ACL
+        ):
+            raise DeploymentOperationRejected(
+                f"Retained deployment UID receipt posture has drifted: {root.name}"
+            )
+        raw = os.read(descriptor, 4097)
+    finally:
+        os.close(descriptor)
+    try:
+        document = parse_canonical_json_bytes(raw)
+        uids = document["provider_uids"]
+        if (
+            type(document) is not dict
+            or set(document) != {"provider_uids"}
+            or type(uids) is not list
+            or not uids
+            or len(uids) > _MAX_AUTHORIZED_PROVIDER_UIDS
+            or any(type(uid) is not int or not 0 < uid <= 0xFFFFFFFF for uid in uids)
+            or uids != sorted(set(uids))
+        ):
+            raise ValueError("invalid provider UID receipt")
+    except (KeyError, TypeError, ValueError) as cause:
+        raise DeploymentOperationRejected(
+            f"Retained deployment UID receipt is malformed: {root.name}"
+        ) from cause
+    return tuple(uids)
+
+
+def _write_provider_uid_receipt(root: Path, provider_uids: tuple[int, ...]) -> None:
+    if (
+        type(provider_uids) is not tuple
+        or not provider_uids
+        or len(provider_uids) > _MAX_AUTHORIZED_PROVIDER_UIDS
+        or any(type(uid) is not int or not 0 < uid <= 0xFFFFFFFF for uid in provider_uids)
+        or provider_uids != tuple(sorted(set(provider_uids)))
+    ):
+        raise DeploymentOperationRejected("Retained deployment UID receipt exceeds its authorized identity bound")
+    content = canonical_json_bytes({"provider_uids": list(provider_uids)})
+    target = root / _PROVIDER_UID_RECEIPT
+    temporary = root / f".{_PROVIDER_UID_RECEIPT}.{secrets.token_hex(16)}.tmp"
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o400,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = -1
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        if target.exists() or target.is_symlink():
+            existing = _read_provider_uid_receipt(root)
+            if not set(existing).issubset(provider_uids):
+                raise DeploymentOperationRejected(
+                    "Retained deployment UID receipt changed after plan resolution"
+                )
+        os.replace(temporary, target)
+        _fsync_directory(root)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _grant_provider_tree_access(
+    root: Path,
+    provider_uids: tuple[int, ...],
+) -> None:
+    previous_uids = _recognized_provider_uids(
+        _read_acl(root, "Retained deployment directory"),
+        directory=True,
+        authorized_uids=_read_provider_uid_receipt(root),
+    )
+    if previous_uids is not None and not set(previous_uids).issubset(provider_uids):
+        raise DeploymentOperationRejected("Retained deployment ACL changed after plan resolution")
     directories: list[Path] = []
     for directory, names, filenames in os.walk(root, followlinks=False):
         current = Path(directory)
@@ -2376,16 +3102,27 @@ def _grant_provider_tree_access(root: Path) -> None:
                     "Retained deployment input contains a symlink"
                 )
         for name in filenames:
-            _grant_provider_file_access(current / name, owner_write=False)
+            if current == root and name == _PROVIDER_UID_RECEIPT:
+                continue
+            _grant_provider_file_access(
+                current / name,
+                provider_uids,
+                owner_write=False,
+            )
     for directory in reversed(directories):
-        _replace_acl(directory, _PROVIDER_DIRECTORY_ACL, directory=True)
+        _replace_acl(directory, _provider_directory_acl(provider_uids), directory=True)
 
 
-def _grant_provider_file_access(path: Path, *, owner_write: bool) -> None:
+def _grant_provider_file_access(
+    path: Path,
+    provider_uids: tuple[int, ...],
+    *,
+    owner_write: bool,
+) -> None:
     access = (
-        _PROVIDER_WRITABLE_FILE_ACL
+        _provider_file_acl(provider_uids, owner_write=True)
         if owner_write
-        else _PROVIDER_READONLY_FILE_ACL
+        else _provider_file_acl(provider_uids)
     )
     _replace_acl(path, access, directory=False)
 

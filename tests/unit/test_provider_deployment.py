@@ -63,11 +63,254 @@ IMAGES = {
 }
 
 
+class SelectedEngineUidMapProbeTests(unittest.TestCase):
+    def test_host_uid_map_is_read_for_the_exact_probe_pid_and_probe_is_retired(self) -> None:
+        identifier = "a" * 64
+        record = {"State": {"Pid": 4321}}
+        image = IMAGES["provider"].image_id
+        with (
+            patch.object(
+                provider_deployment,
+                "_docker_command",
+                return_value=subprocess.CompletedProcess((), 0, (identifier + "\n").encode(), b""),
+            ) as command,
+            patch.object(provider_deployment, "_require_uid_map_probe", return_value=record) as inspect,
+            patch.object(provider_deployment, "_uid_map_process_start_time", side_effect=(10, 10)),
+            patch.object(
+                provider_deployment,
+                "_read_host_uid_map",
+                return_value=((0, 1000, 1), (1, 100000, 65536)),
+            ) as read_map,
+            patch.object(provider_deployment, "_remove_uid_map_probe") as remove,
+        ):
+            mapping = provider_deployment._container_uid_map(Path("/usr/bin/docker"), image)
+
+        self.assertEqual(mapping, ((0, 1000, 1), (1, 100000, 65536)))
+        self.assertEqual(read_map.call_args.args, (4321,))
+        self.assertEqual(inspect.call_count, 3)
+        self.assertIn("--rm", command.call_args_list[0].args[1])
+        self.assertEqual(command.call_args_list[1].args[1][:2], ("start", identifier))
+        self.assertEqual(remove.call_args.args[3:], (identifier, image))
+
+    def test_uid_map_probe_failure_still_requires_owned_cleanup(self) -> None:
+        identifier = "c" * 64
+        image = IMAGES["provider"].image_id
+        with (
+            patch.object(
+                provider_deployment,
+                "_docker_command",
+                return_value=subprocess.CompletedProcess((), 0, (identifier + "\n").encode(), b""),
+            ),
+            patch.object(provider_deployment, "_require_uid_map_probe", side_effect=DeploymentOperationRejected("bad probe")),
+            patch.object(provider_deployment, "_remove_uid_map_probe") as remove,
+        ):
+            with self.assertRaisesRegex(DeploymentOperationRejected, "bad probe"):
+                provider_deployment._container_uid_map(Path("/usr/bin/docker"), image)
+        self.assertEqual(remove.call_args.args[3:], (identifier, image))
+
+    def test_create_timeout_without_an_observed_probe_remains_unsettled(self) -> None:
+        error = DeploymentOperationRejected("probe creation timed out")
+        error.__cause__ = subprocess.TimeoutExpired("docker create", 30)
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=error),
+            patch.object(provider_deployment, "_remove_uid_map_probe", return_value=False) as remove,
+        ):
+            with self.assertRaisesRegex(provider_deployment.MaintenanceInvocationUnsettled, "creation is unconfirmed"):
+                provider_deployment._container_uid_map(Path("/usr/bin/docker"), IMAGES["provider"].image_id)
+        self.assertIsNone(remove.call_args.args[3])
+
+    def test_non_timeout_create_error_without_an_observed_probe_is_unsettled(self) -> None:
+        with (
+            patch.object(
+                provider_deployment,
+                "_docker_command",
+                side_effect=DeploymentOperationRejected("Docker client disconnected after dispatch"),
+            ),
+            patch.object(provider_deployment, "_remove_uid_map_probe", return_value=False),
+        ):
+            with self.assertRaisesRegex(
+                provider_deployment.MaintenanceInvocationUnsettled,
+                "creation is unconfirmed",
+            ):
+                provider_deployment._container_uid_map(
+                    Path("/usr/bin/docker"), IMAGES["provider"].image_id,
+                )
+
+    def test_cleanup_checks_running_pid_retirement(self) -> None:
+        identifier = "e" * 64
+        image = IMAGES["provider"].image_id
+        record = {"State": {"Running": True, "Pid": 4321}}
+        inventory = {"labelled": [identifier], "named": [identifier]}
+        with (
+            patch.object(provider_deployment, "_uid_map_probe_inventory", side_effect=(inventory, {"labelled": [], "named": []})),
+            patch.object(provider_deployment, "_require_uid_map_probe", return_value=record) as verify,
+            patch.object(provider_deployment, "_docker_command", return_value=subprocess.CompletedProcess((), 0, b"", b"")) as command,
+            patch.object(provider_deployment, "_uid_map_probe_exists", return_value=False),
+            patch.object(provider_deployment, "_require_uid_map_process_retired") as retired,
+        ):
+            removed = provider_deployment._remove_uid_map_probe(
+                Path("/usr/bin/docker"),
+                "nmrpeak-uid-map-token",
+                "token",
+                identifier,
+                image,
+                process_identity=(4321, 99),
+            )
+        self.assertTrue(removed)
+        self.assertEqual(verify.call_args.kwargs, {"running": None})
+        self.assertEqual(command.call_args.args[1], ("rm", "--force", identifier))
+        retired.assert_called_once_with(4321, 99)
+
+    def test_cleanup_removes_an_exact_owned_exited_probe(self) -> None:
+        identifier = "1" * 64
+        inventory = {"labelled": [identifier], "named": [identifier]}
+        with (
+            patch.object(provider_deployment, "_uid_map_probe_inventory", side_effect=(inventory, {"labelled": [], "named": []})),
+            patch.object(
+                provider_deployment,
+                "_require_uid_map_probe",
+                return_value={"State": {"Running": False, "Pid": 0}},
+            ) as verify,
+            patch.object(provider_deployment, "_docker_command", return_value=subprocess.CompletedProcess((), 0, b"", b"")) as command,
+            patch.object(provider_deployment, "_uid_map_probe_exists", return_value=False),
+            patch.object(provider_deployment, "_require_uid_map_process_retired") as retired,
+        ):
+            removed = provider_deployment._remove_uid_map_probe(
+                Path("/usr/bin/docker"),
+                "nmrpeak-uid-map-token",
+                "token",
+                identifier,
+                IMAGES["provider"].image_id,
+            )
+        self.assertTrue(removed)
+        self.assertEqual(verify.call_args.kwargs, {"running": None})
+        self.assertEqual(command.call_args.args[1], ("rm", "--force", identifier))
+        retired.assert_not_called()
+
+    def test_cleanup_rejects_a_changed_pid_before_removal(self) -> None:
+        identifier = "f" * 64
+        inventory = {"labelled": [identifier], "named": [identifier]}
+        with (
+            patch.object(provider_deployment, "_uid_map_probe_inventory", return_value=inventory),
+            patch.object(
+                provider_deployment,
+                "_require_uid_map_probe",
+                return_value={"State": {"Running": True, "Pid": 4322}},
+            ),
+            patch.object(provider_deployment, "_docker_command") as command,
+        ):
+            with self.assertRaisesRegex(DeploymentOperationRejected, "PID changed"):
+                provider_deployment._remove_uid_map_probe(
+                    Path("/usr/bin/docker"),
+                    "nmrpeak-uid-map-token",
+                    "token",
+                    identifier,
+                    IMAGES["provider"].image_id,
+                    process_identity=(4321, 99),
+                )
+        command.assert_not_called()
+
+
 class ProviderDeploymentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.docker_host = patch.dict("os.environ", {"NMRPEAK_DOCKER_HOST": "unix:///tmp/nmrpeak-test.sock"})
         self.docker_host.start()
         self.addCleanup(self.docker_host.stop)
+        self.uid_map = patch.object(
+            provider_deployment,
+            "_container_uid_map",
+            return_value=((0, 0, 0x1_0000_0000),),
+        )
+        self.uid_map.start()
+        self.addCleanup(self.uid_map.stop)
+
+    def test_retained_tree_recognizes_legacy_and_mapped_acl_postures(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "retained"
+            root.mkdir(mode=0o750)
+            item = root / "input"
+            item.write_bytes(b"private")
+            item.chmod(0o440)
+            root.chmod(0o750)
+            provider_deployment._write_provider_uid_receipt(root, (65532,))
+            legacy = {
+                root: provider_deployment._PROVIDER_DIRECTORY_ACL,
+                item: provider_deployment._PROVIDER_READONLY_FILE_ACL,
+                root / provider_deployment._PROVIDER_UID_RECEIPT: provider_deployment._PRIVATE_READONLY_FILE_ACL,
+            }
+            with patch.object(
+                provider_deployment,
+                "_read_acl",
+                side_effect=lambda path, _operation: legacy[path],
+            ):
+                with self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "directory posture has drifted",
+                ):
+                    provider_deployment._require_retained_tree(
+                        root,
+                        {"input": b"private"},
+                        provider_uids=(65532, 165531),
+                    )
+                provider_deployment._require_retained_tree(root, {"input": b"private"})
+
+            mapped_uids = (165531, 294907)
+            provider_deployment._write_provider_uid_receipt(
+                root,
+                (65532, *mapped_uids),
+            )
+            current = {
+                root: provider_deployment._provider_directory_acl(mapped_uids),
+                item: provider_deployment._provider_file_acl(mapped_uids),
+                root / provider_deployment._PROVIDER_UID_RECEIPT: provider_deployment._PRIVATE_READONLY_FILE_ACL,
+            }
+            with patch.object(
+                provider_deployment,
+                "_read_acl",
+                side_effect=lambda path, _operation: current[path],
+            ):
+                provider_deployment._require_retained_tree(
+                    root,
+                    {"input": b"private"},
+                    provider_uids=mapped_uids,
+                )
+                mixed = {
+                    **current,
+                    root: provider_deployment._PROVIDER_DIRECTORY_ACL,
+                }
+                with patch.object(
+                    provider_deployment,
+                    "_read_acl",
+                    side_effect=lambda path, _operation: mixed[path],
+                ):
+                    provider_deployment._require_retained_tree(root, {"input": b"private"})
+                    with patch.object(provider_deployment, "_replace_acl") as replace_acl:
+                        provider_deployment._grant_provider_tree_access(
+                            root,
+                            (65532, *mapped_uids),
+                        )
+                    self.assertEqual(replace_acl.call_count, 2)
+                drifted = dict(current)
+                drifted[item] = provider_deployment._provider_file_acl((12345,))
+                with patch.object(
+                    provider_deployment,
+                    "_read_acl",
+                    side_effect=lambda path, _operation: drifted[path],
+                ), self.assertRaisesRegex(
+                    DeploymentOperationRejected,
+                    "file posture has drifted",
+                ):
+                    provider_deployment._require_retained_tree(
+                        root,
+                        {"input": b"private"},
+                    )
+
+    def test_selected_engine_uid_map_maps_operator_and_provider_ids(self) -> None:
+        uid_map = provider_deployment._parse_container_uid_map(
+            b"0 1000 1\n1 100000 65536\n"
+        )
+        self.assertEqual(provider_deployment._mapped_host_uid(1000, uid_map), 100999)
+        self.assertEqual(provider_deployment._mapped_host_uid(65532, uid_map), 165531)
 
     def test_unconfirmed_reader_creation_never_dispatches_start(self) -> None:
         with patch.object(provider_deployment, "_docker_command", side_effect=TimeoutError("creation unknown")) as command, \
@@ -102,7 +345,8 @@ class ProviderDeploymentTests(unittest.TestCase):
         projection = facts | {"shared": BINDING["shared"]}
         files_seen = {}
 
-        def capture(_parent, _identity, files):
+        def capture(_parent, _identity, files, *, provider_uids):
+            self.assertEqual(provider_uids, (65532,))
             files_seen.update(files)
             return Path("/tmp/captured-api")
 
@@ -337,6 +581,13 @@ class ProviderDeploymentTests(unittest.TestCase):
             )
             self.assertEqual(preview["runtime_config_id"], plan.runtime_config_id)
             self.assertEqual(
+                preview["bind_access_host_uids"],
+                {
+                    "runtime_config": list(plan.runtime_provider_uids),
+                    "frozen_generation": list(plan.generation_provider_uids),
+                },
+            )
+            self.assertEqual(
                 set(preview["artifacts"]),
                 {"provider.toml", "runtime_files", "frozen/manifest.json", "frozen/files"},
             )
@@ -384,7 +635,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                     first[0],
                     "Retained deployment file",
                 ),
-                provider_deployment._PROVIDER_READONLY_FILE_ACL,
+                provider_deployment._provider_file_acl(plan.runtime_provider_uids),
             )
             self.assertEqual(
                 stat.S_IMODE(
@@ -399,6 +650,7 @@ class ProviderDeploymentTests(unittest.TestCase):
             first[0].write_bytes(b"drift")
             provider_deployment._grant_provider_file_access(
                 first[0],
+                (65532,),
                 owner_write=False,
             )
             with self.assertRaisesRegex(
@@ -1240,6 +1492,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                     "_journal_generation_ids",
                     side_effect=inventory,
                 ),
+                patch.object(provider_deployment, "_require_snapshot_unmounted"),
             ):
                 remove_frozen_generation(
                     repository,
@@ -1259,7 +1512,12 @@ class ProviderDeploymentTests(unittest.TestCase):
             files = dict(plan.runtime_files)
             files["provider.toml"] += b"\n"
             old_id = runtime_config_id(files)
-            old = provider_deployment._publish_retained_tree(parent, old_id, files)
+            old = provider_deployment._publish_retained_tree(
+                parent,
+                old_id,
+                files,
+                provider_uids=(65532,),
+            )
             selected = parent / plan.runtime_config_id.removeprefix("sha256:")
             with self.assertRaisesRegex(DeploymentOperationRejected, "identity does not match"):
                 provider_deployment._remove_retained_runtime_config(old, "sha256:" + "f" * 64)
@@ -1294,7 +1552,11 @@ class ProviderDeploymentTests(unittest.TestCase):
                     {"Type": "bind", "Source": str(target / "input")},
                 ]}]).encode()
             return subprocess.CompletedProcess(arguments, 0, output, b"")
-        with patch.object(provider_deployment, "_docker_command", side_effect=command):
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=command),
+            patch.object(provider_deployment, "docker_host", return_value="unix:///selected.sock"),
+            patch.object(provider_deployment, "_local_docker_endpoints", return_value=("unix:///selected.sock",)),
+        ):
             with self.assertRaisesRegex(DeploymentOperationRejected, "still mounts"):
                 provider_deployment._require_snapshot_unmounted(Path("/usr/bin/docker"), target)
 
@@ -1309,7 +1571,11 @@ class ProviderDeploymentTests(unittest.TestCase):
                 output = json.dumps([{"Name": "retained-volume", "Driver": "local",
                                       "Options": {"o": "bind,ro", "device": str(target)}}]).encode()
             return subprocess.CompletedProcess(arguments, 0, output, b"")
-        with patch.object(provider_deployment, "_docker_command", side_effect=command):
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=command),
+            patch.object(provider_deployment, "docker_host", return_value="unix:///selected.sock"),
+            patch.object(provider_deployment, "_local_docker_endpoints", return_value=("unix:///selected.sock",)),
+        ):
             with self.assertRaisesRegex(DeploymentOperationRejected, "volume still references"):
                 provider_deployment._require_snapshot_unmounted(Path("/usr/bin/docker"), target)
 
@@ -1323,10 +1589,46 @@ class ProviderDeploymentTests(unittest.TestCase):
             else:
                 output = b""
             return subprocess.CompletedProcess(arguments, 0, output, b"")
-        with patch.object(provider_deployment, "_docker_command", side_effect=command) as docker:
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=command) as docker,
+            patch.object(provider_deployment, "docker_host", return_value="unix:///selected.sock"),
+            patch.object(provider_deployment, "_local_docker_endpoints", return_value=("unix:///selected.sock",)),
+        ):
             provider_deployment._require_snapshot_unmounted(Path("/usr/bin/docker"), Path("/private/runtime/target"))
         inspections = [call.args[1] for call in docker.call_args_list if call.args[1][0] == "inspect"]
         self.assertEqual([len(batch) - 1 for batch in inspections], [8, 1])
+
+    def test_runtime_config_borrower_inventory_checks_other_local_engines(self):
+        container_id = "b" * 64
+        target = Path("/private/runtime/target")
+
+        def command(_docker, arguments, **kwargs):
+            if kwargs.get("endpoint") == "unix:///other.sock" and arguments[0] == "ps":
+                output = (container_id + "\n").encode()
+            elif kwargs.get("endpoint") == "unix:///other.sock":
+                output = json.dumps([{"Id": container_id, "Mounts": [
+                    {"Type": "bind", "Source": str(target)},
+                ]}]).encode()
+            elif arguments[0] == "ps":
+                output = b""
+            else:
+                output = b"[]"
+            return subprocess.CompletedProcess(arguments, 0, output, b"")
+
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=command) as docker,
+            patch.object(provider_deployment, "docker_host", return_value="unix:///selected.sock"),
+            patch.object(
+                provider_deployment,
+                "_local_docker_endpoints",
+                return_value=("unix:///other.sock", "unix:///selected.sock"),
+            ),
+            self.assertRaisesRegex(DeploymentOperationRejected, "still mounts"),
+        ):
+            provider_deployment._require_snapshot_unmounted(
+                Path("/usr/bin/docker"), target,
+            )
+        self.assertTrue(any(call.kwargs.get("endpoint") == "unix:///other.sock" for call in docker.call_args_list))
 
     def test_runtime_config_borrower_inventory_checks_every_volume_batch(self):
         names = {f"volume-{number}" for number in range(9)}
@@ -1828,7 +2130,7 @@ class render_repository:
         self._validate_patch.start()
         return root
 
-    def _project_shared(self, _docker, _image, provider, *, include_shared=True):
+    def _project_shared(self, _docker, _image, provider, *, include_shared=True, projection_host_uid=None):
         from nmrpeak_provider.deployment_runtime import project_api_inputs
         from nmrpeak_provider.provider_config import decode_provider_template
         if not include_shared:
@@ -1838,7 +2140,7 @@ class render_repository:
             provider_path.write_bytes(provider)
             return project_provider_inputs(provider_path)
 
-    def _validate_captured(self, _docker, _image, files, *, arguments=("validate",)):
+    def _validate_captured(self, _docker, _image, files, *, arguments=("validate",), provider_host_uid=None):
         import tomllib
         from nmrpeak_provider.deployment_runtime import api_facts
         if arguments == ("validate",):
