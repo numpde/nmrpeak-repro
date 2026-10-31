@@ -23,6 +23,13 @@ RESULT = {'schema_id': 'nmrpeak.journal_archive_result.v1',
 
 
 class ArchiveDeploymentTests(unittest.TestCase):
+    def setUp(self):
+        self.docker_host = patch.dict('os.environ', {
+            'NMRPEAK_DOCKER_HOST': 'unix:///tmp/nmrpeak-test.sock',
+        })
+        self.docker_host.start()
+        self.addCleanup(self.docker_host.stop)
+
     def setup_plan(self, stack, repository, *, running=False, attachments=()):
         plan = test_plan(repository)
         runtime_file, _frozen = deployment.materialize_deployment_plan(repository, 'production', plan)

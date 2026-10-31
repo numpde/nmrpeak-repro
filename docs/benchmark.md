@@ -16,8 +16,10 @@ at its original source revision.
 Run on the Linux x86_64 machine being measured, using Git, Make, Bash, Python
 3.11+, and a local Unix-socket Docker context with BuildKit. Every Docker-using
 Make command requires `DOCKER_CONTEXT=<name>` on the command line or an
-interactive context selection; it never assumes Docker's default context. Use a regular
-Docker-enabled account. GPU runs require `nvidia-smi`, a compatible NVIDIA driver
+interactive context selection; it never assumes Docker's default context. Use
+`DOCKER_CONTEXT=science` on this host and ProArt; elsewhere, substitute a local
+Unix-socket context. Use a regular Docker-enabled account. GPU runs require
+`nvidia-smi`, a compatible NVIDIA driver
 and NVIDIA Container Toolkit. Initialize the pinned submodules and use a clean,
 committed checkout:
 

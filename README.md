@@ -18,13 +18,14 @@ Docker-enabled account. Every Docker-using Make target requires
 `DOCKER_CONTEXT=<name>` or an interactive selection; there is no default. The
 image-preparation command requires a network-route choice; building a missing
 image also requires Podman. If the matching image already exists, run
-`make test DOCKER_CONTEXT=<name>`. Otherwise replace `wlp1s0` with your
-chosen interface, or use `system` for the default route:
+`make test DOCKER_CONTEXT=science` on this host and ProArt. On other hosts,
+replace `science` with a local Unix-socket context. Use `wlp10s0` on this host
+and ProArt for image preparation, or an available interface elsewhere:
 
 ```bash
 git submodule update --init --recursive
-make test-image/base/build NETWORK_INTERFACE=wlp1s0 DOCKER_CONTEXT=<name>
-make test DOCKER_CONTEXT=<name>
+make test-image/base/build NETWORK_INTERFACE=wlp10s0 DOCKER_CONTEXT=science
+make test DOCKER_CONTEXT=science
 ```
 
 Networked build and dependency-staging commands ask for a route when one is not

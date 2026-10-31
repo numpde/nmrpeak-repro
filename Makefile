@@ -78,7 +78,7 @@ help:
 		'NMR API provider' \
 		'' \
 		'Docker operations require DOCKER_CONTEXT=<local Unix-socket context> or an interactive selection.' \
-		'  Example: make test DOCKER_CONTEXT=rootless' \
+		'  Example: make test DOCKER_CONTEXT=science' \
 		'' \
 		'Verify this checkout:' \
 		'  make benchmark/image/build [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
