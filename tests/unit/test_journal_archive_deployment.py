@@ -1,6 +1,7 @@
 """Archive admission preserves deployment, API and generation ownership."""
 from contextlib import ExitStack, nullcontext
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -139,16 +140,28 @@ class ArchiveDeploymentTests(unittest.TestCase):
             fake_python = Path(temporary) / 'python'
             fake_python.write_text('#!/usr/bin/python3\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n')
             fake_python.chmod(0o700)
+            fake_docker = Path(temporary) / 'docker'
+            fake_docker.write_text(
+                '#!/usr/bin/python3\n'
+                'import sys\n'
+                'args = sys.argv[1:]\n'
+                'if args[:1] == ["--context"] and args[2:4] == ["context", "inspect"]:\n'
+                '    print("unix:///tmp/nmrpeak-test.sock")\n'
+                'else:\n'
+                '    raise SystemExit(90)\n'
+            )
+            fake_docker.chmod(0o700)
             repository = Path(__file__).resolve().parents[2]
             arguments = ['make', '--no-print-directory', '-s', 'provider/deployment/journal/archive-closed',
                 'PYTHON=' + str(fake_python), 'DEPLOYMENT=production', 'ATTEMPT_REF=' + ATTEMPT,
                 'RECORD_DIGEST=' + DIGEST, 'FROZEN_GENERATION=sha256:'+'e'*64,
-                'REASON=Reviewed; $(literal) `literal` remains text']
-            result = subprocess.run(arguments, cwd=repository, capture_output=True, check=True)
+                'REASON=Reviewed; $(literal) `literal` remains text', 'DOCKER_CONTEXT=fixture']
+            environment = {**os.environ, 'PATH': f'{temporary}:{os.environ["PATH"]}'}
+            result = subprocess.run(arguments, cwd=repository, env=environment, capture_output=True, check=True)
             args = json.loads(result.stdout)
             self.assertEqual(args[args.index('--reason')+1], 'Reviewed; $(literal) `literal` remains text')
             self.assertNotIn('--localhost-ca-certificate', args)
             refused = subprocess.run(arguments + ['LOCALHOST_CA_CERTIFICATE=/tmp/private CA.pem'],
-                                     cwd=repository, capture_output=True)
+                                     cwd=repository, env=environment, capture_output=True)
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn(b'Configure API trust in provider.toml', refused.stderr)
