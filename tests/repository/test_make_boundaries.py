@@ -239,12 +239,42 @@ else:
             *sorted((REPOSITORY_ROOT / "deployment").glob("*.py")),
         )
         fallback = re.compile(
-            r"--context\s+[\"']?default|"
-            r"[\"']--context[\"']\s*,\s*[\"']default[\"']|"
-            r"DOCKER_CONTEXT[\"']?\s*[:=]\s*[\"']default[\"']|"
-            r"/var/run/docker\.sock|"
-            r"context\s+inspect\s+[\"']?default"
+            r"--context(?:=|\s+)[\"']?[A-Za-z0-9_.-]+[\"']?(?=\s|$)|"
+            r"[\"']--context[\"']\s*,\s*[\"'][A-Za-z0-9_.-]+[\"']|"
+            r"context\s+inspect\s+[\"']?[A-Za-z0-9_.-]+[\"']?(?=\s|$)|"
+            r"[\"']context[\"']\s*,\s*[\"']inspect[\"']\s*,\s*[\"'][A-Za-z0-9_.-]+[\"']|"
+            r"^[ \t]*(?:override\s+|export\s+)*DOCKER_CONTEXT\s*[:?+]?=\s*[\"']?[A-Za-z0-9_.-]+[\"']?(?=\s|$)|"
+            r"[\"']DOCKER_CONTEXT[\"']\s*:\s*[\"'][A-Za-z0-9_.-]+[\"']|"
+            r"unix:///(?!\[)[^\s\"'$]+|"
+            r"(?<![\w])/(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.sock",
+            re.MULTILINE,
         )
+        forbidden_fallbacks = (
+            "DOCKER_CONTEXT := production",
+            "export DOCKER_CONTEXT=production",
+            "docker --context production context ls",
+            "[\"--context\", \"production\"]",
+            "docker context inspect production",
+            "[\"context\", \"inspect\", \"production\"]",
+            "{\"DOCKER_CONTEXT\": \"production\"}",
+            "endpoint = 'unix:///run/user/1000/docker.sock'",
+            "docker --host unix:///tmp/engine.sock info",
+            "docker --host /run/user/1000/docker.sock info",
+        )
+        for source in forbidden_fallbacks:
+            with self.subTest(source=source):
+                self.assertIsNotNone(fallback.search(source))
+
+        allowed_selected_values = (
+            "make test DOCKER_CONTEXT=rootless",
+            'docker --context "$context" context inspect',
+            'docker --host "$NMRPEAK_DOCKER_HOST" info',
+            '[[ "$endpoint" =~ ^unix:///[^[:space:]]+$ ]]',
+        )
+        for source in allowed_selected_values:
+            with self.subTest(source=source):
+                self.assertIsNone(fallback.search(source))
+
         for path in owners:
             with self.subTest(path=path.relative_to(REPOSITORY_ROOT)):
                 self.assertIsNone(fallback.search(path.read_text(encoding="utf-8")))
