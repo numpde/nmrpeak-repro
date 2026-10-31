@@ -10,25 +10,29 @@ readonly repo_root="$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/..")"
 readonly python="${PYTHON:-python3}"
 readonly revision="$(git -C "$repo_root" rev-parse --verify HEAD)"
 source "$repo_root/scripts/network-interface.sh"
-select_network_interface
-readonly network_interface="$NETWORK_INTERFACE_SELECTED"
 require_local_docker
 docker() { command docker --host "$NMRPEAK_DOCKER_HOST" "$@"; }
 [[ -z "$(git -C "$repo_root" status --short)" ]] ||
     fail "cannot build the provider from a checkout with uncommitted changes"
+[[ "${NMRPEAK_WHEELHOUSE_INPUT_ORIGIN:-}" == 'command line' && -n "${NMRPEAK_WHEELHOUSE_INPUT:-}" ]] ||
+    fail 'set WHEELHOUSE to the existing shared wheelhouse directory on the command line'
+[[ -d "$NMRPEAK_WHEELHOUSE_INPUT" && ! -L "$NMRPEAK_WHEELHOUSE_INPUT" ]] ||
+    fail 'WHEELHOUSE must name an existing directory, not a symlink'
+wheelhouse=''
+IFS= read -r -d '' wheelhouse < <(realpath -e -z -- "$NMRPEAK_WHEELHOUSE_INPUT") ||
+    fail 'could not resolve WHEELHOUSE as a complete path'
+readonly wheelhouse
+[[ "$wheelhouse" != / && "$wheelhouse" != *','* && "$wheelhouse" != *$'\n'* && "$wheelhouse" != *$'\r'* ]] ||
+    fail 'WHEELHOUSE must be a selected subdirectory path without commas or line breaks'
+[[ -r "$wheelhouse" && -x "$wheelhouse" ]] || fail 'WHEELHOUSE must be readable and traversable'
 
 scratch="$(mktemp -d)"
-proxy_pid=''
 engine_active=0
 cleanup() {
     local status=$?
     trap - EXIT
-    if [[ -n "$proxy_pid" ]] && (( ! engine_active )); then
-        kill "$proxy_pid" 2>/dev/null || true
-        wait "$proxy_pid" 2>/dev/null || true
-    fi
     if (( engine_active )); then
-        printf 'Build retirement is unconfirmed; preserve inputs at %s and proxy PID %s; the proxy may remain accessible to local processes. Inspect Docker and the process before cleanup or retrying.\n' "$scratch" "${proxy_pid:-none}" >&2
+        printf 'Build retirement is unconfirmed; preserve inputs at %s and inspect Docker before cleanup or retrying.\n' "$scratch" >&2
     else
         rm -rf -- "$scratch"
     fi
@@ -47,38 +51,12 @@ readonly image_input_id="$({
         provider "$repo_root" "$revision" "$context"
 })"
 
-build_network=default
-proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg http_proxy= --build-arg https_proxy= --build-arg NO_PROXY= --build-arg no_proxy= --build-arg ALL_PROXY= --build-arg all_proxy= --build-arg FTP_PROXY= --build-arg ftp_proxy=)
-if [[ "$network_interface" != system ]]; then
-    build_network=host
-    readonly ready_file="$scratch/proxy.port"
-    setsid "$python" "$repo_root/docker/bound_http_proxy.py" \
-        --interface="$network_interface" --ready-file "$ready_file" </dev/null >/dev/null 2>&1 &
-    proxy_pid=$!
-    for _ in {1..100}; do
-        [[ -s "$ready_file" ]] && break
-        kill -0 "$proxy_pid" 2>/dev/null || fail "Network proxy stopped before the provider build."
-        sleep 0.05
-    done
-    [[ -s "$ready_file" ]] || fail "Network proxy did not become ready before the provider build."
-    readonly proxy_url="http://127.0.0.1:$(<"$ready_file")"
-    proxy_build_arguments=(
-        --build-arg "HTTP_PROXY=$proxy_url"
-        --build-arg "HTTPS_PROXY=$proxy_url"
-        --build-arg "http_proxy=$proxy_url"
-        --build-arg "https_proxy=$proxy_url"
-        --build-arg "NO_PROXY="
-        --build-arg "no_proxy="
-        --build-arg "ALL_PROXY="
-        --build-arg "all_proxy="
-        --build-arg "FTP_PROXY="
-        --build-arg "ftp_proxy="
-    )
-fi
 readonly image="numpde/nmrpeak-provider:${image_input_id#sha256:}"
 readonly image_id_file="$scratch/image.id"
+docker image inspect 'docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487' >/dev/null 2>&1 ||
+    fail 'the pinned Python base image must already exist on the selected Docker engine'
 engine_active=1
-docker build --network "$build_network" "${proxy_build_arguments[@]}" \
+docker build --pull=false --network none --build-context "wheelhouse=$wheelhouse" \
     --build-arg "SOURCE_REVISION=$revision" --build-arg "IMAGE_INPUT_ID=$image_input_id" \
     --iidfile "$image_id_file" --tag "$image" \
     --file "$context/containers/provider/Dockerfile" "$context"

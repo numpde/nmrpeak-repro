@@ -133,7 +133,7 @@ else:
             ("runner/lock/check", ("TARGET",)),
             ("runner/lock/apply", ("TARGET",)),
             ("runner/image/build", ("RUNNER", "TARGET")),
-            ("provider/image/build", ("NETWORK_INTERFACE",)),
+            ("provider/image/build", ("WHEELHOUSE",)),
             ("benchmark/image/build", ("NETWORK_INTERFACE",)),
             ("checkpoint/import", ("RUNNER", "RELEASE", "ARCHIVE")),
             ("checkpoint/recover", ("VOLUME", "CONFIRM")),

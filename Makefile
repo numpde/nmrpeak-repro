@@ -1,6 +1,9 @@
 unexport NETWORK_INTERFACE
 override export NMRPEAK_NETWORK_INTERFACE_INPUT := $(if $(filter command line,$(origin NETWORK_INTERFACE)),$(value NETWORK_INTERFACE))
 override export NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN := $(origin NETWORK_INTERFACE)
+unexport WHEELHOUSE
+override export NMRPEAK_WHEELHOUSE_INPUT := $(if $(filter command line,$(origin WHEELHOUSE)),$(value WHEELHOUSE))
+override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
 
 override NMRPEAK_DOCKER_TARGETS := \
 	benchmark benchmark/image/build benchmark/lock check/test-image \
@@ -132,8 +135,8 @@ help:
 		'      Repair an interrupted checkpoint volume after exact confirmation.' \
 		'' \
 		'Build provider and runner images:' \
-		'  make provider/image/build [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
-		'      Build the provider from a clean committed checkout; select an interface for dependency downloads.' \
+		'  make provider/image/build WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
+		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
 		'      Resolve dependencies and stage a candidate outside the checkout using the selected route.' \
 		'  make runner/lock/check TARGET=<target>' \

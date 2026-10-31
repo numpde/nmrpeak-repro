@@ -9,7 +9,11 @@ WORKDIR /build
 ENV PROVIDER_CORE_IN_CONTAINER=1
 COPY requirements.lock ./
 COPY dependencies/provider-core-api.lock dependencies/provider-core-source.txt dependencies/
-RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: \
+RUN --network=none --mount=type=bind,from=wheelhouse,target=/wheelhouse,ro \
+    sed -E -i 's#https://github.com/numpde/nmr-provider-tools/releases/download/[^/]+/#file:///wheelhouse/#' \
+        dependencies/provider-core-source.txt \
+    && python -m pip install --no-cache-dir --no-index --find-links=/wheelhouse \
+        --require-hashes --only-binary=:all: \
         --requirement requirements.lock
 
 COPY pyproject.toml ./
