@@ -63,7 +63,51 @@ IMAGES = {
 }
 
 
+class HostNamespacePreconditionTests(unittest.TestCase):
+    def test_requires_initial_user_and_pid_namespaces_on_nsfs(self):
+        valid = ((b"6e736673\n", 4026531837), (b"6e736673\n", 4026531836))
+        for observations, accepted in (
+            (valid, True),
+            (((b"6e736673\n", 4026533000), valid[1]), False),
+            ((valid[0], (b"6e736673\n", 4026533001)), False),
+            (((b"1234\n", 4026531837), valid[1]), False),
+        ):
+            with self.subTest(observations=observations), \
+                 patch.object(provider_deployment.subprocess, "run", side_effect=[
+                     subprocess.CompletedProcess((), 0, item[0], b"") for item in observations
+                 ]), \
+                 patch.object(provider_deployment.os, "stat", side_effect=[
+                     type("NamespaceStat", (), {"st_ino": item[1]})() for item in observations
+                 ]):
+                if accepted:
+                    provider_deployment._require_initial_host_namespaces()
+                else:
+                    with self.assertRaisesRegex(DeploymentOperationRejected, "initial user and PID"):
+                        provider_deployment._require_initial_host_namespaces()
+
+    def test_namespace_refusal_happens_before_probe_creation(self):
+        with patch.object(provider_deployment, "_require_initial_host_namespaces", side_effect=DeploymentOperationRejected("nested")), \
+             patch.object(provider_deployment, "_docker_command") as docker:
+            with self.assertRaisesRegex(DeploymentOperationRejected, "nested"):
+                provider_deployment._container_uid_map(Path("/usr/bin/docker"), IMAGES["provider"].image_id)
+            docker.assert_not_called()
+
+    def test_unavailable_namespace_evidence_is_rejected(self):
+        for error in (FileNotFoundError("stat unavailable"),
+                      subprocess.TimeoutExpired("stat", 5),
+                      subprocess.CalledProcessError(1, "stat")):
+            with self.subTest(error=error), \
+                 patch.object(provider_deployment.subprocess, "run", side_effect=error):
+                with self.assertRaisesRegex(DeploymentOperationRejected, "host /proc access"):
+                    provider_deployment._require_initial_host_namespaces()
+
+
 class SelectedEngineUidMapProbeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        guard = patch.object(provider_deployment, "_require_initial_host_namespaces")
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def test_host_uid_map_is_read_for_the_exact_probe_pid_and_probe_is_retired(self) -> None:
         identifier = "a" * 64
         record = {"State": {"Pid": 4321}}

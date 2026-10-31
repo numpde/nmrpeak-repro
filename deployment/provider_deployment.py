@@ -244,8 +244,27 @@ def _read_capture_source(path: Path, *, secret: bool) -> bytes:
         raise DeploymentOperationRejected(f"Cannot capture startup input {path}: its bounded regular-file read failed; preserve the source and inspect its permissions") from cause
 
 
+def _require_initial_host_namespaces() -> None:
+    """Require host-relative UID maps and host-visible Docker process IDs."""
+    try:
+        for name, initial_inode in (("user", 4026531837), ("pid", 4026531836)):
+            path = f"/proc/self/ns/{name}"
+            filesystem = subprocess.run(
+                ("/usr/bin/stat", "--file-system", "--format=%t", path),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, timeout=5,
+            ).stdout.strip()
+            if filesystem != b"6e736673" or os.stat(path).st_ino != initial_inode:
+                raise ValueError(f"{name} namespace is not the initial namespace")
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise DeploymentOperationRejected(
+            "Cannot map the selected engine's container users: run deployment on the host "
+            "in its initial user and PID namespaces with host /proc access"
+        ) from error
+
+
 def _container_uid_map(docker: Path, image: str) -> tuple[tuple[int, int, int], ...]:
     """Read this engine's host-visible UID map from one owned probe process."""
+    _require_initial_host_namespaces()
     token = secrets.token_hex(16)
     name = "nmrpeak-uid-map-" + token
     label = "io.nmrpeak.uid-map"
