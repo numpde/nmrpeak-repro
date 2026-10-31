@@ -15,6 +15,13 @@ x-test-common: &test-common
     memswap_limit: 1g
     environment:
       HOME: /tmp
+      GIT_CONFIG_COUNT: "3"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /workspace
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /workspace/nmrpeak-upstream
+      GIT_CONFIG_KEY_2: safe.directory
+      GIT_CONFIG_VALUE_2: /workspace/unicore-upstream
       NMRPEAK_TEST_CONTAINER: "1"
       PROVIDER_CORE_IN_CONTAINER: "1"
       PYTHONHASHSEED: "0"
