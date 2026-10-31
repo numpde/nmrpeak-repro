@@ -164,15 +164,22 @@ else:
         self.assertEqual(result.returncode, 2)
         self.assertIn("from the environment or Makefile is implicit", result.stderr)
 
-        result = subprocess.run(
-            ("make", "--dry-run", "provider/image/build"),
-            cwd=REPOSITORY_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("no interactive terminal is available", result.stderr)
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = self._docker_context_environment(
+                temporary,
+                {"local-a": "unix:///tmp/local-a.sock"},
+            )
+            environment.pop("DOCKER_CONTEXT", None)
+            result = subprocess.run(
+                ("make", "--dry-run", "provider/image/build"),
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("no interactive terminal is available", result.stderr)
 
     def test_make_shell_does_not_trust_ambient_docker_selection_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
