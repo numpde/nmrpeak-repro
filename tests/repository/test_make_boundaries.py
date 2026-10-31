@@ -193,6 +193,7 @@ else:
                 environment.pop(name, None)
             environment.update(
                 {
+                    "MAKELEVEL": "1",
                     "NMRPEAK_DOCKER_HOST": "unix:///tmp/poisoned.sock",
                     "NMRPEAK_DOCKER_CONTEXT_INPUT": "default",
                     "NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN": "command line",
