@@ -18,11 +18,11 @@ import sys
 from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
 
 from repository_checks.checkpoint import (
-    DOCKER_CONTEXT,
     IMPORTER_IMAGE,
     OWNER_LABEL,
     OWNER_LABEL_VALUE,
     SCHEMA_LABEL,
+    docker_host,
 )
 
 
@@ -495,11 +495,11 @@ def _committed_helper_path(repository: Path) -> Path:
 def _docker(docker: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
     try:
         result = subprocess.run(
-            (str(docker), "--context", DOCKER_CONTEXT, *arguments),
+            (str(docker), "--host", docker_host(), *arguments),
             env={
                 "PATH": "/usr/bin:/bin",
                 "HOME": "/tmp",
-                "DOCKER_CONTEXT": DOCKER_CONTEXT,
+                "NMRPEAK_DOCKER_HOST": docker_host(),
             },
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

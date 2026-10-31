@@ -24,18 +24,22 @@ from repository_checks.nmrpeak_image_inputs import materialize_image_context
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCKER = Path("/usr/bin/docker")
-ENV = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "DOCKER_CONTEXT": "default"}
+ENV = {"PATH": "/usr/bin:/bin", "HOME": "/tmp"}
 GPU_UUID = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 
 def command(argv, *, timeout=30, **kwargs):
-    result = subprocess.run([str(item) for item in argv], env=ENV, timeout=timeout,
+    environment = kwargs.pop("env", ENV)
+    result = subprocess.run([str(item) for item in argv], env=environment, timeout=timeout,
                             check=True, **kwargs)
     return result
 
 
 def docker(*args, **kwargs):
-    return command([DOCKER, "--context", "default", *args], **kwargs)
+    host = os.environ.get("NMRPEAK_DOCKER_HOST", "")
+    if not host.startswith("unix:///") or len(host) == len("unix:///") or any(char.isspace() for char in host):
+        raise RuntimeError("Select a local Unix-socket Docker context through make before using Docker")
+    return command([DOCKER, "--host", host, *args], env={**ENV, "NMRPEAK_DOCKER_HOST": host}, **kwargs)
 
 
 def git(*args):
@@ -46,10 +50,9 @@ def admit_source():
     if git("status", "--porcelain", "--untracked-files=normal").strip():
         raise RuntimeError("Cannot benchmark uncommitted source; commit the checkout and submodule changes first")
     revision = git("rev-parse", "HEAD").decode().strip()
-    endpoint = docker("context", "inspect", "default", "--format", "{{.Endpoints.docker.Host}}",
-                      stdout=subprocess.PIPE).stdout.decode().strip()
-    if not endpoint.startswith("unix:///"):
-        raise RuntimeError("Cannot benchmark: Docker default context must use a local Unix socket")
+    endpoint = os.environ.get("NMRPEAK_DOCKER_HOST", "")
+    if not endpoint.startswith("unix:///") or len(endpoint) == len("unix:///") or any(char.isspace() for char in endpoint):
+        raise RuntimeError("Cannot benchmark: select a local Unix-socket Docker context through make")
     if os.getuid() == 0 or os.getgid() == 0:
         raise RuntimeError("Cannot run the benchmark as root; use a regular Docker-enabled user")
     return revision
@@ -254,9 +257,8 @@ def execute_run(run, checkpoint_info, harness, options, directory, gpu_devices):
     with (directory / "logs" / f'{run["id"]}.jsonl').open("x") as output, \
          (directory / "logs" / f'{run["id"]}.stderr.log').open("x") as errors:
         try:
-            result = subprocess.run([str(DOCKER), "--context", "default",
-                                     *run_arguments(run, checkpoint_info, harness, options, name)],
-                                    env=ENV, timeout=options.timeout, stdout=output, stderr=errors)
+            result = docker(*run_arguments(run, checkpoint_info, harness, options, name),
+                            timeout=options.timeout, stdout=output, stderr=errors)
             run["exit_code"] = result.returncode
         except BaseException as error:
             run["error"] = f"{type(error).__name__}: {error}"
@@ -360,10 +362,9 @@ def run_benchmark(revision, options):
 
 
 def stage_lock():
-    endpoint = docker("context", "inspect", "default", "--format", "{{.Endpoints.docker.Host}}",
-                      stdout=subprocess.PIPE).stdout.decode().strip()
-    if not endpoint.startswith("unix:///"):
-        raise RuntimeError("Cannot stage benchmark lock: Docker default context must use a local Unix socket")
+    endpoint = os.environ.get("NMRPEAK_DOCKER_HOST", "")
+    if not endpoint.startswith("unix:///") or len(endpoint) == len("unix:///") or any(char.isspace() for char in endpoint):
+        raise RuntimeError("Cannot stage benchmark lock: select a local Unix-socket Docker context through make")
     temporary = tempfile.mkdtemp(prefix="nmrpeak-benchmark-lock-")
     engine_active = False
     try:

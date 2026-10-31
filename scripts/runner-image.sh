@@ -34,7 +34,7 @@ source "$repo_root/scripts/network-interface.sh"
 select_network_interface
 readonly network_interface="$NETWORK_INTERFACE_SELECTED"
 require_local_docker
-docker() { command docker --context default "$@"; }
+docker() { command docker --host "$NMRPEAK_DOCKER_HOST" "$@"; }
 
 tmp="$(mktemp -d)"
 proxy_pid=''

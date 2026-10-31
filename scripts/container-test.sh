@@ -7,8 +7,7 @@ readonly repo_root="$1" image="$2" project="$3" lane="$4"
 readonly test_uid="$(id -u)" test_gid="$(id -g)"
 [[ "$test_uid" != 0 && "$test_gid" != 0 && "$test_uid" != 65532 ]] ||
     fail "containerized tests require a non-root user distinct from provider UID 65532"
-endpoint="$(docker --context default context inspect default --format '{{.Endpoints.docker.Host}}')"
-[[ "$endpoint" == unix:///* ]] || fail "Docker context default is not local: $endpoint"
+[[ "${NMRPEAK_DOCKER_HOST:-}" =~ ^unix:///[^[:space:]]+$ ]] || fail 'Run container tests through make with a selected local Unix-socket context.'
 
 readonly scratch="$(mktemp -d)"
 cleanup() { status=$?; trap - EXIT; rm -rf -- "$scratch"; exit "$status"; }
@@ -20,7 +19,7 @@ readonly snapshot="$scratch/repository"
 snapshot_digest="$(python3 -P "$repo_root/repository_checks/test_snapshot.py" "$repo_root" "$snapshot")"
 printf 'Test source snapshot: %s\n' "$snapshot_digest"
 
-compose=(docker --context default compose --env-file /dev/null
+compose=(docker --host "$NMRPEAK_DOCKER_HOST" compose --env-file /dev/null
     -p "$project" -f "$repo_root/compose/test.yml")
 run_test() {
     env NMRPEAK_TEST_IMAGE="$image" NMRPEAK_TEST_UID="$test_uid" \

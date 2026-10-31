@@ -10,8 +10,7 @@ shift
 readonly test_uid="$(id -u)" test_gid="$(id -g)"
 [[ "$test_uid" != 0 && "$test_gid" != 0 && "$test_uid" != 65532 ]] ||
     fail "containerized tests require a non-root user distinct from provider UID 65532"
-endpoint="$(docker --context default context inspect default --format '{{.Endpoints.docker.Host}}')"
-[[ "$endpoint" == unix:///* ]] || fail "Docker context default is not local: $endpoint"
+[[ "${NMRPEAK_DOCKER_HOST:-}" =~ ^unix:///[^[:space:]]+$ ]] || fail 'Run live tests through make with a selected local Unix-socket context.'
 [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] ||
     fail "LIVE_SOURCE_REVISION must be a lowercase 40-character Git revision"
 observed_revision="$(git -C "$repo_root" rev-parse --verify HEAD)"
@@ -70,12 +69,13 @@ cleanup() {
                 NMRPEAK_TEST_CHECKOUT="$snapshot" NMRPEAK_LIVE_CREDENTIAL="$credential" \
                 NMRPEAK_LIVE_STATE_DIRECTORY="$state_directory" \
                 NMRPEAK_LIVE_CA_CERTIFICATE="${ca:-/dev/null}" \
-                docker --context default compose --env-file /dev/null -p "$live_project" \
+                docker --host "$NMRPEAK_DOCKER_HOST" compose --env-file /dev/null -p "$live_project" \
                     -f "$repo_root/compose/test.yml" down --remove-orphans; then
             cleanup_failed=1
             printf 'live-test Docker project cleanup failed; project=%s snapshot=%s\n' \
                 "$live_project" "$snapshot" >&2
-            printf 'Inspect with: docker --context default ps --all --filter label=com.docker.compose.project=%s\n' \
+            printf 'Inspect with: docker --host %q ps --all --filter label=com.docker.compose.project=%s\n' \
+                "$NMRPEAK_DOCKER_HOST" \
                 "$live_project" >&2
             (( status != 0 )) || status=2
         fi
@@ -107,6 +107,6 @@ env NMRPEAK_TEST_IMAGE="$image" NMRPEAK_TEST_UID="$test_uid" NMRPEAK_TEST_GID="$
     NMRPEAK_TEST_CHECKOUT="$snapshot" NMRPEAK_LIVE_CREDENTIAL="$credential" \
     NMRPEAK_LIVE_STATE_DIRECTORY="$state_directory" \
     NMRPEAK_LIVE_CA_CERTIFICATE="${ca:-/dev/null}" \
-    docker --context default compose --env-file /dev/null -p "$live_project" \
+    docker --host "$NMRPEAK_DOCKER_HOST" compose --env-file /dev/null -p "$live_project" \
         -f "$repo_root/compose/test.yml" run --pull never --rm --no-deps --no-TTY \
         live-test-runner -m "$module" "$@"

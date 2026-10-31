@@ -18,15 +18,11 @@ readonly python_alias="localhost/nmrpeak-test/python-base:${python_digest#sha256
 readonly base_key="$("$repo_root/scripts/test-image-key.sh" "$repo_root")"
 readonly test_image="nmrpeak-repro/python-test:$base_key"
 
-endpoint="$(docker --context default context inspect default --format '{{.Endpoints.docker.Host}}')"
-case "$endpoint" in
-    unix:///*) ;;
-    *) fail "Docker context default must use a local Unix socket" ;;
-esac
+[[ "${NMRPEAK_DOCKER_HOST:-}" =~ ^unix:///[^[:space:]]+$ ]] || fail 'Run test image preparation through make with a selected local Unix-socket context.'
 
-existing_id="$(docker --context default image ls --quiet --no-trunc "$test_image")"
+existing_id="$(docker --host "$NMRPEAK_DOCKER_HOST" image ls --quiet --no-trunc "$test_image")"
 if [[ -n "$existing_id" ]]; then
-    existing_key="$(docker --context default image inspect "$existing_id" \
+    existing_key="$(docker --host "$NMRPEAK_DOCKER_HOST" image inspect "$existing_id" \
         --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"
     [[ "$existing_key" == "$base_key" ]] || fail "existing test image has the wrong dependency key"
     printf '%s\n' "$test_image"
@@ -85,15 +81,15 @@ observed_digest="$(podman --remote=false image inspect "$python_ref" --format '{
     fail "Podman returned the wrong Python base digest: $observed_digest"
 expected_base_id="sha256:$(podman --remote=false image inspect "$python_ref" --format '{{.Id}}')"
 docker_base_id=""
-docker_base_match="$(docker --context default image ls --quiet --no-trunc "$python_alias")"
+docker_base_match="$(docker --host "$NMRPEAK_DOCKER_HOST" image ls --quiet --no-trunc "$python_alias")"
 if [[ -n "$docker_base_match" ]]; then
-    docker_base_id="$(docker --context default image inspect "$docker_base_match" --format '{{.Id}}')"
+    docker_base_id="$(docker --host "$NMRPEAK_DOCKER_HOST" image inspect "$docker_base_match" --format '{{.Id}}')"
 fi
 if [[ "$docker_base_id" != "$expected_base_id" ]]; then
     podman --remote=false tag "$python_ref" "$python_alias"
     podman --remote=false save --format docker-archive --output "$scratch/python-base.tar" "$python_alias"
     engine_active=1
-    docker --context default load --input "$scratch/python-base.tar" >/dev/null
+    docker --host "$NMRPEAK_DOCKER_HOST" load --input "$scratch/python-base.tar" >/dev/null
     engine_active=0
 fi
 
@@ -104,7 +100,7 @@ cp "$repo_root/dependencies/provider-core-source.txt" "$scratch/context/dependen
 cp "$repo_root/containers/test/os-packages.lock" "$scratch/context/containers/test/os-packages.lock"
 
 engine_active=1
-docker --context default build --pull=false --network "$build_network" \
+docker --host "$NMRPEAK_DOCKER_HOST" build --pull=false --network "$build_network" \
     "${proxy_build_arguments[@]}" \
     --build-arg "PYTHON_BASE_IMAGE=$python_alias" \
     --build-arg "TEST_BASE_IDENTITY=$base_key" \
@@ -112,7 +108,7 @@ docker --context default build --pull=false --network "$build_network" \
     --file "$repo_root/containers/test/Dockerfile.base" "$scratch/context"
 engine_active=0
 
-observed_key="$(docker --context default image inspect "$test_image" \
+observed_key="$(docker --host "$NMRPEAK_DOCKER_HOST" image inspect "$test_image" \
     --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"
 [[ "$observed_key" == "$base_key" ]] || fail "built test image has the wrong dependency key"
 printf '%s\n' "$test_image"

@@ -64,6 +64,11 @@ IMAGES = {
 
 
 class ProviderDeploymentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.docker_host = patch.dict("os.environ", {"NMRPEAK_DOCKER_HOST": "unix:///tmp/nmrpeak-test.sock"})
+        self.docker_host.start()
+        self.addCleanup(self.docker_host.stop)
+
     def test_unconfirmed_reader_creation_never_dispatches_start(self) -> None:
         with patch.object(provider_deployment, "_docker_command", side_effect=TimeoutError("creation unknown")) as command, \
              self.assertRaises(provider_deployment.MaintenanceInvocationUnsettled):
@@ -805,8 +810,8 @@ class ProviderDeploymentTests(unittest.TestCase):
             arguments,
             [
                 "/usr/bin/docker",
-                "--context",
-                "default",
+                "--host",
+                "unix:///tmp/nmrpeak-test.sock",
                 "logs",
                 "--timestamps",
                 "--tail",
@@ -820,7 +825,7 @@ class ProviderDeploymentTests(unittest.TestCase):
             {
                 "PATH": "/usr/bin:/bin",
                 "HOME": "/tmp",
-                "DOCKER_CONTEXT": "default",
+                "NMRPEAK_DOCKER_HOST": "unix:///tmp/nmrpeak-test.sock",
             },
         )
 

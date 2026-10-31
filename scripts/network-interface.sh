@@ -52,10 +52,8 @@ select_network_interface() {
 }
 
 require_local_docker() {
-    local endpoint
-    endpoint=$(command docker --context default context inspect default --format '{{.Endpoints.docker.Host}}') || return
-    case "$endpoint" in
-        unix:///*) ;;
-        *) printf '%s\n' 'Docker default context must use a local Unix socket.' >&2; return 2 ;;
-    esac
+    [[ "${NMRPEAK_DOCKER_HOST:-}" =~ ^unix:///[^[:space:]]+$ ]] || {
+        printf '%s\n' 'Run this Docker operation through make with a selected local Unix-socket context.' >&2
+        return 2
+    }
 }

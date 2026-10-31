@@ -14,18 +14,20 @@ validation. The experiment README also gives commands to repeat the measurement
 at its original source revision.
 
 Run on the Linux x86_64 machine being measured, using Git, Make, Bash, Python
-3.11+, and a local Docker default context with BuildKit. Use a regular
+3.11+, and a local Unix-socket Docker context with BuildKit. Every Docker-using
+Make command requires `DOCKER_CONTEXT=<name>` on the command line or an
+interactive context selection; it never assumes Docker's default context. Use a regular
 Docker-enabled account. GPU runs require `nvidia-smi`, a compatible NVIDIA driver
 and NVIDIA Container Toolkit. Initialize the pinned submodules and use a clean,
 committed checkout:
 
 ```bash
 git submodule update --init --recursive
-make benchmark/image/build
+make benchmark/image/build DOCKER_CONTEXT=<name>
 ```
 
 To select a route without a prompt, use
-`make benchmark/image/build NETWORK_INTERFACE=wlp10s0`, substituting your
+`make benchmark/image/build NETWORK_INTERFACE=wlp10s0 DOCKER_CONTEXT=<name>`, substituting your
 chosen interface, or use `NETWORK_INTERFACE=system` for the system route.
 Without a selection, an interactive terminal offers a choice with no default;
 unattended builds require an explicit selection. An interface selection starts
@@ -44,8 +46,8 @@ If they are missing, reuse an existing public weights archive at its absolute
 path to import both checkpoints into the local engine:
 
 ```bash
-make checkpoint/import RUNNER=nmrpeak_hf_v1 RELEASE=nmrpeak-zenodo-19122815-hf ARCHIVE=/absolute/path/to/weights.zip
-make checkpoint/import RUNNER=nmrpeak_chf_v1 RELEASE=nmrpeak-zenodo-19122815-chf ARCHIVE=/absolute/path/to/weights.zip
+make checkpoint/import RUNNER=nmrpeak_hf_v1 RELEASE=nmrpeak-zenodo-19122815-hf ARCHIVE=/absolute/path/to/weights.zip DOCKER_CONTEXT=<name>
+make checkpoint/import RUNNER=nmrpeak_chf_v1 RELEASE=nmrpeak-zenodo-19122815-chf ARCHIVE=/absolute/path/to/weights.zip DOCKER_CONTEXT=<name>
 ```
 
 If no archive is available, `make weights/download` acquires the pinned archive
@@ -53,7 +55,7 @@ into `weights/weights.zip`. Reuse that verified file across checkouts and lanes.
 Once the images and checkpoints are ready, start the comparison:
 
 ```bash
-make benchmark
+make benchmark DOCKER_CONTEXT=<name>
 ```
 
 Results are created exclusively under `benchmark/<UTC-timestamp>-<12-character-sha>/`.
@@ -100,8 +102,8 @@ new measurements must explain their provenance.
 
 ```bash
 make benchmark/devices
-make benchmark DEVICES=cpu
-make benchmark DEVICES='GPU-<full-uuid>' MODELS=hf CASES=small REPETITIONS=1 WARMUPS=0
+make benchmark DEVICES=cpu DOCKER_CONTEXT=<name>
+make benchmark DEVICES='GPU-<full-uuid>' MODELS=hf CASES=small REPETITIONS=1 WARMUPS=0 DOCKER_CONTEXT=<name>
 ```
 
 CPU references are always included. `DEVICES=all` is the default; it requires at
@@ -159,7 +161,7 @@ a lane.
 
 Builds use allowlisted committed source and pinned upstream closures; secrets,
 weights, local deployment state, and benchmark results are excluded. Networked
-builds fetch pinned dependency artifacts. `make benchmark/lock` uses the same
+builds fetch pinned dependency artifacts. `make benchmark/lock DOCKER_CONTEXT=<name>` uses the same
 explicit network-route selection and stages a new hash-locked candidate in
 `/tmp` for review; it does not replace the committed lock.
 
@@ -188,7 +190,7 @@ the benchmark lock.
 Only the existing reviewed, SHA-256-verified checkpoints are deserialized; loading
 uses the existing trusted-checkpoint `weights_only=False` policy.
 
-Runtime uses the local Docker default context and immutable image IDs, with no
+Runtime uses the selected local Docker endpoint and immutable image IDs, with no
 network, read-only root and checkpoint mounts, dropped capabilities, no new
 privileges, bounded resources, and the image's fixed non-root identity. The harness mount
 contains only committed worker code and synthetic cases. Output goes through

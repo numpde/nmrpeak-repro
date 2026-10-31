@@ -76,7 +76,7 @@ from repository_checks.named_deployment import (
 )
 from repository_checks.nmrpeak_image_inputs import materialize_image_context
 from repository_checks.nmrpeak_source import read_nmrpeak_source_revision
-from repository_checks.checkpoint import CheckpointOperationRejected
+from repository_checks.checkpoint import CheckpointOperationRejected, docker_host
 
 
 _DEPLOYMENT_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
@@ -642,8 +642,8 @@ def show_provider_logs(
         )
     arguments = [
         str(docker),
-        "--context",
-        "default",
+        "--host",
+        docker_host(),
         "logs",
         "--timestamps",
         "--tail",
@@ -658,7 +658,7 @@ def show_provider_logs(
         {
             "PATH": "/usr/bin:/bin",
             "HOME": "/tmp",
-            "DOCKER_CONTEXT": "default",
+            "NMRPEAK_DOCKER_HOST": docker_host(),
         },
     )
 
@@ -1220,8 +1220,8 @@ def _run_held_provider_identity_lock(
 ):
     arguments = (
         str(docker),
-        "--context",
-        "default",
+        "--host",
+        docker_host(),
         "run",
         "--rm",
         "--interactive",
@@ -1265,7 +1265,7 @@ def _run_held_provider_identity_lock(
             env={
                 "PATH": "/usr/bin:/bin",
                 "HOME": "/tmp",
-                "DOCKER_CONTEXT": "default",
+                "NMRPEAK_DOCKER_HOST": docker_host(),
             },
         )
     except OSError as error:
@@ -2070,14 +2070,14 @@ def _docker_command(
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         result = subprocess.run(
-            (str(docker), "--context", "default", *arguments),
+            (str(docker), "--host", docker_host(), *arguments),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env={
                 "PATH": "/usr/bin:/bin",
                 "HOME": "/tmp",
-                "DOCKER_CONTEXT": "default",
+                "NMRPEAK_DOCKER_HOST": docker_host(),
             },
             timeout=timeout,
         )
@@ -2592,7 +2592,7 @@ def _compose_environment(
     environment = {
         "PATH": "/usr/bin:/bin",
         "HOME": "/tmp",
-        "DOCKER_CONTEXT": "default",
+        "NMRPEAK_DOCKER_HOST": docker_host(),
         "IMAGE_PLATFORM": "linux/amd64",
         "PROVIDER_IMAGE_REF": images.provider,
         "HF_RUNNER_IMAGE_REF": images.hf,
@@ -2635,6 +2635,8 @@ def _render_compose(
             result = subprocess.run(
                 (
                     str(docker),
+                    "--host",
+                    docker_host(),
                     "compose",
                     "--env-file",
                     "/dev/null",

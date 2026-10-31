@@ -23,6 +23,11 @@ AUTHORITY_ID = "sha256:" + "d" * 64
 
 
 class ProviderVolumesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.docker_host = patch.dict("os.environ", {"NMRPEAK_DOCKER_HOST": "unix:///tmp/nmrpeak-test.sock"})
+        self.docker_host.start()
+        self.addCleanup(self.docker_host.stop)
+
     def test_daemon_rejection_preserves_reason_without_credentials(self) -> None:
         with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
             (), 9, b"", b"Volume is attached; password=hidden")), self.assertRaises(ProviderVolumeOperationRejected) as raised:

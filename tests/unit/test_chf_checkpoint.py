@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from repository_checks.chf_checkpoint import (
     ChfCheckpointOperationRejected,
@@ -121,6 +123,8 @@ class CheckpointOperationFixture:
         self.lane = lane
 
     def __enter__(self) -> CheckpointOperationFixture:
+        self.docker_host = patch.dict(os.environ, {"NMRPEAK_DOCKER_HOST": "unix:///tmp/nmrpeak-test.sock"})
+        self.docker_host.start()
         self.temporary = TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
         self.repository = self.root / "repository"
@@ -199,6 +203,7 @@ class CheckpointOperationFixture:
         return self
 
     def __exit__(self, *_error: object) -> None:
+        self.docker_host.stop()
         self.temporary.cleanup()
 
     def import_checkpoint(self, *, archive: Path | None = None):
@@ -254,7 +259,7 @@ STATE = Path({str(state)!r})
 VOLUMES = STATE / "volumes"
 METADATA = STATE / "metadata"
 args = sys.argv[1:]
-if args[:2] != ["--context", "default"]:
+if args[:2] != ["--host", "unix:///tmp/nmrpeak-test.sock"]:
     raise SystemExit(90)
 args = args[2:]
 with (STATE / "commands").open("a", encoding="utf-8") as log:

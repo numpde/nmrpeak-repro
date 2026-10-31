@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -43,13 +44,18 @@ def resolve_local_image(docker: Path, spec: LocalImageSpec) -> LocalImage:
     if type(spec) is not LocalImageSpec or _SHA256_REF.fullmatch(spec.input_id) is None:
         raise LocalImageRejected("Local image requires an exact input identity")
     tag = f"{spec.repository}:{spec.input_id.removeprefix('sha256:')}"
+    docker_host = os.environ.get("NMRPEAK_DOCKER_HOST", "")
+    if not docker_host.startswith("unix:///") or len(docker_host) == len("unix:///") or any(char.isspace() for char in docker_host):
+        raise LocalImageRejected(
+            "Select a local Unix-socket Docker context through make"
+        )
     try:
         result = subprocess.run(
-            (str(docker), "image", "inspect", tag),
+            (str(docker), "--host", docker_host, "image", "inspect", tag),
             env={
                 "PATH": "/usr/bin:/bin",
                 "HOME": "/tmp",
-                "DOCKER_CONTEXT": "default",
+                "NMRPEAK_DOCKER_HOST": docker_host,
             },
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

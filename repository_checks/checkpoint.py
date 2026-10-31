@@ -26,7 +26,6 @@ from repository_checks.nmrpeak_source import read_nmrpeak_source_revision
 
 
 DOCKER_BINARY = Path("/usr/bin/docker")
-DOCKER_CONTEXT = "default"
 IMPORTER_IMAGE = (
     "docker.io/library/python:3.12.12-slim-bookworm@"
     "sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c"
@@ -457,7 +456,7 @@ def _populate_volume(
     command = _helper_command(spec, helper_path, volume, release, "populate")
     try:
         process = subprocess.Popen(
-            [str(docker_binary), "--context", DOCKER_CONTEXT, *command],
+            [str(docker_binary), "--host", docker_host(), *command],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=None,
@@ -652,7 +651,7 @@ def _docker(
     _require_docker_binary(docker_binary)
     try:
         result = subprocess.run(
-            [str(docker_binary), "--context", DOCKER_CONTEXT, *arguments],
+            [str(docker_binary), "--host", docker_host(), *arguments],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -687,7 +686,19 @@ def _require_docker_binary(path: Path) -> None:
 
 
 def _docker_environment() -> dict[str, str]:
-    return {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+    return {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "NMRPEAK_DOCKER_HOST": docker_host(),
+    }
+
+
+def docker_host() -> str:
+    host = os.environ.get("NMRPEAK_DOCKER_HOST", "")
+    if not host.startswith("unix:///") or len(host) == len("unix:///") or any(char.isspace() for char in host):
+        raise CheckpointOperationRejected(
+            "Select a local Unix-socket Docker context through make"
+        )
+    return host
 
 
 def _git(repository_root: Path, *arguments: str) -> bytes:
@@ -697,7 +708,7 @@ def _git(repository_root: Path, *arguments: str) -> bytes:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=_docker_environment(),
+            env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
             timeout=30,
             check=False,
         )

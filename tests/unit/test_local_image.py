@@ -27,6 +27,11 @@ SPEC = LocalImageSpec(
 
 
 class LocalImageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.docker_host = patch.dict("os.environ", {"NMRPEAK_DOCKER_HOST": "unix:///tmp/nmrpeak-test.sock"})
+        self.docker_host.start()
+        self.addCleanup(self.docker_host.stop)
+
     def test_inspection_rejection_preserves_daemon_reason_without_credentials(self) -> None:
         with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
             (), 1, b"", b"Image does not exist; Bearer hidden")), self.assertRaises(LocalImageRejected) as raised:

@@ -2,6 +2,30 @@ unexport NETWORK_INTERFACE
 override export NMRPEAK_NETWORK_INTERFACE_INPUT := $(if $(filter command line,$(origin NETWORK_INTERFACE)),$(value NETWORK_INTERFACE))
 override export NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN := $(origin NETWORK_INTERFACE)
 
+override NMRPEAK_DOCKER_TARGETS := \
+	benchmark benchmark/image/build benchmark/lock check/test-image \
+	test test/unit test/contract test/integration test/repository test/model-behavior-fixtures \
+	test/live/failure-propagation test/live/failure-propagation/observe \
+	test/live/success-propagation test/live/success-propagation/observe \
+	test-image/base/build runner/image/build runner/lock/stage provider/image/build \
+	provider/deployment/config provider/deployment/up provider/deployment/status provider/deployment/down \
+	provider/deployment/generation/remove provider/deployment/runtime-config/remove \
+	provider/deployment/journal/inspect provider/deployment/journal/archive-closed provider/deployment/journal/retire \
+	provider/identity-lock/remove provider/logs checkpoint/import checkpoint/recover
+# Resolve one endpoint if any requested goal uses Docker; DOCKER itself rejects unclassified Docker recipes.
+override shquote = '$(subst ','"'"',$(1))'
+unexport NMRPEAK_DOCKER_HOST
+override NMRPEAK_DOCKER_HOST :=
+override DOCKER = $(if $(NMRPEAK_DOCKER_HOST),docker --host "$$NMRPEAK_DOCKER_HOST",$(error Docker command used without context selection; add this goal to NMRPEAK_DOCKER_TARGETS))
+ifneq ($(filter $(NMRPEAK_DOCKER_TARGETS),$(MAKECMDGOALS)),)
+override export NMRPEAK_DOCKER_HOST := $(shell env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH bash "$(abspath $(dir $(lastword $(MAKEFILE_LIST))))/scripts/docker-context.sh" $(call shquote,$(origin DOCKER_CONTEXT)) $(call shquote,$(value DOCKER_CONTEXT)))
+ifeq ($(strip $(NMRPEAK_DOCKER_HOST)),)
+$(error Docker context selection failed; see the diagnostic above)
+endif
+unexport DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+override DOCKER = docker --host "$$NMRPEAK_DOCKER_HOST"
+endif
+
 override SHELL := bash
 override .SHELLFLAGS := -eu -o pipefail -c
 PYTHON ?= python3
@@ -12,12 +36,12 @@ override NMRPEAK_TEST_CHECKOUT_KEY := $(shell printf '%s' "$(REPOSITORY_ROOT)" |
 override NMRPEAK_TEST_BASE_KEY := $(shell "$(REPOSITORY_ROOT)/scripts/test-image-key.sh" "$(REPOSITORY_ROOT)")
 override NMRPEAK_TEST_IMAGE := nmrpeak-repro/python-test:$(NMRPEAK_TEST_BASE_KEY)
 override NMRPEAK_TEST_PROJECT := nmrpeak-repro-test-$(NMRPEAK_TEST_UID)-$(NMRPEAK_TEST_CHECKOUT_KEY)
-override NMRPEAK_TEST_COMPOSE := env \
+override NMRPEAK_TEST_COMPOSE = env \
 	NMRPEAK_TEST_IMAGE="$(NMRPEAK_TEST_IMAGE)" \
 	NMRPEAK_TEST_UID="$(NMRPEAK_TEST_UID)" \
 	NMRPEAK_TEST_GID="$(NMRPEAK_TEST_GID)" \
 	NMRPEAK_TEST_CHECKOUT="$(REPOSITORY_ROOT)" \
-	docker --context default compose --env-file /dev/null \
+	$(DOCKER) compose --env-file /dev/null \
 	-p "$(NMRPEAK_TEST_PROJECT)" -f compose/test.yml
 override NMRPEAK_TEST_NON_ROOT_GUARD = if [[ "$(NMRPEAK_TEST_UID)" == 0 || "$(NMRPEAK_TEST_GID)" == 0 || "$(NMRPEAK_TEST_UID)" == 65532 ]]; then printf '%s\n' 'Containerized tests require a non-root invoking user distinct from provider UID 65532.' >&2; exit 2; fi
 .DEFAULT_GOAL := help
@@ -53,18 +77,21 @@ help:
 	@printf '%s\n' \
 		'NMR API provider' \
 		'' \
+		'Docker operations require DOCKER_CONTEXT=<local Unix-socket context> or an interactive selection.' \
+		'  Example: make test DOCKER_CONTEXT=rootless' \
+		'' \
 		'Verify this checkout:' \
-		'  make benchmark/image/build [NETWORK_INTERFACE=<name|system>]' \
+		'  make benchmark/image/build [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'  make benchmark [DEVICES="all|cpu|GPU-<uuid> ..."] [MODELS="hf chf"] [CASES="small medium long"]' \
 		'      Compare the current CPU stack and matched CPU/GPU stack; save benchmark/<UTC>-<sha>/.' \
 		'  make benchmark/devices' \
 		'      List GPU identities; see docs/benchmark.md for measurements and resource use.' \
 		'  make benchmark/verify RUN=benchmark/<UTC>-<sha>' \
 		'      Check archived bytes and reproduce the report offline without changing the evidence.' \
-		'  make test' \
+		'  make test DOCKER_CONTEXT=<name>' \
 		'      Run the complete default lane in the pinned, networkless test container.' \
 		'      One read-only source snapshot excludes credentials, deployment state, weights, and ignored files.' \
-		'  make test-image/base/build [NETWORK_INTERFACE=<name|system>]' \
+		'  make test-image/base/build [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'      Prepare the dependency image using an explicitly selected network route.' \
 		'      Ordinary test targets never pull images or use the network.' \
 		'  make test/unit' \
@@ -99,13 +126,13 @@ help:
 		'      Verify the named release declaration and its selected archive member.' \
 		'  make release/install RUNNER=<runner> RELEASE=<name> ARCHIVE=<zip> DECLARATION=<json>' \
 		'      Install a reviewed declaration without replacement.' \
-		'  make checkpoint/import RUNNER=<runner> RELEASE=<name> ARCHIVE=<zip>' \
+		'  make checkpoint/import RUNNER=<runner> RELEASE=<name> ARCHIVE=<zip> DOCKER_CONTEXT=<name>' \
 		'      Stream the checkpoint named by the installed release into its Docker volume without loading it.' \
 		'  make checkpoint/recover VOLUME=<volume> CONFIRM=<volume>' \
 		'      Repair an interrupted checkpoint volume after exact confirmation.' \
 		'' \
 		'Build provider and runner images:' \
-		'  make provider/image/build [NETWORK_INTERFACE=<name|system>]' \
+		'  make provider/image/build [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'      Build the provider from a clean committed checkout; select an interface for dependency downloads.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
 		'      Resolve dependencies and stage a candidate outside the checkout using the selected route.' \
@@ -113,7 +140,7 @@ help:
 		'      Verify the committed dependency lock without network access.' \
 		'  make runner/lock/apply TARGET=<target>' \
 		'      Replace the committed lock with the verified staged candidate.' \
-		'  make runner/image/build RUNNER=<runner> TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
+		'  make runner/image/build RUNNER=<runner> TARGET=<target> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'      Build one runner image from committed inputs; select an interface for dependency downloads.' \
 		'' \
 		'Operate a named deployment:' \
@@ -161,14 +188,12 @@ test-image/base/build:
 
 check/test-image:
 	@$(NMRPEAK_TEST_NON_ROOT_GUARD); \
-	endpoint="$$(docker --context default context inspect default --format '{{.Endpoints.docker.Host}}')"; \
-	case "$$endpoint" in unix:///*) ;; *) echo "Docker context default is not local: $$endpoint" >&2; exit 2 ;; esac; \
-	image_id="$$(docker --context default image ls --quiet --no-trunc "$(NMRPEAK_TEST_IMAGE)")"; \
+	image_id="$$($(DOCKER) image ls --quiet --no-trunc "$(NMRPEAK_TEST_IMAGE)")"; \
 	if [[ -z "$$image_id" ]]; then \
 		printf '%s\n' 'The exact local test dependency image is absent.' \
 			'Run: make test-image/base/build NETWORK_INTERFACE=wlp10s0' >&2; exit 2; \
 	fi; \
-	observed="$$(docker --context default image inspect "$$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"; \
+	observed="$$($(DOCKER) image inspect "$$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"; \
 	if [[ "$$observed" != "$(NMRPEAK_TEST_BASE_KEY)" ]]; then \
 		echo 'The local test image label does not match its requested dependency identity.' >&2; exit 2; \
 	fi; \
