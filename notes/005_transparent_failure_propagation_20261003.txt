@@ -1224,7 +1224,7 @@ Hardened-runtime rollout qualification (2026-10-06)
 
 The provider and both runners were rebuilt from clean commit
 `cef5c6bda687b1f190d4c0385b09237a27f8df38`, with dependency network traffic
-bound to `wlp10s0`. The reviewed deployment plan had SHA-256
+bound to the selected network interface. The reviewed deployment plan had SHA-256
 `<historical-digest-20>`.
 Independent structural review found that it changed only the provider and
 runner image identities and their derived topology, frozen-generation, and

@@ -668,10 +668,8 @@ Acquire or resume the ignored local archive with:
     make weights/download
 
 The optional `INTERFACE` argument selects an outbound network interface for
-that invocation without changing the artifact identity. For example, a large
-download can be kept on Wi-Fi with:
-
-    make weights/download INTERFACE=wlp1s0
+that invocation without changing the artifact identity. Select an available
+interface to keep a large download on Wi-Fi.
 
 The operation holds one operator-owned acquisition lock, resumes only the
 fixed `weights/weights.zip.part`, and renames it locally to

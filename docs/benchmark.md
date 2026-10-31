@@ -17,10 +17,9 @@ Run on the Linux x86_64 machine being measured, using Git, Make, Bash, Python
 3.11+, and a local Unix-socket Docker context with BuildKit. Every Docker-using
 Make command requires `DOCKER_CONTEXT=<name>` on the command line or an
 interactive context selection; it never assumes Docker's default context. Use
-`DOCKER_CONTEXT=science` on this host and ProArt; elsewhere, substitute a local
-Unix-socket context. Use a regular Docker-enabled account. GPU runs require
-`nvidia-smi`, a compatible NVIDIA driver
-and NVIDIA Container Toolkit. Initialize the pinned submodules and use a clean,
+any available local Unix-socket context and a regular Docker-enabled account.
+GPU runs require `nvidia-smi`, a compatible NVIDIA driver and NVIDIA Container
+Toolkit. Initialize the pinned submodules and use a clean,
 committed checkout:
 
 ```bash
@@ -29,8 +28,8 @@ make benchmark/image/build DOCKER_CONTEXT=<name>
 ```
 
 To select a route without a prompt, use
-`make benchmark/image/build NETWORK_INTERFACE=wlp10s0 DOCKER_CONTEXT=<name>`, substituting your
-chosen interface, or use `NETWORK_INTERFACE=system` for the system route.
+`make benchmark/image/build NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>` for
+the default route, or replace `system` with an available interface name.
 Without a selection, an interactive terminal offers a choice with no default;
 unattended builds require an explicit selection. An interface selection starts
 a temporary bound proxy for dependency tools; base/frontend image pulls retain
