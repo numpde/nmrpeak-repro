@@ -174,6 +174,56 @@ else:
         self.assertEqual(result.returncode, 2)
         self.assertIn("no interactive terminal is available", result.stderr)
 
+    def test_make_shell_does_not_trust_ambient_docker_selection_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = self._docker_context_environment(
+                temporary,
+                {
+                    "default": "unix:///tmp/nmrpeak-test.sock",
+                    "local-a": "unix:///tmp/local-a.sock",
+                },
+            )
+            for name in (
+                "DOCKER_CONTEXT",
+                "NMRPEAK_DOCKER_HOST",
+                "NMRPEAK_DOCKER_CONTEXT_INPUT",
+                "NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN",
+                "NMRPEAK_DOCKER_ENDPOINT_INPUT",
+            ):
+                environment.pop(name, None)
+            environment.update(
+                {
+                    "NMRPEAK_DOCKER_HOST": "unix:///tmp/poisoned.sock",
+                    "NMRPEAK_DOCKER_CONTEXT_INPUT": "default",
+                    "NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN": "command line",
+                    "NMRPEAK_DOCKER_ENDPOINT_INPUT": "unix:///tmp/poisoned-endpoint.sock",
+                }
+            )
+
+            result = subprocess.run(
+                ("make", "--dry-run", "check/test-image"),
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("no interactive terminal is available", result.stderr)
+
+            result = subprocess.run(
+                ("make", "check/test-image", "DOCKER_CONTEXT=local-a"),
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = Path(temporary, "docker-calls").read_text(encoding="utf-8")
+            self.assertIn("--host', 'unix:///tmp/local-a.sock", calls)
+            self.assertNotIn("poisoned", calls)
+
     def test_context_name_is_data_at_the_make_shell_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "unexpected"

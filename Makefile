@@ -18,7 +18,7 @@ unexport NMRPEAK_DOCKER_HOST
 override NMRPEAK_DOCKER_HOST :=
 override DOCKER = $(if $(NMRPEAK_DOCKER_HOST),docker --host "$$NMRPEAK_DOCKER_HOST",$(error Docker command used without context selection; add this goal to NMRPEAK_DOCKER_TARGETS))
 ifneq ($(filter $(NMRPEAK_DOCKER_TARGETS),$(MAKECMDGOALS)),)
-override export NMRPEAK_DOCKER_HOST := $(shell env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH bash "$(abspath $(dir $(lastword $(MAKEFILE_LIST))))/scripts/docker-context.sh" $(call shquote,$(origin DOCKER_CONTEXT)) $(call shquote,$(value DOCKER_CONTEXT)))
+override export NMRPEAK_DOCKER_HOST := $(shell env -u NMRPEAK_DOCKER_HOST -u NMRPEAK_DOCKER_CONTEXT_INPUT -u NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN -u NMRPEAK_DOCKER_ENDPOINT_INPUT -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_TLS -u DOCKER_TLS_VERIFY -u DOCKER_CERT_PATH bash "$(abspath $(dir $(lastword $(MAKEFILE_LIST))))/scripts/docker-context.sh" $(call shquote,$(origin DOCKER_CONTEXT)) $(call shquote,$(value DOCKER_CONTEXT)))
 ifeq ($(strip $(NMRPEAK_DOCKER_HOST)),)
 $(error Docker context selection failed; see the diagnostic above)
 endif
