@@ -25,7 +25,7 @@ shutdown_drain_seconds = 330
 forced_join_seconds = 10
 inventory_maximum_pages = 20
 observation_interval_seconds = 1
-observation_retry_initial_seconds = 5
+observation_gap_seconds = 90
 observation_retry_max_seconds = 30
 [runner]
 connect_seconds = 30
@@ -94,8 +94,15 @@ class RuntimeConfigTests(unittest.TestCase):
             provider_config.decode_provider_template(TEMPLATE.replace(b"runtime_config.v3", b"runtime_config.v2"))
         with self.assertRaises(ValueError):
             provider_config.decode_provider_runtime_config(
-                RUNTIME.replace(b"observation_retry_initial_seconds = 5", b"observation_retry_initial_seconds = 45"),
+                RUNTIME.replace(b"observation_gap_seconds = 90", b"observation_gap_seconds = 0"),
             )
+
+    def test_recovery_gap_is_independent_of_backoff_cap(self):
+        self.assertEqual(POLICY.process.observation.gap_seconds, 90)
+        self.assertEqual(POLICY.process.observation.retry_max_seconds, 30)
+        with self.assertRaises(ValueError):
+            provider_config.decode_provider_template(TEMPLATE.replace(
+                b"observation_gap_seconds", b"observation_retry_initial_seconds"))
 
     def test_input_targets_are_stable_and_separate(self):
         first = provider_config.api_input_target("/host/private/credential.json")

@@ -1,0 +1,23 @@
+Bounded provider recovery
+=========================
+
+ObservationRecovery.gap_seconds bounds the entire fresh-observation operation,
+including HTTP exchange, retirement and retry pacing. ConditionRecovery uses
+window_seconds for its matching-receipt recovery budget. NMRPeak previously
+passed observation_retry_initial_seconds as both whole budgets; its name hid
+that meaning. The SDK already owns retry admission, backoff and exact Attempt
+identity. NMRPeak does not add another API retry loop.
+
+The operator and captured runtime now require observation_gap_seconds. The
+backoff cap remains observation_retry_max_seconds and is independent of the
+gap. Old ambiguous fields are rejected. Update the host-owned provider template
+and capture new inputs through the normal deployment workflow before selecting
+the new image. Do not edit retained immutable runtime trees. Existing running
+providers retain their captured policy until redeployed.
+
+The example gap is 90 seconds: with its 30-second exchange and 10-second
+retirement budgets this leaves time for two bounded exchanges and normal retry
+pacing. Server Retry-After may consume the remainder instead. This is a chosen
+example policy, not a universal SDK minimum; increasing the gap also increases
+possible cancellation-detection latency. Choose deployed budgets against the
+actual admitted transport settings.

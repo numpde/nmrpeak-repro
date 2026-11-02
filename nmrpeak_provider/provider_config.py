@@ -48,15 +48,13 @@ class ObservationPolicy:
     """Poll live Attempts and pace recovery without changing Attempt authority."""
 
     poll_interval_seconds: float
-    retry_initial_seconds: float
+    gap_seconds: float
     retry_max_seconds: float
 
     def __post_init__(self):
-        for value in (self.poll_interval_seconds, self.retry_initial_seconds, self.retry_max_seconds):
+        for value in (self.poll_interval_seconds, self.gap_seconds, self.retry_max_seconds):
             if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
-                raise ProviderConfigurationRejected("Observation intervals and retry delays must be positive finite seconds")
-        if self.retry_initial_seconds > self.retry_max_seconds:
-            raise ProviderConfigurationRejected("Observation initial retry delay must not exceed its maximum")
+                raise ProviderConfigurationRejected("Observation poll interval, recovery gap and backoff cap must be positive finite seconds")
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +155,7 @@ def render_provider_runtime_config(policy, *, frozen_generation_id, api_proxy_so
             "forced_join_seconds": process.forced_join_seconds,
             "inventory_maximum_pages": process.inventory_maximum_pages,
             "observation_interval_seconds": observation.poll_interval_seconds,
-            "observation_retry_initial_seconds": observation.retry_initial_seconds,
+            "observation_gap_seconds": observation.gap_seconds,
             "observation_retry_max_seconds": observation.retry_max_seconds,
         }),
         ("runner", asdict(policy.runner)),
@@ -218,13 +216,13 @@ def _policy(document, shared_project, shared_gid):
     process = _table(document, "process", {
         "feed_interval_seconds", "hello_interval_seconds", "shutdown_drain_seconds",
         "forced_join_seconds", "inventory_maximum_pages", "observation_interval_seconds",
-        "observation_retry_initial_seconds", "observation_retry_max_seconds",
+        "observation_gap_seconds", "observation_retry_max_seconds",
     })
     process_policy = ProviderProcessPolicy(
         process["feed_interval_seconds"], process["hello_interval_seconds"],
         process["shutdown_drain_seconds"], process["forced_join_seconds"],
         process["inventory_maximum_pages"], ObservationPolicy(
-            process["observation_interval_seconds"], process["observation_retry_initial_seconds"],
+            process["observation_interval_seconds"], process["observation_gap_seconds"],
             process["observation_retry_max_seconds"],
         ),
     )

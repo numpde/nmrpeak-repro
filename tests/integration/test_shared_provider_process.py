@@ -1,6 +1,7 @@
 """Run both real NMR adapters through SDK controllers and durable shared IPC."""
 
 import asyncio
+import json
 from base64 import b64decode
 from contextlib import nullcontext
 from dataclasses import replace
@@ -22,7 +23,7 @@ from provider_core.analysis import AnalysisOutcomeUnresolved
 from provider_core.attempt_record import TerminalOperation
 from provider_core.attempt_request import fail_body, start_body
 from provider_core.controller import ControllerFailed
-from provider_core.execution import AttemptExecutor, ExecutionRefused, ExecutionStopRequested
+from provider_core.execution import AttemptExecutor, ExecutionRefused, ExecutionStopRequested, ObservationGapExpired
 from provider_core.hello import AnalysisOffering
 from provider_core.producer_checkpoint import SuppressedCheckpoint
 from provider_core.ownership import AttemptClaims, LiveAttemptLimits
@@ -38,7 +39,9 @@ from nmrpeak_provider.product_result import canonical_result_bytes
 from nmrpeak_provider.provider_config import ObservationPolicy, ProviderProcessPolicy
 from nmrpeak_provider.provider_process import ProviderAnnouncement, ProviderProcess
 from nmrpeak_provider.runner_protocol import GenerateFrame, ValidateFrame
-from tests.fakes.shared_api import SharedApi
+from tests.fakes.shared_api import ApiTransport, SharedApi
+from provider_core.network import NetworkIOObservation
+from provider_core.transport import ExchangeFailed
 from tests.fakes.runner import FakeRunnerFault
 from tests.unit.test_analysis_session import scientific_lane
 from tests.unit.test_input_interpreter import BoundEndpoints, HF_VALUE, VALUE, turn
@@ -47,6 +50,95 @@ from tests.unit.test_provider_startup_inputs import credential_bytes
 
 
 class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_api_read_recovers_on_original_attempt_before_gap(self):
+        await self._observation_outage(expires=False)
+
+    async def test_api_read_beyond_gap_before_generation_preserves_attempt(self):
+        await self._observation_outage(expires=True)
+
+    async def test_api_read_beyond_gap_during_generation_retires_original_runner(self):
+        await self._observation_outage(expires=True, inflight=True)
+
+    async def _observation_outage(self, *, expires, inflight=False):
+        service = await self._idle_process(with_job=True)
+        lane = service.lanes[0]
+        channel = lane.runner._channel
+        if inflight:
+            channel._accept_generate = lambda _frame: channel.generate_received.set()
+        backend = service.api._transport.api
+        pending, instructions = await service._select(lane)
+        service.policy = replace(service.policy, observation=ObservationPolicy(
+            poll_interval_seconds=0.01, gap_seconds=0.1 if expires else 1,
+            retry_max_seconds=0.02))
+        session = NmrpeakAnalysisSession(lane.generation, lane.runner, service.interpreter,
+                                        retry_seconds=0.01)
+        endpoint = service.delivery.endpoint
+        state = endpoint.socket_path.parent / "state"
+        state.mkdir(mode=0o700)
+        queue = DeliveryQueue(state, limits=QueueLimits(4, 1048576, 4, 1048576))
+        inbox = DeliveryInbox(queue, (endpoint,), request_seconds=2, on_accepted=Mock(),
+                              on_failure=Mock(), binding_status=lambda _endpoint: {"state": "inbox_only"})
+        await inbox.start()
+        original_exchange = ApiTransport.exchange
+        read_refs, interruptions = [], []
+        retries, recovered = Mock(), Mock()
+
+        async def interrupted_read(transport, request, *, maximum_bytes, owner=None):
+            if request.method == "GET" and "/execution-attempts/" in request.url.path:
+                read_refs.append(request.url.path.rsplit("/", 1)[1])
+                if expires and (not inflight or channel.generate_received.is_set()):
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError as interruption:
+                        interruptions.append(interruption)
+                        transport.last_failure = ExchangeFailed("Fixture read cancelled", primary=interruption)
+                        raise
+                if not expires and len(read_refs) == 1:
+                    failure = TimeoutError("Fixture read timed out")
+                    transport.last_failure = ExchangeFailed(
+                        "Fixture read failed", primary=failure, network_failure=failure,
+                        network_io=NetworkIOObservation(stage="read", error=failure))
+                    raise transport.last_failure
+            return await original_exchange(transport, request, maximum_bytes=maximum_bytes, owner=owner)
+
+        try:
+            with patch.object(ApiTransport, "exchange", interrupted_read), \
+                 patch.object(service, "_observation_retry", retries), \
+                 patch.object(service, "_observation_recovered", recovered):
+                lane.controller = service._controller(lane, session, pending, instructions)
+                if expires:
+                    with self.assertRaises(ControllerFailed) as caught:
+                        await asyncio.wait_for(lane.controller.run(pending), 3)
+                    failure = caught.exception.cause.cause
+                    self.assertIsInstance(failure, ObservationGapExpired)
+                    self.assertTrue(failure.read_started)
+                    self.assertEqual(len(interruptions), 1)
+                    self.assertIn(lane.controller, service._claims.live_owners())
+                    if inflight:
+                        self.assertTrue(lane.runner.retirement_confirmed)
+                    else:
+                        self.assertTrue(lane.runner.quiescent)
+                    self.assertTrue(lane.controller.shutdown_ready)
+                    self.assertFalse(queue.inventory(backend.origin, backend.provider_ref))
+                else:
+                    await asyncio.wait_for(lane.controller.run(pending), 3)
+                    retries.assert_called_once()
+                    recovered.assert_called_once()
+                    self.assertEqual(len(queue.inventory(backend.origin, backend.provider_ref)), 1)
+            reference = backend.started["job:hf"]
+            self.assertTrue(read_refs)
+            self.assertEqual(set(read_refs), {reference})
+            starts = [body for _, path, body in backend.calls if path.endswith("/start")]
+            self.assertEqual(len(starts), 1)
+            self.assertEqual(starts[0], json.loads(pending.body))
+            self.assertEqual(sum(isinstance(frame, GenerateFrame) for frame in channel.received_frames),
+                             0 if expires and not inflight else 1)
+            self.assertFalse(any(path.endswith(("/complete", "/fail")) for _, path, _ in backend.calls))
+        finally:
+            await service._drain()
+            await inbox.close()
+            queue.close()
+
     async def test_retry_after_gates_discovery_for_both_lanes(self):
         service = await self._idle_process()
         failure = ApiFailure("discover", "rate limited", response=SimpleNamespace(

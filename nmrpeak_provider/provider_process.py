@@ -161,10 +161,16 @@ class ProviderProcess:
             allowed_job_states=frozenset({"open"}),
             poll_seconds=policy.observation.poll_interval_seconds,
             task_settle_seconds=policy.forced_join_seconds,
-            observation_recovery=ObservationRecovery(policy.observation.retry_initial_seconds, policy.observation.retry_max_seconds,
-                                                       self._observation_retry, self._observation_recovered),
-            condition_recovery=ConditionRecovery(policy.observation.retry_initial_seconds, policy.observation.retry_max_seconds,
-                                                  self._condition_retry, self._condition_recovered),
+            observation_recovery=ObservationRecovery(
+                gap_seconds=policy.observation.gap_seconds,
+                backoff_max_seconds=policy.observation.retry_max_seconds,
+                on_retry=self._observation_retry, on_recovered=self._observation_recovered,
+            ),
+            condition_recovery=ConditionRecovery(
+                window_seconds=policy.observation.gap_seconds,
+                backoff_max_seconds=policy.observation.retry_max_seconds,
+                on_retry=self._condition_retry, on_recovered=self._condition_recovered,
+            ),
             on_unconfirmed_phase_progress=self._phase_unconfirmed,
         )
 
