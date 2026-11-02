@@ -1010,19 +1010,72 @@ def start_deployment(
             )
         services = _inspect_project_containers(docker, root, deployment)
         _admit_session_volumes(docker, deployment, services)
-        _materialize_locked(state_root, plan)
-        verify_hf_checkpoint(root, plan.releases.hf, docker_binary=docker)
-        verify_chf_checkpoint(root, plan.releases.chf, docker_binary=docker)
-        ensure_provider_state_volumes(
-            docker,
-            root,
-            deployment,
-            plan.provider_ref,
-            plan.binding_projection["journal_authority_id"],
+        _verify_plan_checkpoints(root, plan, docker)
+        return _start_rendered_plan_locked(root, deployment, plan, state_root, docker)
+
+
+def update_deployment(
+    repository: Path,
+    deployment: str,
+    *,
+    docker: Path = _DOCKER,
+) -> DeploymentPlan:
+    """Build is handled by the caller; review the resolved plan, drain, and apply it."""
+
+    root = repository.resolve(strict=True)
+    if root != repository or not root.is_dir():
+        raise DeploymentOperationRejected(
+            "Deployment repository must be one resolved directory"
         )
-        _run_compose_plan(docker, root, deployment, plan)
-        _require_ready_project(docker, root, deployment, plan)
-        return plan
+    _require_deployment_name(deployment)
+    state_root = _existing_deployment_state_root(root, deployment)
+    with _locked_deployment_state(state_root):
+        plan = render_deployment_plan(root, deployment, docker=docker)
+        _validate_deployment_plan(plan)
+        plan_bytes = deployment_plan_bytes(plan) + b"\n"
+        plan_digest = sha256(plan_bytes).hexdigest()
+        sys.stdout.write(plan_bytes.decode("utf-8"))
+        sys.stdout.flush()
+        print(f"Applying deployment plan SHA-256 {plan_digest}.", file=sys.stderr, flush=True)
+        services = _inspect_project_containers(docker, root, deployment)
+        _admit_session_volumes(docker, deployment, services)
+        _verify_plan_checkpoints(root, plan, docker)
+        _stop_deployment_locked(root, deployment, docker, services)
+        try:
+            return _start_rendered_plan_locked(root, deployment, plan, state_root, docker)
+        except BaseException as error:
+            error.add_note(
+                "The previous provider services were drained before this update. "
+                "Inspect deployment status and logs; journal, checkpoints, frozen generations, "
+                "credentials, and shared proxy/outbox state were retained."
+            )
+            raise
+
+
+def _start_rendered_plan_locked(
+    root: Path,
+    deployment: str,
+    plan: DeploymentPlan,
+    state_root: Path,
+    docker: Path,
+) -> DeploymentPlan:
+    _materialize_locked(state_root, plan)
+    ensure_provider_state_volumes(
+        docker,
+        root,
+        deployment,
+        plan.provider_ref,
+        plan.binding_projection["journal_authority_id"],
+    )
+    _run_compose_plan(docker, root, deployment, plan)
+    _require_ready_project(docker, root, deployment, plan)
+    return plan
+
+
+def _verify_plan_checkpoints(root: Path, plan: DeploymentPlan, docker: Path) -> None:
+    """Reject missing or altered checkpoints before stopping a running deployment."""
+    verify_hf_checkpoint(root, plan.releases.hf, docker_binary=docker)
+    verify_chf_checkpoint(root, plan.releases.chf, docker_binary=docker)
 
 
 def deployment_status_bytes(
@@ -1628,18 +1681,34 @@ def stop_deployment(
     _require_deployment_name(deployment)
     state_root = _existing_deployment_state_root(root, deployment)
     with _locked_deployment_state(state_root):
+        _stop_deployment_locked(root, deployment, docker)
+
+
+def _stop_deployment_locked(
+    root: Path,
+    deployment: str,
+    docker: Path,
+    services: dict[str, dict[str, object]] | None = None,
+) -> None:
+    if services is None:
         services = _inspect_project_containers(docker, root, deployment)
-        route_volumes = _api_route_volumes(deployment, services)
-        if not route_volumes and not ({"api", "api-init"} & services.keys()):
-            route_volumes = _orphaned_api_route_volumes(docker, deployment)
-        _inspect_project_resources(docker, deployment, services, route_volumes=route_volumes)
-        _run_compose_down(docker, root, deployment, route_volumes=route_volumes)
-        remaining = _inspect_project_containers(docker, root, deployment)
-        resources = _inspect_project_resources(docker, deployment, remaining, route_volumes=route_volumes)
-        if remaining or resources:
-            raise DeploymentOperationRejected(
-                "Provider teardown left unresolved project resources"
-            )
+    route_volumes = _api_route_volumes(deployment, services)
+    if not route_volumes and not ({"api", "api-init"} & services.keys()):
+        route_volumes = _orphaned_api_route_volumes(docker, deployment)
+    _inspect_project_resources(docker, deployment, services, route_volumes=route_volumes)
+    _run_compose_down(
+        docker,
+        root,
+        deployment,
+        route_volumes=route_volumes,
+        expected_services=services,
+    )
+    remaining = _inspect_project_containers(docker, root, deployment)
+    resources = _inspect_project_resources(docker, deployment, remaining, route_volumes=route_volumes)
+    if remaining or resources:
+        raise DeploymentOperationRejected(
+            "Provider teardown left unresolved project resources"
+        )
 
 
 def _validate_deployment_plan(plan: DeploymentPlan) -> None:
@@ -2200,6 +2269,7 @@ def _run_compose_down(
     deployment: str,
     *,
     route_volumes: tuple[str, ...],
+    expected_services: dict[str, dict[str, object]],
     api_route=None,
 ) -> None:
     try:
@@ -2229,12 +2299,52 @@ def _run_compose_down(
                 str(compose), "--file", str(route_overlay),
             )
             if api_route is None:
-                _docker_command(
-                    docker, (*prefix, "stop", "--timeout", "600", "provider"), timeout=660,
+                provider = expected_services.get("provider")
+                api = expected_services.get("api")
+                api_init = expected_services.get("api-init")
+                running_runners = tuple(
+                    role for role in ("hf-runner", "chf-runner")
+                    if role in expected_services and expected_services[role]["State"]["Running"]
                 )
-                _docker_command(
-                    docker, (*prefix, "stop", "--timeout", "20", "hf-runner", "chf-runner"), timeout=80,
+                if provider is None and running_runners:
+                    raise DeploymentOperationRejected(
+                        "Cannot stop scientific runners without an owned provider to confirm clean retirement."
+                    )
+                if api_init is not None:
+                    _require_clean_container_exit(
+                        api_init, api_init, "api-init", deployment,
+                    )
+                if provider is not None:
+                    if provider["State"]["Running"]:
+                        _docker_command(
+                            docker, (*prefix, "stop", "--timeout", "600", "provider"), timeout=660,
+                        )
+                    stopped = _inspect_project_containers(docker, repository, deployment)
+                    _require_clean_container_exit(
+                        stopped.get("provider"), provider, "provider", deployment,
+                    )
+                if api is not None:
+                    if api["State"]["Running"]:
+                        _docker_command(
+                            docker, (*prefix, "stop", "--timeout", "20", "api"), timeout=80,
+                        )
+                    stopped = _inspect_project_containers(docker, repository, deployment)
+                    _require_clean_container_exit(
+                        stopped.get("api"), api, "api", deployment,
+                    )
+                if running_runners:
+                    _docker_command(
+                        docker, (*prefix, "stop", "--timeout", "20", *running_runners), timeout=80,
+                    )
+                runner_roles = tuple(
+                    role for role in ("hf-runner", "chf-runner") if role in expected_services
                 )
+                if runner_roles:
+                    stopped = _inspect_project_containers(docker, repository, deployment)
+                    for role in runner_roles:
+                        _require_clean_container_exit(
+                            stopped.get(role), expected_services[role], role, deployment,
+                        )
             _docker_command(
                 docker,
                 (
@@ -2248,11 +2358,38 @@ def _run_compose_down(
             )
     except DeploymentOperationRejected as error:
         raise DeploymentOperationRejected(
-            f"Cannot confirm provider deployment {deployment!r} is stopped because "
-            "Docker Compose did not complete teardown. Containers, the project network, "
-            "or session volumes may remain. Run `make provider/deployment/status "
+            f"Cannot complete provider deployment {deployment!r} teardown: {error}. "
+            "Unconfirmed containers and session volumes were retained. Run "
+            "`make provider/deployment/status "
             f"DEPLOYMENT={deployment}` before retrying shutdown."
         ) from error
+
+
+def _require_clean_container_exit(
+    observed: dict[str, object] | None,
+    expected: dict[str, object],
+    role: str,
+    deployment: str,
+) -> None:
+    state = observed.get("State") if type(observed) is dict else None
+    expected_state = expected.get("State")
+    if (
+        type(state) is not dict
+        or observed.get("Id") != expected.get("Id")
+        or type(expected_state) is not dict
+        or state.get("Status") != "exited"
+        or type(state.get("ExitCode")) is not int
+        or state["ExitCode"] != 0
+        or state.get("OOMKilled") is not False
+    ):
+        status = state.get("Status") if type(state) is dict else "unknown"
+        exit_code = state.get("ExitCode") if type(state) is dict else "unknown"
+        oom_killed = state.get("OOMKilled") if type(state) is dict else "unknown"
+        raise DeploymentOperationRejected(
+            f"Cannot continue shutdown of provider deployment {deployment!r}: {role} "
+            f"did not prove clean exit (status={status!r}, exit_code={exit_code!r}, "
+            f"oom_killed={oom_killed!r}). Scientific runners and session volumes remain."
+        )
 
 
 def _inspect_project_containers(
@@ -3562,6 +3699,7 @@ def main(arguments: list[str] | None = None) -> int:
             "logs",
             "status",
             "up",
+            "update",
         ),
     )
     parser.add_argument("deployment")
@@ -3627,6 +3765,16 @@ def main(arguments: list[str] | None = None) -> int:
                 "Provider deployment ready: "
                 f"{options.deployment} {plan.generation.frozen_generation_id}"
             )
+        elif options.operation == "update":
+            plan = update_deployment(repository, options.deployment)
+            images = {
+                role: plan.compose["services"][role]["image"]
+                for role in ("provider", "hf-runner", "chf-runner")
+            }
+            print(
+                f"Provider deployment updated and ready: {options.deployment}; "
+                f"verified image IDs {images}"
+            )
         elif options.operation == "status":
             print(deployment_status_bytes(repository, options.deployment).decode("utf-8"))
         elif options.operation == "logs":
@@ -3677,6 +3825,7 @@ _OPERATION_OPTION_POLICY = {
     "logs": (frozenset(), frozenset()),
     "status": (frozenset(), frozenset()),
     "up": (frozenset({"expected_plan_sha256"}), frozenset({"expected_plan_sha256"})),
+    "update": (frozenset(), frozenset()),
 }
 _OPTION_NAMES = {
     "frozen_generation": "--frozen-generation",
@@ -3699,6 +3848,7 @@ _OPERATION_FAILURE_HEADLINES = {
     "logs": "Provider log read failed",
     "status": "Provider deployment status read failed",
     "up": "Provider deployment startup failed",
+    "update": "Provider deployment update failed",
 }
 
 

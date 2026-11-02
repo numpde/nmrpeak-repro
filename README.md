@@ -40,6 +40,16 @@ Image preparation reuses an existing matching image.
 software behavior using fixtures; live provider and model qualification are
 separate opt-in operations. `make help` lists preparation and deployment commands.
 
+To build and update one named deployment, run
+`make provider/deployment/update DEPLOYMENT=<name> WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>`.
+The command builds from the clean checkout on the selected local Docker engine,
+prints the resolved plan, drains the provider, then starts that exact plan. It
+requires the provider to exit cleanly before stopping runners or removing their
+temporary sessions. It retains the shared proxy and outbox, credentials,
+provider journal, checkpoints, and frozen generations, then reports the image
+IDs verified on the running provider and runners. Plain `provider/deployment/up`
+does not build and still requires the reviewed plan hash.
+
 ## CPU/GPU experiment
 
 The [benchmark guide](docs/benchmark.md) explains how to run a comparison.

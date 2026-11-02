@@ -12,7 +12,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -32,6 +32,7 @@ from deployment.provider_deployment import (
     show_provider_logs,
     start_deployment,
     stop_deployment,
+    update_deployment,
 )
 from nmrpeak_provider.canonical_json import (
     canonical_json_bytes,
@@ -719,7 +720,7 @@ class ProviderDeploymentTests(unittest.TestCase):
                 patch.object(provider_deployment, "_run_compose_plan", side_effect=lambda *_: events.append("compose_up")),
             ):
                 self.assertEqual(start_deployment(repository, "production", expected_plan_sha256=preview_sha256), plan)
-            self.assertEqual(events, ["session_admission", "materialize", "hf", "chf", "provider_volumes", "compose_up"])
+            self.assertEqual(events, ["session_admission", "hf", "chf", "materialize", "provider_volumes", "compose_up"])
 
 
     def test_start_refuses_session_volume_drift_before_changes(self) -> None:
@@ -839,8 +840,8 @@ class ProviderDeploymentTests(unittest.TestCase):
             ):
                 start_deployment(repository, "production",
                     expected_plan_sha256=sha256(deployment_plan_bytes(plan) + b"\n").hexdigest())
-            verify_hf.assert_not_called()
-            verify_chf.assert_not_called()
+            verify_hf.assert_called_once()
+            verify_chf.assert_called_once()
             ensure_volumes.assert_not_called()
             compose_up.assert_not_called()
 
@@ -1198,8 +1199,9 @@ class ProviderDeploymentTests(unittest.TestCase):
                         self.fail(f"Unexpected Docker operation: {arguments[:2]}")
                     return subprocess.CompletedProcess((), 0, output, b"")
 
-                def down(*_args, route_volumes):
+                def down(*_args, route_volumes, expected_services):
                     self.assertEqual(route_volumes, (volume,))
+                    self.assertEqual(expected_services, {})
                     remaining[0] = False
 
                 state = repository / "secrets/deployments" / deployment
@@ -1401,6 +1403,46 @@ class ProviderDeploymentTests(unittest.TestCase):
     def test_down_stops_provider_then_runners_and_removes_sessions(self) -> None:
         calls: list[tuple[str, ...]] = []
 
+        def service(identifier: str, *, running: bool) -> dict[str, object]:
+            return {
+                "Id": identifier * 64,
+                "State": {
+                    "Running": running,
+                    "Status": "running" if running else "exited",
+                    "ExitCode": 0,
+                    "OOMKilled": False,
+                },
+            }
+
+        initial = {
+            "provider": service("a", running=True),
+            "api": service("d", running=True),
+            "api-init": service("e", running=False),
+            "hf-runner": service("b", running=True),
+            "chf-runner": service("c", running=True),
+        }
+        provider_stopped = {
+            "provider": service("a", running=False),
+            "api": service("d", running=True),
+            "api-init": service("e", running=False),
+            "hf-runner": service("b", running=True),
+            "chf-runner": service("c", running=True),
+        }
+        api_stopped = {
+            "provider": service("a", running=False),
+            "api": service("d", running=False),
+            "api-init": service("e", running=False),
+            "hf-runner": service("b", running=True),
+            "chf-runner": service("c", running=True),
+        }
+        all_stopped = {
+            "provider": service("a", running=False),
+            "api": service("d", running=False),
+            "api-init": service("e", running=False),
+            "hf-runner": service("b", running=False),
+            "chf-runner": service("c", running=False),
+        }
+
         def docker_command(
             _docker: Path,
             arguments: tuple[str, ...],
@@ -1421,21 +1463,31 @@ class ProviderDeploymentTests(unittest.TestCase):
                 "_read_committed_template",
                 return_value=(ROOT / "compose/provider-teardown.yml").read_bytes(),
             ),
+            patch.object(
+                provider_deployment,
+                "_inspect_project_containers",
+                side_effect=(provider_stopped, api_stopped, all_stopped),
+            ),
         ):
             provider_deployment._run_compose_down(
                 Path("/usr/bin/docker"),
                 ROOT,
                 "production",
                 route_volumes=(),
+                expected_services=initial,
             )
 
         self.assertEqual(calls[0][-4:], ("stop", "--timeout", "600", "provider"))
         self.assertEqual(
-            calls[1][-5:],
+            calls[1][-4:],
+            ("stop", "--timeout", "20", "api"),
+        )
+        self.assertEqual(
+            calls[2][-5:],
             ("stop", "--timeout", "20", "hf-runner", "chf-runner"),
         )
         self.assertEqual(
-            calls[2][-4:],
+            calls[3][-4:],
             ("down", "--timeout", "20", "--volumes"),
         )
         teardown = (ROOT / "compose/provider-teardown.yml").read_text()
@@ -1446,6 +1498,247 @@ class ProviderDeploymentTests(unittest.TestCase):
             "chf-checkpoint",
         ):
             self.assertNotIn(retained_volume, teardown)
+
+    def test_down_refuses_to_stop_runners_after_unclean_provider_exit(self) -> None:
+        calls: list[tuple[str, ...]] = []
+        initial = {
+            role: {
+                "Id": identifier * 64,
+                "State": {"Running": True, "Status": "running"},
+            }
+            for role, identifier in (("provider", "a"), ("hf-runner", "b"), ("chf-runner", "c"))
+        }
+        after_provider = {
+            "provider": {
+                "Id": "a" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 137, "OOMKilled": False},
+            },
+            "hf-runner": initial["hf-runner"],
+            "chf-runner": initial["chf-runner"],
+        }
+
+        def docker_command(_docker, arguments, *, timeout):
+            calls.append(arguments)
+            return subprocess.CompletedProcess((), 0, b"", b"")
+
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=docker_command),
+            patch.object(
+                provider_deployment,
+                "_read_committed_template",
+                return_value=(ROOT / "compose/provider-teardown.yml").read_bytes(),
+            ),
+            patch.object(provider_deployment, "_inspect_project_containers", return_value=after_provider),
+            self.assertRaisesRegex(DeploymentOperationRejected, "provider did not prove clean exit"),
+        ):
+            provider_deployment._run_compose_down(
+                Path("/usr/bin/docker"),
+                ROOT,
+                "production",
+                route_volumes=(),
+                expected_services=initial,
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-4:], ("stop", "--timeout", "600", "provider"))
+
+    def test_down_refuses_to_remove_route_after_unclean_api_exit(self) -> None:
+        calls: list[tuple[str, ...]] = []
+        initial = {
+            role: {
+                "Id": identifier * 64,
+                "State": {"Running": True, "Status": "running"},
+            }
+            for role, identifier in (("provider", "a"), ("api", "d"),
+                                     ("hf-runner", "b"), ("chf-runner", "c"))
+        }
+        provider_stopped = {
+            **initial,
+            "provider": {
+                "Id": "a" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 0, "OOMKilled": False},
+            },
+        }
+        api_failed = {
+            **provider_stopped,
+            "api": {
+                "Id": "d" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 137, "OOMKilled": False},
+            },
+        }
+
+        def docker_command(_docker, arguments, *, timeout):
+            calls.append(arguments)
+            return subprocess.CompletedProcess((), 0, b"", b"")
+
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=docker_command),
+            patch.object(
+                provider_deployment,
+                "_read_committed_template",
+                return_value=(ROOT / "compose/provider-teardown.yml").read_bytes(),
+            ),
+            patch.object(provider_deployment, "_inspect_project_containers", side_effect=(provider_stopped, api_failed)),
+            self.assertRaisesRegex(DeploymentOperationRejected, "api did not prove clean exit"),
+        ):
+            provider_deployment._run_compose_down(
+                Path("/usr/bin/docker"), ROOT, "production", route_volumes=(), expected_services=initial,
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][-4:], ("stop", "--timeout", "600", "provider"))
+        self.assertEqual(calls[1][-4:], ("stop", "--timeout", "20", "api"))
+
+    def test_down_refuses_provider_stop_when_api_init_did_not_exit_cleanly(self) -> None:
+        calls: list[tuple[str, ...]] = []
+        initial = {
+            "provider": {
+                "Id": "a" * 64,
+                "State": {"Running": True, "Status": "running"},
+            },
+            "api-init": {
+                "Id": "e" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 1, "OOMKilled": False},
+            },
+        }
+
+        def docker_command(_docker, arguments, *, timeout):
+            calls.append(arguments)
+            return subprocess.CompletedProcess((), 0, b"", b"")
+
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=docker_command),
+            patch.object(
+                provider_deployment,
+                "_read_committed_template",
+                return_value=(ROOT / "compose/provider-teardown.yml").read_bytes(),
+            ),
+            self.assertRaisesRegex(DeploymentOperationRejected, "api-init did not prove clean exit"),
+        ):
+            provider_deployment._run_compose_down(
+                Path("/usr/bin/docker"), ROOT, "production", route_volumes=(), expected_services=initial,
+            )
+
+        self.assertEqual(calls, [])
+
+    def test_down_refuses_compose_removal_after_unclean_runner_exit(self) -> None:
+        calls: list[tuple[str, ...]] = []
+        initial = {
+            role: {
+                "Id": identifier * 64,
+                "State": {"Running": True, "Status": "running"},
+            }
+            for role, identifier in (("provider", "a"), ("api", "d"),
+                                     ("hf-runner", "b"), ("chf-runner", "c"))
+        }
+        provider_stopped = {
+            **initial,
+            "provider": {
+                "Id": "a" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 0, "OOMKilled": False},
+            },
+        }
+        api_stopped = {
+            **provider_stopped,
+            "api": {
+                "Id": "d" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 0, "OOMKilled": False},
+            },
+        }
+        runner_failed = {
+            **api_stopped,
+            "hf-runner": {
+                "Id": "b" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 137, "OOMKilled": False},
+            },
+            "chf-runner": {
+                "Id": "c" * 64,
+                "State": {"Running": False, "Status": "exited", "ExitCode": 0, "OOMKilled": False},
+            },
+        }
+
+        def docker_command(_docker, arguments, *, timeout):
+            calls.append(arguments)
+            return subprocess.CompletedProcess((), 0, b"", b"")
+
+        with (
+            patch.object(provider_deployment, "_docker_command", side_effect=docker_command),
+            patch.object(
+                provider_deployment,
+                "_read_committed_template",
+                return_value=(ROOT / "compose/provider-teardown.yml").read_bytes(),
+            ),
+            patch.object(
+                provider_deployment,
+                "_inspect_project_containers",
+                side_effect=(provider_stopped, api_stopped, runner_failed),
+            ),
+            self.assertRaisesRegex(DeploymentOperationRejected, "hf-runner did not prove clean exit"),
+        ):
+            provider_deployment._run_compose_down(
+                Path("/usr/bin/docker"), ROOT, "production", route_volumes=(), expected_services=initial,
+            )
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[2][-5:], ("stop", "--timeout", "20", "hf-runner", "chf-runner"))
+
+    def test_update_previews_and_checks_inputs_before_draining_then_applies_same_plan(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            state_root = repository / "secrets/deployments/production"
+            state_root.mkdir(parents=True, mode=0o700)
+            state_root.chmod(0o700)
+            plan = object()
+            events: list[str] = []
+
+            def record(name: str, result=None):
+                def operation(*_args, **_kwargs):
+                    events.append(name)
+                    return result
+                return operation
+
+            with (
+                patch.object(provider_deployment, "render_deployment_plan", side_effect=record("render", plan)),
+                patch.object(provider_deployment, "_validate_deployment_plan", side_effect=record("validate")),
+                patch.object(provider_deployment, "deployment_plan_bytes", return_value=b"{\"plan\":true}"),
+                patch.object(provider_deployment, "_inspect_project_containers", side_effect=record("inspect", {})),
+                patch.object(provider_deployment, "_admit_session_volumes", side_effect=record("admit")),
+                patch.object(provider_deployment, "_verify_plan_checkpoints", side_effect=record("verify")),
+                patch.object(provider_deployment, "_stop_deployment_locked", side_effect=record("stop")),
+                patch.object(provider_deployment, "_start_rendered_plan_locked", side_effect=record("start", plan)) as start,
+                redirect_stdout(StringIO()) as output,
+                redirect_stderr(StringIO()) as errors,
+            ):
+                result = update_deployment(repository, "production", docker=Path("/usr/bin/docker"))
+
+            self.assertIs(result, plan)
+            self.assertEqual(output.getvalue(), "{\"plan\":true}\n")
+            self.assertIn(sha256(b"{\"plan\":true}\n").hexdigest(), errors.getvalue())
+            self.assertEqual(events, ["render", "validate", "inspect", "admit", "verify", "stop", "start"])
+            self.assertIs(start.call_args.args[2], plan)
+
+    def test_update_leaves_running_deployment_untouched_when_checkpoint_is_invalid(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve()
+            state_root = repository / "secrets/deployments/production"
+            state_root.mkdir(parents=True, mode=0o700)
+            state_root.chmod(0o700)
+            plan = object()
+            stop = Mock()
+            with (
+                patch.object(provider_deployment, "render_deployment_plan", return_value=plan),
+                patch.object(provider_deployment, "_validate_deployment_plan"),
+                patch.object(provider_deployment, "deployment_plan_bytes", return_value=b"{}"),
+                patch.object(provider_deployment, "_inspect_project_containers", return_value={}),
+                patch.object(provider_deployment, "_admit_session_volumes"),
+                patch.object(provider_deployment, "_verify_plan_checkpoints", side_effect=DeploymentOperationRejected("checkpoint failed")),
+                patch.object(provider_deployment, "_stop_deployment_locked", stop),
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()),
+                self.assertRaisesRegex(DeploymentOperationRejected, "checkpoint failed"),
+            ):
+                update_deployment(repository, "production", docker=Path("/usr/bin/docker"))
+            stop.assert_not_called()
 
     def test_generation_removal_preserves_referenced_and_neighboring_state(
         self,

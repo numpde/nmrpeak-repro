@@ -11,7 +11,7 @@ override NMRPEAK_DOCKER_TARGETS := \
 	test/live/failure-propagation test/live/failure-propagation/observe \
 	test/live/success-propagation test/live/success-propagation/observe \
 	test-image/base/build runner/image/build runner/lock/stage provider/image/build \
-	provider/deployment/config provider/deployment/up provider/deployment/status provider/deployment/down \
+	provider/deployment/config provider/deployment/up provider/deployment/update provider/deployment/status provider/deployment/down \
 	provider/deployment/generation/remove provider/deployment/runtime-config/remove \
 	provider/deployment/journal/inspect provider/deployment/journal/archive-closed provider/deployment/journal/retire \
 	provider/identity-lock/remove provider/logs checkpoint/import checkpoint/recover
@@ -74,7 +74,7 @@ benchmark/verify: private export BENCHMARK_RUN := $(value RUN)
 benchmark/verify:
 	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
 
-.PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
+.PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/update provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
 
 help:
 	@printf '%s\n' \
@@ -157,6 +157,9 @@ help:
 		'  make provider/deployment/up DEPLOYMENT=<name> EXPECTED_PLAN_SHA256=<config-output-sha256>' \
 		'      Start or replace this NMRPeak provider deployment using its reviewed shared socket grants.' \
 		'      Borrows the shared proxy and outbox; it does not start, stop, or reconfigure them.' \
+	'  make provider/deployment/update DEPLOYMENT=<name> WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
+	'      Build the provider locally, show the resolved plan, drain safely, apply it, and verify the running image IDs.' \
+	'      Retains the proxy, outbox, credentials, journal, checkpoints, and frozen generations.' \
 		'  make provider/deployment/status DEPLOYMENT=<name>' \
 		'      Report the owned provider and runner container state.' \
 		'  make provider/deployment/journal/inspect DEPLOYMENT=<name> [ATTEMPT_REF=<ref>]' \
@@ -333,6 +336,14 @@ runner/image/build:
 
 provider/image/build:
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"
+
+provider/deployment/update: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
+provider/deployment/update:
+	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
+	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
+	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+		$(PYTHON) -m deployment.provider_deployment update "$$DEPLOYMENT_INPUT"
 
 provider/deployment/init: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
 provider/deployment/init:

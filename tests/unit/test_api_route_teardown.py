@@ -99,6 +99,9 @@ class ApiRouteTeardownTests(unittest.TestCase):
 
         source = Path(__file__).parents[2] / "compose/provider-teardown.yml"
         with patch.object(d, "_read_committed_template", return_value=source.read_bytes()), patch.object(d, "_docker_command", side_effect=run):
-            d._run_compose_down(Path("/docker"), Path("/checkout"), deployment, route_volumes=(name,))
-        self.assertEqual(len(effects), 3)
-        self.assertEqual(effects[0][-4:], ("stop", "--timeout", "600", "provider"))
+            d._run_compose_down(
+                Path("/docker"), Path("/checkout"), deployment,
+                route_volumes=(name,), expected_services={},
+            )
+        self.assertEqual(len(effects), 1)
+        self.assertIn("down", effects[0])
