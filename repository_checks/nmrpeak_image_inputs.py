@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from hashlib import sha256
+import json
 import os
 from pathlib import Path, PurePosixPath
 import stat
@@ -39,11 +40,22 @@ def materialize_image_context(
     revision: str,
     destination: Path,
     runner: str,
+    *,
+    source_allowlist: Path | None = None,
+    source_prefix: PurePosixPath | None = None,
 ) -> str:
     """Write and identify the exact committed inputs admitted by one image."""
 
     _require_revision(revision)
     _require_empty_directory(destination)
+    if (source_allowlist is None) != (source_prefix is None):
+        raise ImageInputRejected("Source allowlist and its container path must be supplied together.")
+    if source_prefix is not None and (
+        not source_prefix.is_absolute() or ".." in source_prefix.parts
+    ):
+        raise ImageInputRejected("Source allowlist container path must be absolute without parent traversal.")
+    if source_allowlist is not None and source_allowlist.resolve().is_relative_to(destination.resolve()):
+        raise ImageInputRejected("Source allowlist must be outside the materialized image context.")
     image_root = _image_root(runner)
     declaration_path = image_root / "image-inputs.txt"
     declaration = _git_file(repo_root, revision, declaration_path)[1]
@@ -57,7 +69,10 @@ def materialize_image_context(
     if runner != "provider":
         _materialize_source_closures(repo_root, revision, destination, runner)
 
-    return "sha256:" + _context_digest(destination)
+    identity, entries = _context_inventory(destination, source_prefix)
+    if source_allowlist is not None:
+        _write_allowlist(source_allowlist, entries)
+    return "sha256:" + identity
 
 
 def _materialize_source_closures(
@@ -221,17 +236,37 @@ def _write_file(path: Path, content: bytes, mode: int) -> None:
             os.close(descriptor)
 
 
-def _context_digest(root: Path) -> str:
+def _context_inventory(root: Path, source_prefix: PurePosixPath | None) -> tuple[str, list[dict[str, object]]]:
     identity = sha256()
+    entries: list[dict[str, object]] = []
     for path in sorted(candidate for candidate in root.rglob("*") if not candidate.is_dir()):
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode):
             raise ImageInputRejected(f"NMRPeak image context contains a special file: {path.relative_to(root)}")
         relative = path.relative_to(root).as_posix()
         content = path.read_bytes()
-        executable = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
-        identity.update(f"{executable} {sha256(content).hexdigest()} {len(content)} {relative}\n".encode("utf-8"))
-    return identity.hexdigest()
+        executable = bool(metadata.st_mode & stat.S_IXUSR)
+        digest = sha256(content).hexdigest()
+        mode = "100755" if executable else "100644"
+        identity.update(f"{mode} {digest} {len(content)} {relative}\n".encode("utf-8"))
+        if source_prefix is not None:
+            entries.append({"path": str(source_prefix / relative), "destination": relative,
+                            "sha256": digest, "executable": executable})
+    return identity.hexdigest(), entries
+
+
+def _write_allowlist(path: Path, entries: list[dict[str, object]]) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            descriptor = -1
+            json.dump(entries, output, sort_keys=True)
+            output.write("\n")
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        path.unlink()
+        raise
 
 
 def _require_empty_directory(path: Path) -> None:
@@ -265,6 +300,8 @@ def main(arguments: list[str]) -> None:
     parser.add_argument("repository", type=Path)
     parser.add_argument("revision")
     parser.add_argument("destination", type=Path)
+    parser.add_argument("--source-allowlist", type=Path)
+    parser.add_argument("--source-prefix", type=PurePosixPath)
     options = parser.parse_args(arguments)
     try:
         print(
@@ -273,6 +310,8 @@ def main(arguments: list[str]) -> None:
                 options.revision,
                 options.destination.resolve(strict=True),
                 options.runner,
+                source_allowlist=options.source_allowlist,
+                source_prefix=options.source_prefix,
             )
         )
     except (ImageInputRejected, OSError, ValueError) as error:
