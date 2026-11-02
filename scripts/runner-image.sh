@@ -48,7 +48,9 @@ readonly wheelhouse
     fail 'WHEELHOUSE must be a selected subdirectory path without commas or line breaks'
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m repository_checks.wheelhouse_tool_asset check "$wheelhouse" ||
     fail 'the pinned wheelhouse tool is missing or invalid; run make wheelhouse/tool first'
-readonly tool="$wheelhouse/wheelhouse-tool-0.5.7.pyz"
+tool_metadata="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 'from repository_checks.wheelhouse_tool_asset import TOOL_NAME, TOOL_SHA256; print(TOOL_NAME, TOOL_SHA256)')"
+read -r tool_name tool_sha256 <<<"$tool_metadata"
+readonly tool="$wheelhouse/$tool_name"
 
 tmp="$(mktemp -d)"
 proxy_pid=''
@@ -124,8 +126,7 @@ done
 readonly selection_id="$("$python" -I -S "$tool" identity --manifest "$tmp/selection.json")"
 [[ "$selection_id" =~ ^[0-9a-f]{64}$ ]] || fail 'shared wheelhouse tool returned an invalid selection identity'
 read -r build_identity _ < <(printf 'nmrpeak-runner-build-v1\n%s\n%s\n%s\n%s\n%s\n' \
-    "$revision" "$image_input_id" "$selection_id" "$report_helper_hash" \
-    '6d178096f9196e7f1724503b8fb509658061d5ac203de69719227f2fbd508a96' | sha256sum)
+    "$revision" "$image_input_id" "$selection_id" "$report_helper_hash" "$tool_sha256" | sha256sum)
 build_network=default
 proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg http_proxy= --build-arg https_proxy= --build-arg NO_PROXY= --build-arg no_proxy= --build-arg ALL_PROXY= --build-arg all_proxy= --build-arg FTP_PROXY= --build-arg ftp_proxy=)
 if [[ "$network_interface" != system ]]; then

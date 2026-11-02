@@ -27,7 +27,9 @@ readonly wheelhouse
 [[ -r "$wheelhouse" && -x "$wheelhouse" ]] || fail 'WHEELHOUSE must be readable and traversable'
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m repository_checks.wheelhouse_tool_asset check "$wheelhouse" ||
     fail 'the pinned wheelhouse tool is missing or invalid; run make wheelhouse/tool first'
-readonly tool="$wheelhouse/wheelhouse-tool-0.5.7.pyz"
+tool_metadata="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 'from repository_checks.wheelhouse_tool_asset import TOOL_NAME, TOOL_SHA256; print(TOOL_NAME, TOOL_SHA256)')"
+read -r tool_name tool_sha256 <<<"$tool_metadata"
+readonly tool="$wheelhouse/$tool_name"
 
 scratch="$(mktemp -d)"
 readonly report_container="nmrpeak-wheel-report-${scratch##*.}"
@@ -90,8 +92,7 @@ engine_active=0
 readonly selection_id="$("$python" -I -S "$tool" identity --manifest "$scratch/selection.json")"
 [[ "$selection_id" =~ ^[0-9a-f]{64}$ ]] || fail 'shared wheelhouse tool returned an invalid selection identity'
 read -r build_identity _ < <(printf 'nmrpeak-provider-build-v1\n%s\n%s\n%s\n%s\n%s\n' \
-    "$revision" "$image_input_id" "$selection_id" "$report_helper_hash" \
-    '6d178096f9196e7f1724503b8fb509658061d5ac203de69719227f2fbd508a96' | sha256sum)
+    "$revision" "$image_input_id" "$selection_id" "$report_helper_hash" "$tool_sha256" | sha256sum)
 readonly selected_image="numpde/nmrpeak-provider-build:$build_identity"
 engine_active=1
 set +e
