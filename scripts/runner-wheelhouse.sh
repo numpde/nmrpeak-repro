@@ -98,7 +98,7 @@ for profile in native scientific; do
     docker run --name "nmrpeak-$profile-locate-${scratch##*.}" --cidfile "$scratch/$profile-locate.cid" \
         --label "io.numpde.nmrpeak.wheelhouse=${scratch##*.}-$profile-locate" \
         --mount "type=bind,src=$lock,dst=/input/requirements.lock,readonly" \
-        "${worker[@]}" locate --lock /input/requirements.lock "${locate_arguments[@]}" >"$scratch/pylock.$profile.toml"
+        "${worker[@]}" locate --lock /input/requirements.lock --pool /wheelhouse "${locate_arguments[@]}" >"$scratch/pylock.$profile.toml"
     engine_active=0
     chmod 0644 -- "$scratch/pylock.$profile.toml"
     engine_active=1
