@@ -64,8 +64,11 @@ readonly report_input="$scratch/report-input"
 install -d -m 0755 -- "$report_input" "$report_input/dependencies"
 chmod 0711 -- "$scratch"
 readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487'
-docker image inspect "$base" >/dev/null 2>&1 ||
+base_id="$(docker image inspect "$base" --format '{{.Id}}')" ||
     fail 'the pinned Python base image must already exist on the selected Docker engine'
+[[ "$base_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'the pinned Python base image has an invalid Docker identity'
+operator_uid="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m deployment.operator_container_uid "$base_id")"
+readonly operator_uid
 lock_arguments=()
 for path in requirements.lock dependencies/provider-core-api.lock dependencies/provider-core-source.txt; do
     read -r digest _ < <(sha256sum -- "$context/$path")
@@ -75,7 +78,7 @@ done
 engine_active=1
 docker run --name "$report_container" --cidfile "$scratch/report.cid" \
     --label "io.numpde.nmrpeak.wheel-report=${scratch##*.}" \
-    --rm --platform linux/amd64 --pull never --network none --read-only --cap-drop ALL \
+    --rm --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 64 --memory 512m \
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
     --mount "type=bind,src=$report_input,dst=/input,readonly" \

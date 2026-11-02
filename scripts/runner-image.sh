@@ -81,7 +81,10 @@ readonly image_input_id="$({
         --source-allowlist "$tmp/source.json" --source-prefix "$context"
 })"
 readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487'
-docker image inspect "$base" >/dev/null 2>&1 || fail 'the pinned Python base image must already exist on the selected Docker engine'
+base_id="$(docker image inspect "$base" --format '{{.Id}}')" || fail 'the pinned Python base image must already exist on the selected Docker engine'
+[[ "$base_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'the pinned Python base image has an invalid Docker identity'
+operator_uid="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m deployment.operator_container_uid "$base_id")"
+readonly operator_uid
 git -C "$repo_root" show "$revision:repository_checks/image_wheel_report.py" >"$tmp/report.py"
 read -r report_helper_hash _ < <(sha256sum -- "$tmp/report.py")
 readonly report_input="$tmp/report-input"
@@ -106,7 +109,7 @@ for profile in native scientific; do
     engine_active=1
     docker run --name "nmrpeak-$profile-report-${tmp##*.}" --cidfile "$tmp/$profile.cid" \
         --label "io.numpde.nmrpeak.wheel-report=${tmp##*.}-$profile" \
-        --rm --platform linux/amd64 --pull never --network none --read-only --cap-drop ALL \
+        --rm --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
         --security-opt no-new-privileges --pids-limit 64 --memory 512m \
         --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
         --mount "type=bind,src=$report_input,dst=/input,readonly" \
