@@ -7,7 +7,7 @@ override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
 
 override NMRPEAK_DOCKER_TARGETS := \
 	benchmark benchmark/image/build benchmark/lock check/test-image \
-	test test/unit test/contract test/integration test/repository test/repository/provider-image test/repository/image-wheel-report test/repository/wheelhouse-tool test/model-behavior-fixtures \
+	test test/unit test/contract test/integration test/repository test/repository/benchmark-image test/repository/provider-image test/repository/image-wheel-report test/repository/wheelhouse-tool test/model-behavior-fixtures \
 	test/live/failure-propagation test/live/failure-propagation/observe \
 	test/live/success-propagation test/live/success-propagation/observe \
 	test-image/base/build runner/image/build runner/lock/stage provider/image/build \
@@ -75,7 +75,7 @@ benchmark/verify:
 	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
 
 .PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/update provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
-.PHONY: test/repository/provider-image test/repository/image-wheel-report test/repository/wheelhouse-tool wheelhouse/tool
+.PHONY: test/repository/benchmark-image test/repository/provider-image test/repository/image-wheel-report test/repository/wheelhouse-tool wheelhouse/tool
 
 help:
 	@printf '%s\n' \
@@ -103,6 +103,7 @@ help:
 		'  make test/integration' \
 		'  make test/model-behavior-fixtures' \
 		'  make test/repository' \
+		'  make test/repository/benchmark-image' \
 		'  make test/repository/provider-image' \
 		'  make test/repository/image-wheel-report' \
 		'  make test/repository/wheelhouse-tool' \
@@ -149,7 +150,7 @@ help:
 		'      Verify the committed dependency lock without network access.' \
 		'  make runner/lock/apply TARGET=<target>' \
 		'      Replace the committed lock with the verified staged candidate.' \
-		'  make runner/image/build RUNNER=<runner> TARGET=<target> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
+		'  make runner/image/build RUNNER=<runner> TARGET=<target> WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'      Build one runner image from committed inputs; select an interface for dependency downloads.' \
 		'' \
 		'Operate a named deployment:' \
@@ -215,7 +216,7 @@ test/unit test/contract test/integration test/repository test/model-behavior-fix
 	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
 		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" "$(@F)"
 
-test/repository/provider-image test/repository/image-wheel-report test/repository/wheelhouse-tool: check/test-image
+test/repository/benchmark-image test/repository/provider-image test/repository/image-wheel-report test/repository/wheelhouse-tool: check/test-image
 	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
 		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" "$(@F)"
 
