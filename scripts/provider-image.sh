@@ -82,8 +82,8 @@ engine_active=0
 "$python" -I -S "$tool" report --report "$scratch/report.json" --pool /wheelhouse --directory wheels >"$scratch/selection.json"
 readonly selection_id="$("$python" -I -S "$tool" identity --manifest "$scratch/selection.json")"
 [[ "$selection_id" =~ ^[0-9a-f]{64}$ ]] || fail 'shared wheelhouse tool returned an invalid selection identity'
-read -r build_identity _ < <(printf 'nmrpeak-provider-build-v1\n%s\n%s\n%s\n%s\n' \
-    "$image_input_id" "$selection_id" "$report_helper_hash" \
+read -r build_identity _ < <(printf 'nmrpeak-provider-build-v1\n%s\n%s\n%s\n%s\n%s\n' \
+    "$revision" "$image_input_id" "$selection_id" "$report_helper_hash" \
     '6d178096f9196e7f1724503b8fb509658061d5ac203de69719227f2fbd508a96' | sha256sum)
 readonly selected_image="numpde/nmrpeak-provider-build:$build_identity"
 engine_active=1
