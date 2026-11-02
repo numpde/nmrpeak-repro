@@ -40,6 +40,7 @@ from nmrpeak_provider.provider_config import ObservationPolicy, ProviderProcessP
 from nmrpeak_provider.provider_process import ProviderAnnouncement, ProviderProcess
 from nmrpeak_provider.runner_protocol import GenerateFrame, ValidateFrame
 from tests.fakes.shared_api import ApiTransport, SharedApi
+from tests.fakes.native_runner import lane_contract
 from provider_core.network import NetworkIOObservation
 from provider_core.transport import ExchangeFailed
 from tests.fakes.runner import FakeRunnerFault
@@ -51,21 +52,35 @@ from tests.unit.test_provider_startup_inputs import credential_bytes
 
 class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_api_read_recovers_on_original_attempt_before_gap(self):
-        await self._observation_outage(expires=False)
+        await self._api_outage(expires=False)
+
+    async def test_interpreter_condition_recovers_its_original_matching_receipt(self):
+        await self._api_outage(expires=False, operation="progress")
 
     async def test_api_read_beyond_gap_before_generation_preserves_attempt(self):
-        await self._observation_outage(expires=True)
+        await self._api_outage(expires=True)
 
     async def test_api_read_beyond_gap_during_generation_retires_original_runner(self):
-        await self._observation_outage(expires=True, inflight=True)
+        await self._api_outage(expires=True, inflight=True)
 
-    async def _observation_outage(self, *, expires, inflight=False):
+    async def _api_outage(self, *, expires, inflight=False, operation="read"):
         service = await self._idle_process(with_job=True)
         lane = service.lanes[0]
         channel = lane.runner._channel
         if inflight:
             channel._accept_generate = lambda _frame: channel.generate_received.set()
         backend = service.api._transport.api
+        if operation == "progress":
+            backend.inputs["job:hf"] = (lane.generation.generation.analysis_kind_ref, b"Interpret these peaks.")
+            model_input = lane_contract("hf")[3]
+            attempts = 0
+            async def interpret_after_outage(**arguments):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise InterpreterUnavailable(InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED)
+                return await arguments["validate_input"](model_input)
+            service.interpreter.validate_freeform_input_async.side_effect = interpret_after_outage
         pending, instructions = await service._select(lane)
         service.policy = replace(service.policy, observation=ObservationPolicy(
             poll_interval_seconds=0.01, gap_seconds=0.1 if expires else 1,
@@ -80,12 +95,16 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                               on_failure=Mock(), binding_status=lambda _endpoint: {"state": "inbox_only"})
         await inbox.start()
         original_exchange = ApiTransport.exchange
-        read_refs, interruptions = [], []
+        read_refs, interruptions, issued_bodies = [], [], []
         retries, recovered = Mock(), Mock()
 
         async def interrupted_read(transport, request, *, maximum_bytes, owner=None):
-            if request.method == "GET" and "/execution-attempts/" in request.url.path:
-                read_refs.append(request.url.path.rsplit("/", 1)[1])
+            targeted = (request.method == "GET" and "/execution-attempts/" in request.url.path
+                        if operation == "read" else request.url.path.endswith("/progress")
+                        and json.loads(request.content).get("condition_code") is not None)
+            if targeted:
+                read_refs.append(request.url.path.split("/")[-1 if operation == "read" else -2])
+                issued_bodies.append(bytes(request.content))
                 if expires and (not inflight or channel.generate_received.is_set()):
                     try:
                         await asyncio.Event().wait()
@@ -103,8 +122,8 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with patch.object(ApiTransport, "exchange", interrupted_read), \
-                 patch.object(service, "_observation_retry", retries), \
-                 patch.object(service, "_observation_recovered", recovered):
+                 patch.object(service, "_observation_retry" if operation == "read" else "_condition_retry", retries), \
+                 patch.object(service, "_observation_recovered" if operation == "read" else "_condition_recovered", recovered):
                 lane.controller = service._controller(lane, session, pending, instructions)
                 if expires:
                     with self.assertRaises(ControllerFailed) as caught:
@@ -124,6 +143,9 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(lane.controller.run(pending), 3)
                     retries.assert_called_once()
                     recovered.assert_called_once()
+                    if operation == "progress":
+                        self.assertEqual(issued_bodies[0], issued_bodies[1])
+                        self.assertEqual(json.loads(issued_bodies[0])["phase"], "preparing")
                     self.assertEqual(len(queue.inventory(backend.origin, backend.provider_ref)), 1)
             reference = backend.started["job:hf"]
             self.assertTrue(read_refs)
