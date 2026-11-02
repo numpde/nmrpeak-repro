@@ -58,7 +58,7 @@ readonly image_input_id="$({
 
 readonly image="numpde/nmrpeak-provider:${image_input_id#sha256:}"
 readonly image_id_file="$scratch/image.id"
-git -C "$repo_root" show "$revision:repository_checks/provider_wheel_report.py" >"$scratch/report.py"
+git -C "$repo_root" show "$revision:repository_checks/image_wheel_report.py" >"$scratch/report.py"
 read -r report_helper_hash _ < <(sha256sum -- "$scratch/report.py")
 readonly report_input="$scratch/report-input"
 install -d -m 0755 -- "$report_input" "$report_input/dependencies"
