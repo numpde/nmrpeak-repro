@@ -169,6 +169,13 @@ def _query_ipv4(host: str, server: str, interface: str) -> tuple[dict[str, list[
     return addresses, aliases
 
 
+def _query_ipv4_retrying_timeouts(host: str, server: str, interface: str) -> tuple[dict[str, list[str]], dict[str, str]]:
+    try:
+        return _query_ipv4(host, server, interface)
+    except TimeoutError:
+        return _query_ipv4(host, server, interface)
+
+
 def resolve_ipv4_bound(host: str, interface: str) -> tuple[str, ...]:
     try:
         return (str(ipaddress.IPv4Address(host)),)
@@ -184,7 +191,7 @@ def resolve_ipv4_bound(host: str, interface: str) -> tuple[str, ...]:
                 if current in visited:
                     raise OSError(f"DNS alias cycle while resolving {host}")
                 visited.add(current)
-                addresses, aliases = _query_ipv4(current, server, interface)
+                addresses, aliases = _query_ipv4_retrying_timeouts(current, server, interface)
                 if current in addresses:
                     return tuple(addresses[current])
                 if current not in aliases:

@@ -18,6 +18,34 @@ SPEC.loader.exec_module(PROXY)
 
 
 class BoundHttpProxyTests(unittest.TestCase):
+    def test_dns_timeout_retries_same_bound_server_then_succeeds(self) -> None:
+        with (
+            mock.patch.object(PROXY, "_dns_servers", return_value=("resolver",)),
+            mock.patch.object(PROXY, "_query_ipv4", side_effect=[TimeoutError("timed out"),
+                ({"packages.example": ["192.0.2.1"]}, {})]) as query,
+        ):
+            self.assertEqual(PROXY.resolve_ipv4_bound("packages.example", "wlan-test"), ("192.0.2.1",))
+        self.assertEqual(query.call_args_list, [mock.call("packages.example", "resolver", "wlan-test")] * 2)
+
+    def test_dns_timeout_retry_is_bounded(self) -> None:
+        with (
+            mock.patch.object(PROXY, "_dns_servers", return_value=("resolver",)),
+            mock.patch.object(PROXY, "_query_ipv4", side_effect=TimeoutError("timed out")) as query,
+            self.assertRaisesRegex(OSError, "resolver: timed out"),
+        ):
+            PROXY.resolve_ipv4_bound("packages.example", "wlan-test")
+        self.assertEqual(query.call_count, 2)
+
+    def test_exhausted_dns_timeout_uses_next_bound_server(self) -> None:
+        with (
+            mock.patch.object(PROXY, "_dns_servers", return_value=("first", "second")),
+            mock.patch.object(PROXY, "_query_ipv4", side_effect=[TimeoutError("timed out"),
+                TimeoutError("timed out"), ({"packages.example": ["192.0.2.1"]}, {})]) as query,
+        ):
+            self.assertEqual(PROXY.resolve_ipv4_bound("packages.example", "wlan-test"), ("192.0.2.1",))
+        self.assertEqual(query.call_args_list, [mock.call("packages.example", "first", "wlan-test")] * 2 +
+                         [mock.call("packages.example", "second", "wlan-test")])
+
     def test_udp_dns_socket_is_bound_and_truncation_fails_closed(self) -> None:
         class FakeSocket:
             def __init__(self) -> None:
