@@ -63,7 +63,7 @@ cleanup() {
         wait "$proxy_pid" 2>/dev/null || true
     fi
     if (( engine_active )); then
-        printf 'Build or report retirement is unconfirmed; preserve %s, inspect report CID files and containers nmrpeak-{native,scientific}-report-%s and proxy PID %s before cleanup or retrying.\n' "$tmp" "${tmp##*.}" "${proxy_pid:-none}" >&2
+        printf 'Build or report retirement is unconfirmed; preserve %s, inspect report CID files, proxy.log and containers nmrpeak-{native,scientific}-report-%s and proxy PID %s before cleanup or retrying.\n' "$tmp" "${tmp##*.}" "${proxy_pid:-none}" >&2
     else
         rm -rf -- "$tmp"
     fi
@@ -132,15 +132,18 @@ proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-
 if [[ "$network_interface" != system ]]; then
     build_network=host
     readonly ready_file="$tmp/proxy.port"
-    setsid "$python" "$repo_root/docker/bound_http_proxy.py" \
-        --interface="$network_interface" --ready-file "$ready_file" </dev/null >/dev/null 2>&1 &
+    previous_umask="$(umask)"
+    umask 077
+    setsid bash -c 'ulimit -f 2048; exec "$@"' bash "$python" "$repo_root/docker/bound_http_proxy.py" \
+        --interface="$network_interface" --ready-file "$ready_file" </dev/null >"$tmp/proxy.log" 2>&1 &
     proxy_pid=$!
+    umask "$previous_umask"
     for _ in {1..100}; do
         [[ -s "$ready_file" ]] && break
-        kill -0 "$proxy_pid" 2>/dev/null || fail "Network proxy stopped before the $runner build."
+        kill -0 "$proxy_pid" 2>/dev/null || { tail -c 8192 "$tmp/proxy.log" >&2; fail "Network proxy stopped before the $runner build."; }
         sleep 0.05
     done
-    [[ -s "$ready_file" ]] || fail "Network proxy did not become ready before the $runner build."
+    [[ -s "$ready_file" ]] || { tail -c 8192 "$tmp/proxy.log" >&2; fail "Network proxy did not become ready before the $runner build."; }
     readonly proxy_url="http://127.0.0.1:$(<"$ready_file")"
     proxy_build_arguments=(
         --build-arg "HTTP_PROXY=$proxy_url"

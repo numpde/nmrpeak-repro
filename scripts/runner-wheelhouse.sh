@@ -36,7 +36,7 @@ cleanup() {
     local status=$?
     trap - EXIT
     if (( engine_active )); then
-        printf 'Wheelhouse worker retirement is unconfirmed; preserve %s, inspect its CID files and nmrpeak-{native,scientific}-{locate,acquire}-%s containers and proxy PID %s before cleanup or retrying.\n' "$scratch" "${scratch##*.}" "${proxy_pid:-none}" >&2
+        printf 'Wheelhouse worker retirement is unconfirmed; preserve %s, inspect its CID files, proxy.log and nmrpeak-{native,scientific}-{locate,acquire}-%s containers and proxy PID %s before cleanup or retrying.\n' "$scratch" "${scratch##*.}" "${proxy_pid:-none}" >&2
     else
         if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi
         rm -rf -- "$scratch"
@@ -66,15 +66,18 @@ network=bridge
 proxy_arguments=(--env HTTP_PROXY= --env HTTPS_PROXY= --env http_proxy= --env https_proxy= --env NO_PROXY= --env no_proxy= --env ALL_PROXY= --env all_proxy= --env FTP_PROXY= --env ftp_proxy=)
 if [[ "$NETWORK_INTERFACE_SELECTED" != system ]]; then
     network=host
-    setsid "$python" "$repo_root/docker/bound_http_proxy.py" \
-        --interface="$NETWORK_INTERFACE_SELECTED" --ready-file "$scratch/proxy.port" </dev/null >/dev/null 2>&1 &
+    previous_umask="$(umask)"
+    umask 077
+    setsid bash -c 'ulimit -f 2048; exec "$@"' bash "$python" "$repo_root/docker/bound_http_proxy.py" \
+        --interface="$NETWORK_INTERFACE_SELECTED" --ready-file "$scratch/proxy.port" </dev/null >"$scratch/proxy.log" 2>&1 &
     proxy_pid=$!
+    umask "$previous_umask"
     for _ in {1..100}; do
         [[ -s "$scratch/proxy.port" ]] && break
-        kill -0 "$proxy_pid" 2>/dev/null || fail 'Network proxy stopped before wheelhouse acquisition.'
+        kill -0 "$proxy_pid" 2>/dev/null || { tail -c 8192 "$scratch/proxy.log" >&2; fail 'Network proxy stopped before wheelhouse acquisition.'; }
         sleep 0.05
     done
-    [[ -s "$scratch/proxy.port" ]] || fail 'Network proxy did not become ready for wheelhouse acquisition.'
+    [[ -s "$scratch/proxy.port" ]] || { tail -c 8192 "$scratch/proxy.log" >&2; fail 'Network proxy did not become ready for wheelhouse acquisition.'; }
     proxy_url="http://127.0.0.1:$(<"$scratch/proxy.port")"
     proxy_arguments=(--env "HTTP_PROXY=$proxy_url" --env "HTTPS_PROXY=$proxy_url" --env "http_proxy=$proxy_url" --env "https_proxy=$proxy_url" --env NO_PROXY= --env no_proxy= --env ALL_PROXY= --env all_proxy= --env FTP_PROXY= --env ftp_proxy=)
 fi
