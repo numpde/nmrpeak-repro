@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+FROM scratch AS wheel_inputs
+COPY wheels/ /
 FROM docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487
 
 RUN groupadd --gid 65532 nmrpeak \
@@ -9,7 +11,7 @@ WORKDIR /build
 ENV PROVIDER_CORE_IN_CONTAINER=1
 COPY requirements.lock ./
 COPY dependencies/provider-core-api.lock dependencies/provider-core-source.txt dependencies/
-RUN --network=none --mount=type=bind,from=wheelhouse,target=/wheelhouse,ro \
+RUN --network=none --mount=type=bind,from=wheel_inputs,target=/wheelhouse,ro \
     sed -E -i 's#https://github.com/numpde/nmr-provider-tools/releases/download/[^/]+/#file:///wheelhouse/#' \
         dependencies/provider-core-source.txt \
     && python -m pip install --no-cache-dir --no-index --find-links=/wheelhouse \
