@@ -60,6 +60,9 @@ readonly image="numpde/nmrpeak-provider:${image_input_id#sha256:}"
 readonly image_id_file="$scratch/image.id"
 git -C "$repo_root" show "$revision:repository_checks/provider_wheel_report.py" >"$scratch/report.py"
 read -r report_helper_hash _ < <(sha256sum -- "$scratch/report.py")
+readonly report_input="$scratch/report-input"
+install -d -m 0755 -- "$report_input" "$report_input/dependencies"
+chmod 0711 -- "$scratch"
 readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487'
 docker image inspect "$base" >/dev/null 2>&1 ||
     fail 'the pinned Python base image must already exist on the selected Docker engine'
@@ -67,6 +70,7 @@ lock_arguments=()
 for path in requirements.lock dependencies/provider-core-api.lock dependencies/provider-core-source.txt; do
     read -r digest _ < <(sha256sum -- "$context/$path")
     lock_arguments+=(--lock-sha256 "$digest")
+    install -m 0644 -- "$context/$path" "$report_input/$path"
 done
 engine_active=1
 docker run --name "$report_container" --cidfile "$scratch/report.cid" \
@@ -74,7 +78,7 @@ docker run --name "$report_container" --cidfile "$scratch/report.cid" \
     --rm --platform linux/amd64 --pull never --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 64 --memory 512m \
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
-    --mount "type=bind,src=$context,dst=/input,readonly" \
+    --mount "type=bind,src=$report_input,dst=/input,readonly" \
     --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
     --entrypoint python "$base" -I -c "$(<"$scratch/report.py")" \
     --source /input --pool /wheelhouse "${lock_arguments[@]}" >"$scratch/report.json"
