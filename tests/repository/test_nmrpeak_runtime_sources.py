@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
@@ -31,17 +32,23 @@ class NmrpeakRuntimeSourceTests(unittest.TestCase):
                     REPOSITORY_ROOT / "families/nmrpeak" / name,
                     declarations / name,
                 )
-            subprocess.run(
-                (
-                    "git",
-                    "clone",
-                    "--quiet",
-                    "--no-hardlinks",
-                    str(REPOSITORY_ROOT / "unicore-upstream"),
-                    str(root / "unicore-upstream"),
-                ),
-                check=True,
-            )
+            if os.environ.get("NMRPEAK_TEST_CONTAINER") == "1":
+                destination = root / "unicore-upstream"
+                destination.mkdir()
+                shutil.copytree(REPOSITORY_ROOT / "unicore-upstream/.git", destination / ".git", symlinks=True)
+                subprocess.run(("git", "-C", str(destination), "checkout", "--force", "HEAD", "--", "."), check=True)
+            else:
+                subprocess.run(
+                    (
+                        "git",
+                        "clone",
+                        "--quiet",
+                        "--no-hardlinks",
+                        str(REPOSITORY_ROOT / "unicore-upstream"),
+                        str(root / "unicore-upstream"),
+                    ),
+                    check=True,
+                )
             subprocess.run(
                 (
                     "git",

@@ -31,17 +31,23 @@ def copied_source_closure() -> Iterator[Path]:
                 REPOSITORY_ROOT / "families/nmrpeak" / name,
                 declaration_directory / name,
             )
-        subprocess.run(
-            (
-                "git",
-                "clone",
-                "--quiet",
-                "--no-hardlinks",
-                str(REPOSITORY_ROOT / "nmrpeak-upstream"),
-                str(root / "nmrpeak-upstream"),
-            ),
-            check=True,
-        )
+        if os.environ.get("NMRPEAK_TEST_CONTAINER") == "1":
+            destination = root / "nmrpeak-upstream"
+            destination.mkdir()
+            shutil.copytree(REPOSITORY_ROOT / "nmrpeak-upstream/.git", destination / ".git", symlinks=True)
+            subprocess.run(("git", "-C", str(destination), "checkout", "--force", "HEAD", "--", "."), check=True)
+        else:
+            subprocess.run(
+                (
+                    "git",
+                    "clone",
+                    "--quiet",
+                    "--no-hardlinks",
+                    str(REPOSITORY_ROOT / "nmrpeak-upstream"),
+                    str(root / "nmrpeak-upstream"),
+                ),
+                check=True,
+            )
         yield root
 
 
