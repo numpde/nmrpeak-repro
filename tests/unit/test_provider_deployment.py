@@ -6,6 +6,7 @@ from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_st
 from hashlib import sha256
 from io import BytesIO, StringIO
 import json
+import os
 from pathlib import Path
 import stat
 import subprocess
@@ -648,6 +649,65 @@ class ProviderDeploymentTests(unittest.TestCase):
             self.assertFalse((repository / "secrets/deployments/production/generations").exists())
 
     def test_materialization_is_exact_idempotent_and_rejects_drift(self) -> None:
+        access_by_inode = {}
+        open_inodes = []
+
+        def read_acl(path, _operation):
+            metadata = path.stat()
+            key = (metadata.st_dev, metadata.st_ino)
+            if key in access_by_inode:
+                return access_by_inode[key]
+            mode = stat.S_IMODE(metadata.st_mode)
+            return {
+                0o700: provider_deployment._PRIVATE_DIRECTORY_ACL,
+                0o400: provider_deployment._PRIVATE_READONLY_FILE_ACL,
+                0o600: provider_deployment._PRIVATE_WRITABLE_FILE_ACL,
+            }[mode]
+
+        def replace_acl(path, access, *, directory):
+            metadata = path.stat()
+            key = (metadata.st_dev, metadata.st_ino)
+            if key not in access_by_inode:
+                # Keep deleted inodes from being reused while this model is active.
+                open_inodes.append(os.open(path, os.O_RDONLY | os.O_CLOEXEC))
+            access_by_inode[key] = access
+            mode = 0o750 if directory else (0o640 if access[0] == "user::rw-" else 0o440)
+            path.chmod(mode)
+
+        try:
+            with (
+                patch.object(provider_deployment, "_read_acl", side_effect=read_acl),
+                patch.object(provider_deployment, "_replace_acl", side_effect=replace_acl),
+            ):
+                self._assert_materialization()
+        finally:
+            for descriptor in open_inodes:
+                os.close(descriptor)
+
+    def test_materialization_aborts_when_acl_grant_fails(self) -> None:
+        with render_repository() as repository:
+            plan = test_plan(repository)
+
+            def private_acl(path, _operation):
+                return (provider_deployment._PRIVATE_DIRECTORY_ACL if path.is_dir()
+                        else provider_deployment._PRIVATE_READONLY_FILE_ACL)
+
+            with (
+                patch.object(provider_deployment, "_read_acl", side_effect=private_acl),
+                patch.object(provider_deployment, "_replace_acl", side_effect=DeploymentOperationRejected("ACL grant failed")),
+            ):
+                with self.assertRaisesRegex(DeploymentOperationRejected, "ACL grant failed"):
+                    materialize_deployment_plan(repository, "production", plan)
+            self.assertEqual(list(repository.rglob("*.staging")), [])
+
+    @unittest.skipUnless(
+        os.environ.get("NMRPEAK_TEST_REAL_ACL") == "1",
+        "requires a host filesystem with named-user ACL support",
+    )
+    def test_materialization_real_acl_on_host(self) -> None:
+        self._assert_materialization()
+
+    def _assert_materialization(self) -> None:
         with render_repository() as repository:
             plan = test_plan(repository)
 

@@ -1,0 +1,29 @@
+ACL test boundary
+=================
+
+The materialization unit test models the ACL records and mode changes while
+using real temporary files. It checks the materialization, idempotence and
+drift paths without requiring ACL support on the test runner's filesystem.
+The model does not emulate chmod changing an existing ACL, and does not prove
+kernel permission enforcement or ACL tool behavior. A separate injected grant
+failure checks that materialization aborts and removes its staging tree.
+
+The separate test_materialization_real_acl_on_host qualification runs the same
+checks with the real ACL tools. Run it on a Linux host filesystem that supports
+named-user ACLs, using the pinned test image on a rootless local Docker engine.
+Choose an empty, writable host directory for <acl-dir>; its temporary contents
+are removed by the test. Obtain <test-image> from `make -pn help` (the
+NMRPEAK_TEST_IMAGE value), after preparing the maintained test image.
+
+    docker --context <context> run --rm --network none --user 0:0 --cap-drop ALL \
+      --security-opt no-new-privileges \
+      --mount type=bind,src="$PWD",dst=/workspace,readonly \
+      --mount type=bind,src=<acl-dir>,dst=/acl --workdir /workspace \
+      -e HOME=/tmp -e TMPDIR=/acl -e PYTHONPATH=/workspace \
+      -e PROVIDER_CORE_IN_CONTAINER=1 -e NMRPEAK_TEST_CONTAINER=1 \
+      -e NMRPEAK_TEST_REAL_ACL=1 --entrypoint python <test-image> \
+      -m unittest tests.unit.test_provider_deployment.ProviderDeploymentTests.test_materialization_real_acl_on_host -v
+
+Container UID 0 maps to the invoking user on the rootless engine; the source
+mount is read-only and no engine socket is mounted. This proves ACL application
+and readback on that filesystem, not denial to an unrelated host user.
