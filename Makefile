@@ -7,7 +7,7 @@ override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
 
 override NMRPEAK_DOCKER_TARGETS := \
 	benchmark benchmark/image/build benchmark/lock check/test-image \
-	test test/unit test/contract test/integration test/repository test/repository/provider-image test/model-behavior-fixtures \
+	test test/unit test/contract test/integration test/repository test/repository/provider-image test/repository/wheelhouse-tool test/model-behavior-fixtures \
 	test/live/failure-propagation test/live/failure-propagation/observe \
 	test/live/success-propagation test/live/success-propagation/observe \
 	test-image/base/build runner/image/build runner/lock/stage provider/image/build \
@@ -75,7 +75,7 @@ benchmark/verify:
 	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
 
 .PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/update provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
-.PHONY: test/repository/provider-image
+.PHONY: test/repository/provider-image test/repository/wheelhouse-tool wheelhouse/tool
 
 help:
 	@printf '%s\n' \
@@ -104,6 +104,7 @@ help:
 		'  make test/model-behavior-fixtures' \
 		'  make test/repository' \
 		'  make test/repository/provider-image' \
+		'  make test/repository/wheelhouse-tool' \
 		'      Run one part of the default lane.' \
 		'  make test/live/failure-propagation ... CONFIRM_PERSISTENT_JOBS=1' \
 		'      Opt in to persistent HF/CHF Jobs against a deployed API; see tests/live/README.md.' \
@@ -137,6 +138,8 @@ help:
 		'      Repair an interrupted checkpoint volume after exact confirmation.' \
 		'' \
 		'Build provider and runner images:' \
+		'  make wheelhouse/tool WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>]' \
+		'      Reuse or acquire the pinned shared wheelhouse tool.' \
 		'  make provider/image/build WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
 		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
@@ -211,9 +214,12 @@ test/unit test/contract test/integration test/repository test/model-behavior-fix
 	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
 		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" "$(@F)"
 
-test/repository/provider-image: check/test-image
+test/repository/provider-image test/repository/wheelhouse-tool: check/test-image
 	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
-		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" provider-image
+		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" "$(@F)"
+
+wheelhouse/tool:
+	@PYTHON="$(PYTHON)" bash "$(REPOSITORY_ROOT)/scripts/wheelhouse-tool.sh"
 
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_API_ORIGIN_INPUT := $(value LIVE_API_ORIGIN)
 test/live/failure-propagation test/live/failure-propagation/observe: private export LIVE_API_TOPOLOGY_INPUT := $(value LIVE_API_TOPOLOGY)
