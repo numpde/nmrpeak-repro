@@ -7,12 +7,11 @@ import json
 from pathlib import Path
 import unittest
 
+from tests.fake_interpreter import fake_endpoint, turn as _turn
+
 from nmrpeak_provider.interpreter import (
-    InterpreterEndpoint,
     InterpreterTool,
-    InterpreterToolInvocation,
     InterpreterTransportError,
-    InterpreterTurn,
     interpret,
 )
 from nmrpeak_provider.input_interpreter import _InterpretationCapability
@@ -20,18 +19,11 @@ from nmrpeak_provider.lifecycle_lane import HF_LIFECYCLE_LANE
 from nmrpeak_provider.product_input import ChfModelInput, HfModelInput
 from nmrpeak_provider.text_provenance import UserProvidedText
 from tests.model_behavior.run_interpreter import (
+    _LANES,
     _load_corpus,
     _observe,
     _select_evaluations,
 )
-
-
-def _turn(name: InterpreterTool, arguments: object) -> InterpreterTurn:
-    return InterpreterTurn(
-        assistant_message={"role": "assistant", "content": None},
-        invocation=InterpreterToolInvocation(name.value, arguments),
-        tool_call_ids=("call-1",),
-    )
 
 
 def _fixture_variant(scenario_id: str, lane: str) -> dict[str, object]:
@@ -63,11 +55,11 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 # this local test checks the repair machinery, not a model.
                 value = _fixture_variant("ethanol_point", lane)["expected_interpretation"]
 
-                async def call(_prompt: object) -> InterpreterTurn:
+                async def call(_prompt: object) -> dict[str, object]:
                     return _turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": value})
 
                 observation = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake", call),
+                    endpoint=fake_endpoint("fake", call, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -82,14 +74,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
             _load_corpus(), "chf", case_id="missing_carbon", mode="normal"
         )[0]
 
-        async def call(_prompt: object) -> InterpreterTurn:
+        async def call(_prompt: object) -> dict[str, object]:
             return _turn(
                 InterpreterTool.REPORT_INPUT_PROBLEM,
                 {"message": "The required 13C carbon peak list is missing."},
             )
 
         observation = asyncio.run(_observe(
-            endpoint=InterpreterEndpoint("fake", call),
+            endpoint=fake_endpoint("fake", call, lane=_LANES[evaluation.variant.lane_name]),
             evaluation=evaluation,
             show_model_output=False,
             interpretation_timeout_seconds=3,
@@ -105,12 +97,12 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 )[0]
                 value = _fixture_variant("unsupported_multiplicity", lane)["expected_candidate"]
 
-                async def call(_prompt: object) -> InterpreterTurn:
+                async def call(_prompt: object) -> dict[str, object]:
                     return _turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": value})
 
                 async def once():
                     return await _observe(
-                        endpoint=InterpreterEndpoint("fake", call), evaluation=evaluation,
+                        endpoint=fake_endpoint("fake", call, lane=_LANES[evaluation.variant.lane_name]), evaluation=evaluation,
                         show_model_output=False, interpretation_timeout_seconds=3,
                     )
 
@@ -130,14 +122,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                     _load_corpus(), lane, case_id="unsupported_multiplicity", mode="normal"
                 )[0]
 
-                async def reported(_prompt: object) -> InterpreterTurn:
+                async def reported(_prompt: object) -> dict[str, object]:
                     return _turn(
                         InterpreterTool.REPORT_INPUT_PROBLEM,
                         {"message": "The source reports multiplicity xy, which this model cannot represent."},
                     )
 
                 report = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-report", reported),
+                    endpoint=fake_endpoint("fake-report", reported, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -148,7 +140,7 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 self.assertIsNone(report.reported_message)
 
                 captured_report = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-captured-report", reported),
+                    endpoint=fake_endpoint("fake-captured-report", reported, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=True,
                     interpretation_timeout_seconds=3,
@@ -159,14 +151,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 )
                 self.assertEqual(captured_report.reason, "unsupported_report_requires_review")
 
-                async def alternate_report(_prompt: object) -> InterpreterTurn:
+                async def alternate_report(_prompt: object) -> dict[str, object]:
                     return _turn(
                         InterpreterTool.REPORT_INPUT_PROBLEM,
                         {"message": "The source gives multiplicity xy, which is not a recognized label."},
                     )
 
                 alternate = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-alternate-report", alternate_report),
+                    endpoint=fake_endpoint("fake-alternate-report", alternate_report, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -174,14 +166,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 self.assertFalse(alternate.passed)
                 self.assertEqual(alternate.reason, "unsupported_report_requires_review")
 
-                async def live_wording(_prompt: object) -> InterpreterTurn:
+                async def live_wording(_prompt: object) -> dict[str, object]:
                     return _turn(
                         InterpreterTool.REPORT_INPUT_PROBLEM,
                         {"message": "The source reports multiplicity xy, but that label cannot be represented here."},
                     )
 
                 observed_wording = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-live-wording", live_wording),
+                    endpoint=fake_endpoint("fake-live-wording", live_wording, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -189,14 +181,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 self.assertFalse(observed_wording.passed)
                 self.assertEqual(observed_wording.reason, "unsupported_report_requires_review")
 
-                async def corrective_wording(_prompt: object) -> InterpreterTurn:
+                async def corrective_wording(_prompt: object) -> dict[str, object]:
                     return _turn(
                         InterpreterTool.REPORT_INPUT_PROBLEM,
                         {"message": "The source gives multiplicity xy; please provide a multiplicity label this product can represent in a new Job."},
                     )
 
                 correction = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-corrective-wording", corrective_wording),
+                    endpoint=fake_endpoint("fake-corrective-wording", corrective_wording, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -204,14 +196,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 self.assertFalse(correction.passed)
                 self.assertEqual(correction.reason, "unsupported_report_requires_review")
 
-                async def contradictory_correction(_prompt: object) -> InterpreterTurn:
+                async def contradictory_correction(_prompt: object) -> dict[str, object]:
                     return _turn(
                         InterpreterTool.REPORT_INPUT_PROBLEM,
                         {"message": "The source reports multiplicity xy, which this product supports. Please provide a multiplicity label this product can represent."},
                     )
 
                 contradiction = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-contradiction", contradictory_correction),
+                    endpoint=fake_endpoint("fake-contradiction", contradictory_correction, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -219,14 +211,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 self.assertFalse(contradiction.passed)
                 self.assertEqual(contradiction.reason, "unsupported_value_not_explained")
 
-                async def falsely_accepted(_prompt: object) -> InterpreterTurn:
+                async def falsely_accepted(_prompt: object) -> dict[str, object]:
                     return _turn(
                         InterpreterTool.REPORT_INPUT_PROBLEM,
                         {"message": "xy is the standard triplet label, so the input is fine."},
                     )
 
                 false_report = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-false-report", falsely_accepted),
+                    endpoint=fake_endpoint("fake-false-report", falsely_accepted, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -234,14 +226,14 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
                 self.assertFalse(false_report.passed)
                 self.assertEqual(false_report.reason, "unsupported_value_not_explained")
 
-                async def negated(_prompt: object) -> InterpreterTurn:
+                async def negated(_prompt: object) -> dict[str, object]:
                     return _turn(
                         InterpreterTool.REPORT_INPUT_PROBLEM,
                         {"message": "xy is not unsupported; it is a standard triplet and the input is fine."},
                     )
 
                 negated_report = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-negated-report", negated),
+                    endpoint=fake_endpoint("fake-negated-report", negated, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -251,11 +243,11 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
 
                 substituted = _fixture_variant("ethanol_point", lane)["expected_interpretation"]
 
-                async def changed(_prompt: object) -> InterpreterTurn:
+                async def changed(_prompt: object) -> dict[str, object]:
                     return _turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": substituted})
 
                 replacement = asyncio.run(_observe(
-                    endpoint=InterpreterEndpoint("fake-changed", changed),
+                    endpoint=fake_endpoint("fake-changed", changed, lane=_LANES[evaluation.variant.lane_name]),
                     evaluation=evaluation,
                     show_model_output=False,
                     interpretation_timeout_seconds=3,
@@ -269,10 +261,10 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
         )[0]
         value = _fixture_variant("ethanol_point", "hf")["expected_interpretation"]
 
-        async def broken(_prompt: object) -> InterpreterTurn:
+        async def broken(_prompt: object) -> dict[str, object]:
             raise InterpreterTransportError("connect_failed")
 
-        async def healthy(_prompt: object) -> InterpreterTurn:
+        async def healthy(_prompt: object) -> dict[str, object]:
             return _turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": value})
 
         async def admit(candidate: object) -> object:
@@ -282,12 +274,13 @@ class ModelBehaviorHarnessTests(unittest.TestCase):
             source_text=UserProvidedText(evaluation.variant.source_text),
             capability=_InterpretationCapability(HF_LIFECYCLE_LANE),
             endpoints=(
-                InterpreterEndpoint("broken", broken),
-                InterpreterEndpoint("healthy", healthy),
+                fake_endpoint("broken", broken, lane=_LANES[evaluation.variant.lane_name]),
+                fake_endpoint("healthy", healthy, lane=_LANES[evaluation.variant.lane_name]),
             ),
             interpretation_timeout_seconds=3,
             report_endpoint_failure=lambda _event: None,
             admit_interpretation=admit,
+            retain_conversation=lambda conversation: None,
         ))
         self.assertEqual(result.attempted_configuration_ids, ("broken", "healthy"))
         self.assertEqual(result.configuration_id, "healthy")

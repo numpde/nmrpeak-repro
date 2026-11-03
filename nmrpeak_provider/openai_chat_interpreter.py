@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import InitVar, dataclass, field, replace
+from dataclasses import InitVar, dataclass, field
 import json
 from pathlib import Path
 import re
@@ -32,9 +32,7 @@ from nmrpeak_provider.interpreter import (
     InterpreterEndpointFailure,
     InterpreterPrompt,
     InterpreterTool,
-    InterpreterToolInvocation,
     InterpreterTransportError,
-    InterpreterTurn,
     require_interpreter_configuration_id,
 )
 from nmrpeak_provider.interpreter_policy import (
@@ -132,11 +130,18 @@ class _ObservedTransport:
 class _EndpointOwner:
     """Retain one endpoint's HTTP owner through its retirement."""
 
-    __slots__ = ("_transport", "_carrier", "_closed", "_trust", "_before_send")
+    __slots__ = ("_transport", "_carrier", "_observed_transport", "_closed", "_trust", "_before_send")
 
-    def __init__(self, *, before_send):
+    def __init__(self, *, before_send, spec):
         self._transport = None
-        self._carrier = None
+        self._observed_transport = _ObservedTransport(before_send, None, None, self)
+        self._carrier = ChatEndpoint(
+            ChatEndpointSpec(configuration_id=spec.configuration_id, model=spec.model,
+                             url=spec.url, api_key=spec.api_key, reasoning_effort=spec.reasoning_effort),
+            transport=self._observed_transport,
+            request_bytes=_MAX_REQUEST_BYTES, response_bytes=_MAX_RESPONSE_BYTES,
+            error_response_bytes=_MAX_ERROR_RESPONSE_BYTES,
+        )
         self._closed = False
         self._before_send = before_send
         self._trust = httpx.create_ssl_context(trust_env=False)
@@ -161,14 +166,12 @@ class _EndpointOwner:
             raise RuntimeError("Cannot send interpreter request: this Attempt's endpoint owner is retiring")
         if self._transport is not None and not self._transport.retirement_confirmed:
             raise ExchangeFailed("Cannot send interpreter request: the original HTTP owner remains unsettled")
-        observed_transport = _ObservedTransport(self._before_send, request_deadline, deadline, self)
-        carrier = ChatEndpoint(
-            ChatEndpointSpec(configuration_id=spec.configuration_id, model=spec.model,
-                             url=spec.url, api_key=spec.api_key, reasoning_effort=spec.reasoning_effort),
-            transport=observed_transport, request_bytes=_MAX_REQUEST_BYTES, response_bytes=_MAX_RESPONSE_BYTES,
-            error_response_bytes=_MAX_ERROR_RESPONSE_BYTES,
-        )
-        self._carrier = carrier
+        carrier = self._carrier
+        observed_transport = self._observed_transport
+        observed_transport._transport = None
+        self._transport = None
+        observed_transport._request_deadline = request_deadline
+        observed_transport._deadline = deadline
         primary = None
         try:
             try:
@@ -260,7 +263,6 @@ class _OpenAIChatCall:
         "_http_owner",
         "_policy",
         "_spec",
-        "_tools",
         "_secrets",
         "_report_endpoint_failure",
     )
@@ -271,24 +273,28 @@ class _OpenAIChatCall:
         policy: OpenAIChatCallPolicy,
         *,
         http_owner: _EndpointOwner,
-        tools: tuple[dict[str, object], dict[str, object]],
         secrets: tuple[str, ...],
         report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None,
     ) -> None:
         self._http_owner = http_owner
         self._policy = policy
         self._spec = spec
-        self._tools = tools
         self._secrets = secrets
         self._report_endpoint_failure = report_endpoint_failure
 
-    async def __call__(self, prompt: InterpreterPrompt) -> InterpreterTurn:
-        """Return a normalized turn; classify expected failures without content.
+    @property
+    def identity(self):
+        return self._http_owner._carrier.identity
 
-        All attempts, pacing, retries and retirement share the original turn
-        deadline. Unconfirmed HTTP retirement escapes retry and fallback.
-        """
+    @property
+    def retirement_confirmed(self):
+        return self._http_owner._carrier.retirement_confirmed
 
+    async def retire(self):
+        await self._http_owner.retire()
+
+    async def complete(self, prompt, tools):
+        """Run one bounded carrier turn; the SDK owns parsing and repair."""
         deadline = (
             asyncio.get_running_loop().time() + self._policy.turn_timeout_seconds
         )
@@ -298,7 +304,7 @@ class _OpenAIChatCall:
                     final_attempt = attempt + 1 == self._policy.maximum_attempts
                     try:
                         status, response_body, request_id, detail_problem = await self._post_once(
-                            prompt, deadline=deadline,
+                            prompt, tools, deadline=deadline,
                         )
                     except (_EndpointUnavailable, TimeoutError) as error:
                         if final_attempt:
@@ -332,20 +338,7 @@ class _OpenAIChatCall:
                 "endpoint_unavailable", explanation=json.dumps(failure_evidence(error, secrets=self._secrets), ensure_ascii=True)
             ) from None
 
-        try:
-            turn = _parse_message(response_body)
-            invocation = turn.invocation
-            if (invocation is not None and invocation.name == "report_input_problem"
-                    and type(invocation.arguments) is dict
-                    and type(invocation.arguments.get("message")) is str):
-                arguments = dict(invocation.arguments)
-                arguments["message"] = diagnostic_text(arguments["message"], secrets=self._secrets, limit=8192)
-                turn = replace(turn, invocation=replace(invocation, arguments=arguments))
-            return turn
-        except (UnicodeError, ValueError, RecursionError) as error:
-            raise InterpreterTransportError(
-                "invalid_response_envelope", explanation=json.dumps(failure_evidence(error, secrets=self._secrets), ensure_ascii=True)
-            ) from None
+        return response_body
 
     def _record_retry(self, facts: dict[str, str], *, http_status: int | None = None) -> None:
         if self._report_endpoint_failure is not None:
@@ -354,9 +347,9 @@ class _OpenAIChatCall:
                 failure_reason="endpoint_retry", http_status=http_status, **facts,
             ))
 
-    async def _post_once(self, prompt, *, deadline):
+    async def _post_once(self, prompt, tools, *, deadline):
         request_deadline = min(deadline, asyncio.get_running_loop().time() + self._policy.request_timeout_seconds)
-        return await self._http_owner.post(self._spec, prompt, self._tools, request_deadline=request_deadline,
+        return await self._http_owner.post(self._spec, prompt, tools, request_deadline=request_deadline,
                                            deadline=deadline, secrets=self._secrets)
 
 
@@ -394,7 +387,7 @@ def bind_openai_chat_endpoints(
         submit_interpretation_value_schema=submit_interpretation_value_schema,
         report_input_problem_description=report_input_problem_description,
     )
-    owners = tuple(_EndpointOwner(before_send=before_send) for _ in specs)
+    owners = tuple(_EndpointOwner(before_send=before_send, spec=spec) for spec in specs)
     endpoints = tuple(
         _bind_endpoint(spec, policy, owner, tools, tuple(item.api_key for item in specs), report_endpoint_failure)
         for spec, owner in zip(specs, owners, strict=True)
@@ -427,11 +420,10 @@ def _bind_endpoint(
         spec,
         policy,
         http_owner=http_owner,
-        tools=tools,
         secrets=secrets,
         report_endpoint_failure=report_endpoint_failure,
     )
-    return InterpreterEndpoint(spec.configuration_id, call)
+    return InterpreterEndpoint(spec.configuration_id, call, tools, secrets)
 
 
 def _interpreter_tools(
@@ -615,94 +607,3 @@ def _endpoint_error_facts(
     if details:
         facts["explanation"] = diagnostic_text("\n".join(details), secrets=secrets, limit=4096)
     return facts
-
-
-def _parse_message(raw_message: object) -> InterpreterTurn:
-    if type(raw_message) is not dict or raw_message.get("role") != "assistant":
-        raise ValueError
-    content = raw_message.get("content")
-    if content is not None and type(content) is not str:
-        raise ValueError
-
-    assistant_message: dict[str, object] = {
-        "role": "assistant",
-        "content": content,
-    }
-    # Some reasoning-capable providers require prior thinking on tool-result
-    # turns. The generic repair loop replays this message, so keep the optional
-    # provider field rather than silently discarding it. The response-size cap
-    # already bounds it; do not reinterpret it as ordinary assistant content.
-    reasoning = raw_message.get("reasoning_content")
-    if reasoning is not None:
-        if type(reasoning) is not str:
-            raise ValueError("reasoning_content must be text or null")
-        assistant_message["reasoning_content"] = reasoning
-    raw_tool_calls = raw_message.get("tool_calls")
-    if raw_tool_calls is None:
-        return InterpreterTurn(assistant_message, None, ())
-    normalized = _normalize_tool_calls(raw_tool_calls)
-    if normalized is None:
-        return InterpreterTurn(assistant_message, None, None)
-    assistant_message["tool_calls"] = normalized
-    invocation = _parse_invocation(normalized)
-    return InterpreterTurn(
-        assistant_message,
-        invocation,
-        tuple(tool_call["id"] for tool_call in normalized),
-    )
-
-
-def _normalize_tool_calls(value: object) -> list[dict[str, object]] | None:
-    if type(value) is not list or not value:
-        return None
-    normalized: list[dict[str, object]] = []
-    for item in value:
-        if type(item) is not dict:
-            return None
-        call_id = item.get("id")
-        function = item.get("function")
-        if (
-            type(call_id) is not str
-            or not call_id
-            or item.get("type") != "function"
-            or type(function) is not dict
-            or type(function.get("name")) is not str
-            or type(function.get("arguments")) is not str
-        ):
-            return None
-        normalized.append(
-            {
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": function["name"],
-                    "arguments": function["arguments"],
-                },
-            }
-        )
-    return normalized
-
-
-def _parse_invocation(
-    tool_calls: list[dict[str, object]],
-) -> InterpreterToolInvocation | None:
-    if len(tool_calls) != 1:
-        return None
-    function = cast(dict[str, object], tool_calls[0]["function"])
-    try:
-        arguments = json.loads(
-            function["arguments"],
-            object_pairs_hook=_object_without_duplicates,
-        )
-    except (RecursionError, ValueError):
-        return None
-    return InterpreterToolInvocation(function["name"], arguments)
-
-
-def _object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("duplicate JSON member")
-        value[key] = item
-    return value

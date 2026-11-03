@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import asyncio
 import unittest
-from typing import cast
 from unittest.mock import patch
+
+from tests.fake_interpreter import InterpreterCall, fake_endpoint, turn
 
 from nmrpeak_provider.diagnostic_text import exception_diagnostic
 from nmrpeak_provider.chf_binding import ChfRunnerInput
@@ -20,14 +22,10 @@ from nmrpeak_provider.interpreter_policy import (
 from nmrpeak_provider.interpreter import (
     CandidateConstructionExhausted,
     InterpreterEndpoint,
-    InterpreterCall,
     InterpreterPrompt,
-    InterpreterProtocolError,
     InterpretationRejected,
     InterpreterTool,
-    InterpreterToolInvocation,
     InterpreterTransportError,
-    InterpreterTurn,
     InterpreterUnavailable,
     ReportedInputProblem,
 )
@@ -104,20 +102,122 @@ class BoundEndpoints:
         self.endpoints = endpoints
 
     async def retire(self) -> None:
-        pass
+        for endpoint in self.endpoints:
+            await endpoint.carrier.retire()
 
 
 class InputInterpreterTests(unittest.TestCase):
+    def test_source_containing_configured_key_is_not_published_or_called(self) -> None:
+        called = []
+
+        async def call(_prompt):
+            called.append(True)
+            return turn(InterpreterTool.REPORT_INPUT_PROBLEM, {"message": "incomplete"})
+
+        with self.assertLogs("nmrpeak_provider.input_interpreter", level="WARNING") as logged, \
+             self.assertRaises(InterpreterUnavailable):
+            run_with_endpoint(call, source=b"source includes test-key")
+        self.assertEqual(called, [])
+        self.assertIn("conversation_failed", "\n".join(logged.output))
+        self.assertIn("repair_unavailable", "\n".join(logged.output))
+        self.assertNotIn("test-key", "\n".join(logged.output))
+
+    def test_model_report_with_configured_key_is_not_published(self) -> None:
+        async def call(_prompt):
+            return turn(InterpreterTool.REPORT_INPUT_PROBLEM,
+                        {"message": "The source is incomplete. test-key"})
+
+        with self.assertLogs("nmrpeak_provider.input_interpreter", level="WARNING") as logged, \
+             self.assertRaises(InterpreterUnavailable) as raised:
+            run_with_endpoint(call)
+        self.assertNotIn("test-key", exception_diagnostic(raised.exception))
+        self.assertIn("conversation_failed", "\n".join(logged.output))
+        self.assertIn("repair_unavailable", "\n".join(logged.output))
+        self.assertNotIn("test-key", "\n".join(logged.output))
+
+    def test_unavailable_round_retires_before_fresh_successful_round(self) -> None:
+        async def unavailable(_prompt):
+            raise InterpreterTransportError("connect_failed")
+
+        async def success(_prompt):
+            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
+
+        first = fake_endpoint("first", unavailable, lane=CHF_LIFECYCLE_LANE)
+        second = fake_endpoint("second", success, lane=CHF_LIFECYCLE_LANE)
+        configured = InputInterpreter(
+            (OpenAIChatEndpointSpec(configuration_id="configured", base_url="https://interpreter.invalid/v1",
+                                    api_key="test-key", model="model", reasoning_effort=None),),
+            InterpreterPolicy(call_policy=OpenAIChatCallPolicy(request_timeout_seconds=1, turn_timeout_seconds=3),
+                              interpretation_timeout_seconds=1),
+        )
+
+        async def run():
+            session = configured.new_session()
+
+            async def validate(_input):
+                return ValidatedRunnerRequest(CapturingSession(), object())
+
+            arguments = dict(source=SOURCE, lane=CHF_LIFECYCLE_LANE, validate_input=validate,
+                             execution_attempt_ref="execution_attempt:sha256:" + "a" * 64)
+            try:
+                with patch("nmrpeak_provider.input_interpreter.bind_openai_chat_endpoints",
+                           side_effect=(BoundEndpoints((first,)), BoundEndpoints((second,)))):
+                    with self.assertRaises(InterpreterUnavailable):
+                        await session.validate_freeform_input_async(**arguments)
+                    self.assertTrue(first.carrier._closed)
+                    result = await session.validate_freeform_input_async(**arguments)
+                    self.assertIs(type(result), ValidatedRunnerRequest)
+                    self.assertTrue(second.carrier._closed)
+            finally:
+                await session.retire()
+
+        asyncio.run(run())
+
+    def test_model_report_redacts_unconfigured_credential_pattern(self) -> None:
+        async def call(_prompt):
+            return turn(InterpreterTool.REPORT_INPUT_PROBLEM,
+                        {"message": "The source is incomplete. Bearer other-token"})
+
+        with self.assertRaises(ReportedInputProblem) as raised:
+            run_with_endpoint(call)
+        self.assertNotIn("other-token", raised.exception.message)
+        self.assertIn("source is incomplete", raised.exception.message)
+
+    def test_unknown_tool_repair_preserves_provider_correction(self) -> None:
+        prompts = []
+
+        async def call(prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return turn("unknown_tool", {})
+            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
+
+        run_with_endpoint(call)
+        repair = prompts[1][3:]
+        self.assertEqual([message["role"] for message in repair], ["assistant", "tool", "user"])
+        self.assertEqual(repair[1]["content"], "unexpected_tool_invocation")
+        self.assertIn("The rejection is not evidence", repair[2]["content"])
+
+    def test_invalid_carrier_is_preserved_as_unavailable_cause(self) -> None:
+        async def call(_prompt):
+            return {"role": "assistant", "content": None, "tool_calls": []}
+
+        with self.assertLogs("nmrpeak_provider.input_interpreter", level="WARNING") as logged, \
+             self.assertRaises(InterpreterUnavailable) as raised:
+            run_with_endpoint(call)
+        self.assertIn("no identifiable tool call", exception_diagnostic(raised.exception))
+        self.assertIn("invalid_tool_carrier", "\n".join(logged.output))
+
     def test_endpoint_explanations_survive_fallback_and_mixed_routes(self) -> None:
         evidence: list[str] = []
 
-        async def report(_prompt: object) -> InterpreterTurn:
+        async def report(_prompt: object) -> dict[str, object]:
             return turn(InterpreterTool.REPORT_INPUT_PROBLEM, {"message": "Missing formula " + "x" * 5000})
 
-        async def failed(_prompt: object) -> InterpreterTurn:
+        async def failed(_prompt: object) -> dict[str, object]:
             raise InterpreterTransportError("http_503", explanation="Model loading failed; Bearer hidden")
 
-        async def success(_prompt: object) -> InterpreterTurn:
+        async def success(_prompt: object) -> dict[str, object]:
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
         result = run_with_endpoints((failed, success), record_diagnostic=evidence.append)
@@ -173,7 +273,7 @@ class InputInterpreterTests(unittest.TestCase):
         ):
             prompts: list[InterpreterPrompt] = []
 
-            async def call(prompt: InterpreterPrompt) -> InterpreterTurn:
+            async def call(prompt: InterpreterPrompt) -> dict[str, object]:
                 prompts.append(prompt)
                 return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": value})
 
@@ -190,7 +290,7 @@ class InputInterpreterTests(unittest.TestCase):
                 self.assertEqual(messages[2]["content"], SOURCE.decode())
 
     def test_typed_candidate_crosses_existing_parser_and_runner_validation(self) -> None:
-        async def call(_prompt: object) -> InterpreterTurn:
+        async def call(_prompt: object) -> dict[str, object]:
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
         session = CapturingSession()
@@ -200,41 +300,13 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertEqual(len(session.model_inputs), 1)
         self.assertIs(type(session.model_inputs[0]), ChfRunnerInput)
 
-    def test_protocol_repair_returns_the_exact_failure_to_the_model(self) -> None:
-        prompts: list[InterpreterPrompt] = []
-        turns = iter(
-            (
-                InterpreterTurn(
-                    assistant_message={"role": "assistant", "content": None},
-                    invocation=InterpreterToolInvocation("unknown_tool", {}),
-                    tool_call_ids=("call-1",),
-                ),
-                turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE}),
-            )
-        )
-
-        async def call(prompt: InterpreterPrompt) -> InterpreterTurn:
-            prompts.append(prompt)
-            return next(turns)
-
-        run_with_endpoint(call)
-
-        repair = prompts[1][3:]
-        self.assertEqual(
-            [message["role"] for message in repair],
-            ["assistant", "tool", "user"],
-        )
-        self.assertEqual(repair[1]["content"], "unexpected_tool_invocation")
-        self.assertIn("The rejection is not evidence", repair[2]["content"])
-        self.assertNotEqual(repair[1]["content"], repair[2]["content"])
-
     def test_product_rejection_repairs_then_exposes_typed_candidate_issue(self) -> None:
         invalid_value = VALUE | {
             "model_input": VALUE["model_input"] | {"formula": ""}
         }
         prompts: list[InterpreterPrompt] = []
 
-        async def call(prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def call(prompt: InterpreterPrompt) -> dict[str, object]:
             prompts.append(prompt)
             return turn(
                 InterpreterTool.SUBMIT_INTERPRETATION,
@@ -259,7 +331,7 @@ class InputInterpreterTests(unittest.TestCase):
     def test_non_json_candidate_preserves_the_encoder_failure(self) -> None:
         invalid_value = VALUE | {"unexpected_number": 1.5}
 
-        async def call(_prompt: object) -> InterpreterTurn:
+        async def call(_prompt: object) -> dict[str, object]:
             return turn(
                 InterpreterTool.SUBMIT_INTERPRETATION,
                 {"value": invalid_value},
@@ -274,7 +346,7 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIsNone(raised.exception.__cause__)
 
     def test_invalid_freeform_utf8_retains_the_decoder_failure(self) -> None:
-        async def call(_prompt: object) -> InterpreterTurn:
+        async def call(_prompt: object) -> dict[str, object]:
             raise AssertionError("Invalid source text must not reach an endpoint")
 
         with self.assertRaises(InputRejected) as raised:
@@ -284,7 +356,7 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIsInstance(raised.exception.__cause__, UnicodeDecodeError)
 
     def test_empty_or_controlled_freeform_source_stops_before_endpoint(self) -> None:
-        async def call(_prompt: object) -> InterpreterTurn:
+        async def call(_prompt: object) -> dict[str, object]:
             raise AssertionError("Invalid source text must not reach an endpoint")
 
         for source, reason in (
@@ -299,7 +371,7 @@ class InputInterpreterTests(unittest.TestCase):
     def test_runner_rejection_repairs_on_the_same_endpoint(self) -> None:
         prompts: list[InterpreterPrompt] = []
 
-        async def call(prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def call(prompt: InterpreterPrompt) -> dict[str, object]:
             prompts.append(prompt)
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
@@ -320,7 +392,7 @@ class InputInterpreterTests(unittest.TestCase):
     def test_runner_rejection_falls_back_with_a_fresh_prompt(self) -> None:
         prompts: list[InterpreterPrompt] = []
 
-        async def call(prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def call(prompt: InterpreterPrompt) -> dict[str, object]:
             prompts.append(prompt)
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
@@ -341,7 +413,7 @@ class InputInterpreterTests(unittest.TestCase):
         )
 
     def test_runner_rejection_requires_complete_repair_route(self) -> None:
-        async def call(_prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def call(_prompt: InterpreterPrompt) -> dict[str, object]:
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
         with self.assertRaises(InterpretationRejected) as raised:
@@ -356,7 +428,7 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertEqual(raised.exception.token_count, 512)
 
     def test_single_endpoint_report_remains_unverified_model_evidence(self) -> None:
-        async def call(_prompt: object) -> InterpreterTurn:
+        async def call(_prompt: object) -> dict[str, object]:
             return turn(
                 InterpreterTool.REPORT_INPUT_PROBLEM,
                 {
@@ -378,14 +450,14 @@ class InputInterpreterTests(unittest.TestCase):
     def test_model_report_falls_back_to_a_validated_candidate(self) -> None:
         prompts: list[InterpreterPrompt] = []
 
-        async def report(prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def report(prompt: InterpreterPrompt) -> dict[str, object]:
             prompts.append(prompt)
             return turn(
                 InterpreterTool.REPORT_INPUT_PROBLEM,
                 {"message": "The integral is missing."},
             )
 
-        async def submit(prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def submit(prompt: InterpreterPrompt) -> dict[str, object]:
             prompts.append(prompt)
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
@@ -397,7 +469,7 @@ class InputInterpreterTests(unittest.TestCase):
         )
 
     def test_all_endpoint_reports_remain_model_evidence(self) -> None:
-        async def report(_prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def report(_prompt: InterpreterPrompt) -> dict[str, object]:
             return turn(
                 InterpreterTool.REPORT_INPUT_PROBLEM,
                 {"message": "Model claim about source; unverified."},
@@ -408,16 +480,16 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertEqual(str(raised.exception), "reported_input_problem")
 
     def test_report_mixed_with_transport_or_runner_rejection_is_unavailable(self) -> None:
-        async def report(_prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def report(_prompt: InterpreterPrompt) -> dict[str, object]:
             return turn(
                 InterpreterTool.REPORT_INPUT_PROBLEM,
                 {"message": "Model claim about source; unverified."},
             )
 
-        async def transport(_prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def transport(_prompt: InterpreterPrompt) -> dict[str, object]:
             raise InterpreterTransportError("connect_failed")
 
-        async def candidate(_prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def candidate(_prompt: InterpreterPrompt) -> dict[str, object]:
             return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
 
         with self.assertRaises(InterpreterUnavailable):
@@ -433,20 +505,20 @@ class InputInterpreterTests(unittest.TestCase):
             "model_input": VALUE["model_input"] | {"formula": ""}
         }
 
-        async def invalid(_prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def invalid(_prompt: InterpreterPrompt) -> dict[str, object]:
             return turn(
                 InterpreterTool.SUBMIT_INTERPRETATION,
                 {"value": invalid_value},
             )
 
-        async def transport(_prompt: InterpreterPrompt) -> InterpreterTurn:
+        async def transport(_prompt: InterpreterPrompt) -> dict[str, object]:
             raise InterpreterTransportError("connect_failed")
 
         with self.assertRaises(InterpreterUnavailable):
             run_with_endpoints((invalid, transport))
 
     def test_endpoint_failure_is_retryable_and_does_not_log_source_text(self) -> None:
-        async def call(_prompt: object) -> InterpreterTurn:
+        async def call(_prompt: object) -> dict[str, object]:
             raise InterpreterTransportError("connect_failed")
 
         with self.assertLogs(
@@ -464,15 +536,6 @@ class InputInterpreterTests(unittest.TestCase):
         self.assertIn("attempted_configuration_ids=('fake-1',)", rendered)
         self.assertNotIn(SOURCE.decode(), rendered)
         self.assertIn("InterpreterTransportError", exception_diagnostic(raised.exception))
-
-    def test_endpoint_protocol_failure_is_preserved_as_the_unavailable_cause(self) -> None:
-        async def call(_prompt: object) -> InterpreterTurn:
-            return cast(InterpreterTurn, object())
-
-        with self.assertRaises(InterpreterUnavailable) as raised:
-            run_with_endpoint(call)
-
-        self.assertIn("invalid_turn_type", exception_diagnostic(raised.exception))
 
 
 def run_with_endpoint(
@@ -494,7 +557,7 @@ def run_with_endpoints(
     record_diagnostic: Callable[[str], None] | None = None,
 ) -> ValidatedRunnerRequest:
     endpoints = tuple(
-        InterpreterEndpoint(f"fake-{index}", call)
+        fake_endpoint(f"fake-{index}", call, lane=lane, secrets=("test-key",))
         for index, call in enumerate(calls, start=1)
     )
     interpreter = InputInterpreter(
@@ -528,13 +591,6 @@ def run_with_endpoints(
             record_diagnostic=record_diagnostic,
         )
 
-
-def turn(name: InterpreterTool, arguments: object) -> InterpreterTurn:
-    return InterpreterTurn(
-        assistant_message={"role": "assistant", "content": None},
-        invocation=InterpreterToolInvocation(name.value, arguments),
-        tool_call_ids=("call-1",),
-    )
 
 
 if __name__ == "__main__":

@@ -74,6 +74,14 @@ and ProArt endpoint files inspected for this migration used HTTPS; that check
 does not establish the contents of every deployed runtime snapshot.
 The shared carrier also limits each encoded chat request to 1 MiB; a request
 over that bound is refused before dispatch.
+The shared conversation rejects tool arguments containing configured endpoint
+credentials before scientific dispatch; it also requires distinct bounded tool
+call identifiers. Model-authored input reports that pass admission still go
+through NMRPeak's diagnostic sanitizer before publication.
+The shared conversation returns turn counts on completion, but NMRPeak does
+not yet publish that observation. Failed conversations do not currently expose
+the equivalent count through the shared failure API. A future diagnostic sink
+must retain this evidence without replacing an admitted scientific result.
 
 Scientific retries: deploy first
 --------------------------------

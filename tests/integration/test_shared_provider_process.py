@@ -3,7 +3,7 @@
 import asyncio
 import json
 from base64 import b64decode
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -19,38 +19,233 @@ from provider_core.api_config import api_settings_with_material
 from provider_core.shared_delivery_client import SharedDeliveryClient
 from provider_core.shared_delivery_ipc import SharedDeliveryInbox, SharedDeliverySocket
 from provider_core.delivery_store import DeliveryFull, DeliveryOutcome, DeliveryQueue, QueueLimits
-from provider_core.analysis import AnalysisOutcomeUnresolved
+from provider_core.analysis import AnalysisOutcomeUnresolved, ObservedWorkerCrash
 from provider_core.attempt_record import TerminalOperation
 from provider_core.attempt_request import fail_body, start_body
 from provider_core.controller import ControllerFailed
-from provider_core.execution import AttemptExecutor, ExecutionRefused, ExecutionStopRequested, ObservationGapExpired
+from provider_core.execution import AttemptExecutor, ExecutionFailed, ExecutionRefused, ExecutionStopRequested, ObservationGapExpired
 from provider_core.hello import AnalysisOffering
 from provider_core.producer_checkpoint import SuppressedCheckpoint
 from provider_core.ownership import AttemptClaims, LiveAttemptLimits
 
 from nmrpeak_provider.analysis_session import NmrpeakAnalysisSession
 from nmrpeak_provider.input_interpreter import InputInterpreter
-from nmrpeak_provider.interpreter import InterpreterEndpoint, InterpreterTool, InterpreterUnavailable, InterpreterUnavailableReason
+from nmrpeak_provider.interpreter import InterpreterTool, InterpreterUnavailable, InterpreterUnavailableReason
 from nmrpeak_provider.interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
-from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
+from nmrpeak_provider.openai_chat_interpreter import (
+    OpenAIChatEndpointSpec, OpenAIChatEndpoints, bind_openai_chat_endpoints,
+)
 from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.generation_runtime import GenerationRuntime
 from nmrpeak_provider.product_result import canonical_result_bytes
 from nmrpeak_provider.provider_config import ObservationPolicy, ProviderProcessPolicy
 from nmrpeak_provider.provider_process import ProviderAnnouncement, ProviderProcess
 from nmrpeak_provider.runner_protocol import GenerateFrame, ValidateFrame
+from nmrpeak_provider.runner_session import open_runner_session, RunnerDeadlines
+from tests.fakes.model_http import LoopbackHTTP, reply
+from tests.integration.test_native_runner_session import native_runner
 from tests.fakes.shared_api import ApiTransport, SharedApi
 from tests.fakes.native_runner import lane_contract
 from provider_core.network import NetworkIOObservation
 from provider_core.transport import ExchangeFailed
 from tests.fakes.runner import FakeRunnerFault
 from tests.unit.test_analysis_session import scientific_lane
-from tests.unit.test_input_interpreter import BoundEndpoints, HF_VALUE, VALUE, turn
+from tests.unit.test_input_interpreter import BoundEndpoints, HF_VALUE, VALUE
+from tests.fake_interpreter import fake_endpoint, turn
 from tests.unit.test_analysis_session import interpreter
 from tests.unit.test_provider_startup_inputs import credential_bytes
 
 
 class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
+    @asynccontextmanager
+    async def _interpreter_executor_fixture(self, *, script, before_send=None, runner=None):
+        # Reuse the maintained service/controller composition rather than model
+        # executor ownership in a second fixture.
+        service = await self._idle_process(with_job=True)
+        lane = service.lanes[0]
+        if runner is not None:
+            self.assertEqual(runner.result_facts, lane.generation.result_facts)
+            lane.runner = runner
+        service.policy = replace(service.policy, forced_join_seconds=0.05)
+        backend = service.api._transport.api
+        backend.inputs["job:hf"] = (lane.generation.generation.analysis_kind_ref,
+                                    b"Interpret these proton peaks.")
+        server = await LoopbackHTTP(script).start()
+        configured = InputInterpreter((OpenAIChatEndpointSpec(
+            configuration_id="fixture", base_url=server.base_url,
+            api_key="fixture-key", model="fixture-model", reasoning_effort=None,
+        ),), InterpreterPolicy(
+            call_policy=OpenAIChatCallPolicy(request_timeout_seconds=5, turn_timeout_seconds=12),
+            interpretation_timeout_seconds=20,
+        ))
+        service.interpreter = configured
+        owners = []
+
+        def bind(*args, **kwargs):
+            owner = bind_openai_chat_endpoints(*args, before_send=before_send, **kwargs)
+            # The existing loopback fixture's CA is the HTTP trust grant.
+            for endpoint_owner in owner._owners:
+                endpoint_owner._trust = server.trust
+            owners.append(owner)
+            return owner
+
+        endpoint = service.delivery.endpoint
+        state = endpoint.socket_path.parent / "interpreter-state"
+        state.mkdir(mode=0o700)
+        queue = DeliveryQueue(state, limits=QueueLimits(4, 1048576, 4, 1048576))
+        accepted = asyncio.Event()
+        inbox = DeliveryInbox(queue, (endpoint,), request_seconds=2,
+                              on_accepted=lambda _endpoint: accepted.set(), on_failure=Mock(),
+                              binding_status=lambda _endpoint: {"state": "inbox_only"})
+        await inbox.start()
+        pending, instructions = await service._select(lane)
+        session = NmrpeakAnalysisSession(lane.generation, lane.runner, configured, retry_seconds=0.01)
+        controller = service._controller(lane, session, pending, instructions)
+        lane.controller = controller
+        try:
+            with patch("nmrpeak_provider.input_interpreter.bind_openai_chat_endpoints", bind):
+                yield service, controller, pending, owners, server, queue, accepted
+        finally:
+            # Each witness releases its held operation before leaving this scope.
+            await service._drain()
+            await inbox.close()
+            queue.close()
+            await server.close()
+
+    async def test_executor_keeps_original_prepare_after_endpoint_retirement(self):
+        entered, release, endpoint_retired = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        original_prepare_tasks = []
+        prepare = NmrpeakAnalysisSession.prepare
+        retire = OpenAIChatEndpoints.retire
+
+        async def before_send(_request):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                # Model a callback that still owns work after cancellation.
+                # Endpoint retirement must fence its eventual dispatch.
+                await release.wait()
+
+        async def watched_prepare(session, *args, **kwargs):
+            original_prepare_tasks.append(asyncio.current_task())
+            return await prepare(session, *args, **kwargs)
+
+        async def watched_retire(owner):
+            await retire(owner)
+            endpoint_retired.set()
+
+        async with self._interpreter_executor_fixture(
+                script=[], before_send=before_send) as (_, controller, pending, owners, server, queue, _):
+            with patch.object(NmrpeakAnalysisSession, "prepare", watched_prepare), \
+                 patch.object(OpenAIChatEndpoints, "retire", watched_retire):
+                original = asyncio.create_task(controller.run(pending))
+                try:
+                    await asyncio.wait_for(entered.wait(), 2)
+                    controller.request_stop()
+                    await asyncio.wait_for(endpoint_retired.wait(), 2)
+                    with self.assertRaises(ControllerFailed):
+                        await asyncio.wait_for(asyncio.shield(original), 2)
+                    executor = controller.operation
+                    self.assertIs(type(executor), AttemptExecutor)
+                    self.assertTrue(executor.retirement_confirmed)
+                    self.assertTrue(owners[0].endpoints[0].carrier.retirement_confirmed)
+                    self.assertEqual(len(original_prepare_tasks), 1)
+                    prepare_task = original_prepare_tasks[0]
+                    self.assertFalse(prepare_task.done())
+                    self.assertFalse(executor.work_settled)
+                    self.assertFalse(executor.shutdown_ready)
+                    self.assertEqual(server.requests, [])
+
+                    release.set()
+                    done, _ = await asyncio.wait((prepare_task,), timeout=2)
+                    self.assertIn(prepare_task, done)
+                    # External completion is insufficient until the SDK joins
+                    # its original task and accounts for that task's failure.
+                    self.assertFalse(executor.work_settled)
+                    with self.assertRaises(ExecutionFailed):
+                        await executor.settle()
+                    self.assertTrue(executor.work_settled)
+                    self.assertTrue(executor.shutdown_ready)
+                    self.assertEqual(server.requests, [])
+                    self.assertFalse(queue.inventory(controller.scope.api_origin,
+                                                     controller.scope.provider_ref))
+                finally:
+                    release.set()
+                    controller.request_stop()
+                    await asyncio.gather(original, return_exceptions=True)
+
+    async def test_observed_validation_crash_handoff_precedes_held_interpreter_cleanup(self):
+        cleanup_entered, cleanup_release = asyncio.Event(), asyncio.Event()
+        captured_crashes = []
+        retire = OpenAIChatEndpoints.retire
+        call_science = NmrpeakAnalysisSession._call_science
+
+        async def held_retire(owner):
+            cleanup_entered.set()
+            await cleanup_release.wait()
+            await retire(owner)
+
+        async def watched_science(session, *args, **kwargs):
+            try:
+                return await call_science(session, *args, **kwargs)
+            except ObservedWorkerCrash as crash:
+                captured_crashes.append(crash)
+                raise
+
+        completion = {"choices": [{"finish_reason": "tool_calls", "message": {
+            "role": "assistant", "content": None, "tool_calls": [{
+                "id": "fixture-validation", "type": "function", "function": {
+                    "name": "submit_interpretation",
+                    "arguments": json.dumps({"value": HF_VALUE}),
+                },
+            }],
+        }}]}
+        with native_runner("hf", generation_mode="validation_crash") as (socket, _, facts, codec, _):
+            runner = await open_runner_session(str(socket), facts, RunnerDeadlines(5, 5, 2, 2, 20), codec)
+            try:
+                async with self._interpreter_executor_fixture(
+                        script=[reply(completion)], runner=runner) as (
+                            _, controller, pending, _, server, queue, accepted):
+                    with patch.object(OpenAIChatEndpoints, "retire", held_retire), \
+                         patch.object(NmrpeakAnalysisSession, "_call_science", watched_science):
+                        original = asyncio.create_task(controller.run(pending))
+                        try:
+                            await asyncio.wait_for(cleanup_entered.wait(), 3)
+                            await asyncio.wait_for(accepted.wait(), 3)
+                            executor = controller.operation
+                            self.assertIs(type(executor), AttemptExecutor)
+                            self.assertEqual(len(captured_crashes), 1)
+                            self.assertIs(type(captured_crashes[0]), ObservedWorkerCrash)
+                            self.assertIs(executor.observed_crash, captured_crashes[0])
+                            self.assertIs(executor.observed_crash.runner, runner.native)
+                            self.assertIs(executor.observed_crash.native_exit, runner.native.original_exit)
+                            self.assertEqual(runner.native.original_exit.returncode, 17)
+                            self.assertFalse(executor.retirement_confirmed)
+                            self.assertFalse(executor.work_settled)
+                            self.assertFalse(executor.shutdown_ready)
+                            self.assertEqual(len(server.requests), 1)
+                            reports = queue.inventory(controller.scope.api_origin, controller.scope.provider_ref)
+                            self.assertEqual(len(reports), 1)
+                            item = queue.next_pending(controller.scope.api_origin, controller.scope.provider_ref)
+                            self.assertEqual(json.loads(item.body)["failure_code"], "worker_crashed")
+                            # The bounded observation may fail while its exact
+                            # cleanup child remains held; delivery already won.
+                            with self.assertRaises(ControllerFailed):
+                                await asyncio.wait_for(asyncio.shield(original), 2)
+                            cleanup_release.set()
+                            await controller.settle()
+                            self.assertTrue(executor.work_settled)
+                            self.assertTrue(executor.shutdown_ready)
+                            self.assertTrue(runner.retirement_confirmed)
+                            self.assertEqual(len(queue.inventory(controller.scope.api_origin,
+                                                                 controller.scope.provider_ref)), 1)
+                        finally:
+                            cleanup_release.set()
+                            await asyncio.gather(original, return_exceptions=True)
+            finally:
+                await runner.retire()
+
     async def test_api_read_recovers_on_original_attempt_before_gap(self):
         await self._api_outage(expires=False)
 
@@ -297,7 +492,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with patch("nmrpeak_provider.input_interpreter.bind_openai_chat_endpoints",
-                       return_value=BoundEndpoints((InterpreterEndpoint("fixture", interpret_call),))), \
+                       return_value=BoundEndpoints((fake_endpoint("fixture", interpret_call, lane=hf.lane),))), \
                  patch.object(channel, "_accept_validate", delayed_validation):
                 task = asyncio.create_task(service.run(on_ready=Mock()))
                 try:

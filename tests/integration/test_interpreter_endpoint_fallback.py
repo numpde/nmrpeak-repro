@@ -60,12 +60,12 @@ def _ethanol_source_and_value(lane_name: str) -> tuple[str, dict[str, object]]:
     return source, value
 
 
-def _completion(value: object, *, tool: str = "submit_interpretation") -> dict[str, object]:
+def _completion(value: object, *, tool: str = "submit_interpretation", call_id: str = "fixture-call") -> dict[str, object]:
     arguments = {"message": "The source may be incomplete."} if tool == "report_input_problem" else {"value": value}
     return {"choices": [{"finish_reason": "tool_calls", "message": {
         "role": "assistant", "content": None,
         "reasoning_content": "Private fixture reasoning.",
-        "tool_calls": [{"id": "fixture-call", "type": "function", "function": {
+        "tool_calls": [{"id": call_id, "type": "function", "function": {
             "name": tool, "arguments": json.dumps(arguments),
         }}],
     }}]}
@@ -97,20 +97,20 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
             if primary and behavior == 'busy':
                 return reply({'error': {'message': 'private busy detail'}}, status=429)
             if primary and behavior == 'reported':
-                return reply(_completion(value, tool='report_input_problem'))
+                return reply(_completion(value, tool='report_input_problem', call_id=f'fixture-call-{len(requests)}'))
             if primary and behavior == 'constructor' and len(requests) == 1:
                 invalid = deepcopy(value)
                 invalid['model_input']['spectra']['1H']['peaks'][0]['multiplicity'] = 'unsupported-private-label'
-                return reply(_completion(invalid))
+                return reply(_completion(invalid, call_id=f'fixture-call-{len(requests)}'))
             if primary and behavior == 'protocol':
                 return reply({'choices': [{'finish_reason': 'tool_calls', 'message': {
                     'role': 'assistant', 'content': None,
                     'reasoning_content': 'Private fixture reasoning.',
-                    'tool_calls': [{'id': 'fixture-call', 'type': 'function', 'function': {
+                    'tool_calls': [{'id': f'fixture-call-{len(requests)}', 'type': 'function', 'function': {
                         'name': 'submit_interpretation', 'arguments': 'not JSON',
                     }}],
                 }}]})
-            return reply(_completion(value))
+            return reply(_completion(value, call_id=f'fixture-call-{len(requests)}'))
 
         servers = {name: await LoopbackHTTP([handle]*10).start() for name in ('primary', 'fallback')}
         try:
@@ -148,6 +148,7 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                         interpretation_timeout_seconds=10,
                         report_endpoint_failure=failures.append,
                         admit_interpretation=admit,
+                        retain_conversation=lambda conversation: None,
                     )
 
                 try:

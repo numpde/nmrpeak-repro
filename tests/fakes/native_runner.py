@@ -35,7 +35,8 @@ class Runtime:
         self.mode, self.connection = mode, connection
 
     def validate(self, model_input):
-        pass
+        if self.mode == "validation_crash":
+            os._exit(17)
 
     def generate(self, model_input):
         if self.mode == "crash":
@@ -56,7 +57,7 @@ def main():
     parser.add_argument("--session-fd", type=int, required=True)
     parser.add_argument("--lease-fd", type=int, required=True)
     parser.add_argument("--operation", required=True)
-    parser.add_argument("--generation-mode", choices=("healthy", "crash", "reported_failure", "eof_alive"), default="healthy")
+    parser.add_argument("--generation-mode", choices=("healthy", "crash", "validation_crash", "reported_failure", "eof_alive"), default="healthy")
     options = parser.parse_args()
     _, codec, ready, _ = lane_contract(options.lane)
     Path("child.pid").write_text(str(os.getpid()))

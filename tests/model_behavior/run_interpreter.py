@@ -33,7 +33,6 @@ from nmrpeak_provider.interpreter import (
     InterpreterCandidateConstructionRejected,
     InterpreterProtocolError,
     InterpreterTransportError,
-    InterpreterTurn,
     InterpreterUnavailable,
     MAX_TURNS_PER_ENDPOINT,
     ReportedInputProblem,
@@ -112,7 +111,7 @@ class _ObservedCall:
         self, endpoint: InterpreterEndpoint, forbidden: tuple[str, ...], *,
         capture_model_output: bool,
     ) -> None:
-        self._call = endpoint.call
+        self._endpoint = endpoint.carrier
         self._capture_model_output = capture_model_output
         self._forbidden = forbidden
         self.forbidden_seen = False
@@ -121,17 +120,28 @@ class _ObservedCall:
         self.transport_failure: str | None = None
         self.turns = 0
 
-    async def __call__(self, prompt: list[dict[str, object]]) -> InterpreterTurn:
+    @property
+    def identity(self):
+        return self._endpoint.identity
+
+    @property
+    def retirement_confirmed(self):
+        return self._endpoint.retirement_confirmed
+
+    async def retire(self):
+        await self._endpoint.retire()
+
+    async def complete(self, prompt, tools):
         self.turns += 1
         try:
-            turn = await self._call(prompt)
+            turn = await self._endpoint.complete(prompt, tools)
         except InterpreterTransportError as error:
             self.transport_failure = error.reason
             raise
-        content = turn.assistant_message.get("content")
+        content = turn.get("content")
         if content not in (None, ""):
             self.ordinary_content_seen = True
-        rendered = json.dumps(turn.assistant_message, ensure_ascii=False)
+        rendered = json.dumps(turn, ensure_ascii=False)
         if any(marker in rendered for marker in self._forbidden):
             self.forbidden_seen = True
         if self._capture_model_output:
@@ -350,7 +360,9 @@ async def _observe(
     observed_call = _ObservedCall(
         endpoint, variant.forbidden, capture_model_output=show_model_output,
     )
-    observed_endpoint = InterpreterEndpoint(endpoint.configuration_id, observed_call)
+    observed_endpoint = InterpreterEndpoint(
+        endpoint.configuration_id, observed_call, endpoint.tools, endpoint.secrets,
+    )
     observed_capability = _ObservedCapability(
         _LANES[variant.lane_name], inject_rejection=evaluation.mode == "forced_repair",
     )
@@ -371,6 +383,7 @@ async def _observe(
             interpretation_timeout_seconds=interpretation_timeout_seconds,
             report_endpoint_failure=lambda _event: None,
             admit_interpretation=admit_interpretation,
+            retain_conversation=lambda conversation: None,
         )
         action, value = "submit_interpretation", result.admitted
     except ReportedInputProblem as problem:
@@ -481,12 +494,14 @@ def _evaluation_runs(
 
 async def _check_endpoint(endpoint: InterpreterEndpoint) -> str | None:
     try:
-        await endpoint.call([
+        await endpoint.carrier.complete([
             {"role": "system", "content": "Use exactly one available tool."},
             {"role": "user", "content": "Report that no interpretation input was provided."},
-        ])
+        ], endpoint.tools)
     except InterpreterTransportError as error:
         return error.reason
+    finally:
+        await endpoint.carrier.retire()
     return None
 
 
@@ -512,18 +527,21 @@ async def _run(
 
     checks = failures = executed = behavior_failures = reviews = unexecuted = 0
     runs = tuple(_evaluation_runs(evaluations, repeats))
+    specs = load_openai_chat_endpoint_specs(config_dir)
     async with AsyncExitStack() as stack:
-        endpoints = bind_openai_chat_endpoints(
-            load_openai_chat_endpoint_specs(config_dir),
-            OpenAIChatCallPolicy(
-                request_timeout_seconds=request_timeout_seconds,
-                turn_timeout_seconds=turn_timeout_seconds,
-            ),
-            before_send=pace_request,
-            submit_interpretation_description=_SUBMIT_DESCRIPTION,
-            submit_interpretation_value_schema=_value_schema_for(_LANES[lane_name]),
-            report_input_problem_description=_REPORT_DESCRIPTION,
-        )
+        def bind_fresh():
+            return bind_openai_chat_endpoints(
+                specs,
+                OpenAIChatCallPolicy(
+                    request_timeout_seconds=request_timeout_seconds,
+                    turn_timeout_seconds=turn_timeout_seconds,
+                ),
+                before_send=pace_request,
+                submit_interpretation_description=_SUBMIT_DESCRIPTION,
+                submit_interpretation_value_schema=_value_schema_for(_LANES[lane_name]),
+                report_input_problem_description=_REPORT_DESCRIPTION,
+            )
+        endpoints = bind_fresh()
         stack.push_async_callback(endpoints.retire)
         for endpoint in endpoints.endpoints:
             checks += 1
@@ -538,8 +556,14 @@ async def _run(
             if check_reason is not None:
                 continue
             for index, (repetition, evaluation) in enumerate(runs):
+                owned = bind_fresh()
+                stack.push_async_callback(owned.retire)
+                fresh_endpoint = next(
+                    item for item in owned.endpoints
+                    if item.configuration_id == endpoint.configuration_id
+                )
                 observed = await _observe(
-                    endpoint=endpoint, evaluation=evaluation,
+                    endpoint=fresh_endpoint, evaluation=evaluation,
                     show_model_output=show_model_output,
                     interpretation_timeout_seconds=interpretation_timeout_seconds,
                 )

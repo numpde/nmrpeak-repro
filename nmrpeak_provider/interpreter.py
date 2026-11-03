@@ -9,15 +9,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from itertools import count
 from pathlib import Path
 import re
 from typing import Generic, Protocol, TypeVar
 
+from provider_core.conversation import (
+    ConversationFailed, TextCorrection, ToolConversation, ToolFinished, ToolRejected,
+)
+from provider_core.analysis import ObservedWorkerCrash
+
 from nmrpeak_provider.failure_message import is_failure_message
+from nmrpeak_provider.diagnostic_text import diagnostic_text
 from nmrpeak_provider.interpreter_policy import MAX_INTERPRETER_ENDPOINTS
 from nmrpeak_provider.runner_protocol import (
     RunnerRejectionReason,
@@ -188,61 +192,45 @@ class InterpreterTool(StrEnum):
     REPORT_INPUT_PROBLEM = "report_input_problem"
 
 
-@dataclass(frozen=True, slots=True)
-class InterpreterToolInvocation:
-    """One transport-parsed tool invocation; generic dispatch validates it."""
+class ConversationEndpoint(Protocol):
+    @property
+    def identity(self) -> bytes: ...
 
-    name: object
-    arguments: object
+    @property
+    def retirement_confirmed(self) -> bool: ...
 
+    async def complete(self, messages, tools) -> dict[str, object]: ...
 
-@dataclass(frozen=True, slots=True)
-class InterpreterTurn:
-    """One assistant message and its best-effort generic tool projection.
-
-    The normalized assistant message is retained only so a rejected invocation
-    can be followed by the OpenAI-required tool results and a correction. A
-    non-``None`` ``tool_call_ids`` tuple marks a message that can be continued
-    faithfully; malformed tool-call carriers set it to ``None``.
-    """
-
-    assistant_message: PromptMessage
-    invocation: InterpreterToolInvocation | None
-    tool_call_ids: tuple[str, ...] | None
-
-    def __post_init__(self) -> None:
-        if type(self.assistant_message) is not dict:
-            raise TypeError("assistant_message must be an object")
-        if (
-            self.invocation is not None
-            and type(self.invocation) is not InterpreterToolInvocation
-        ):
-            raise TypeError("invocation must be an InterpreterToolInvocation or None")
-        if self.tool_call_ids is not None and (
-            type(self.tool_call_ids) is not tuple
-            or any(
-                type(call_id) is not str or not call_id
-                for call_id in self.tool_call_ids
-            )
-        ):
-            raise TypeError("tool_call_ids must be a tuple of non-empty text")
+    async def retire(self) -> None: ...
 
 
-InterpreterCall = Callable[[InterpreterPrompt], Awaitable[InterpreterTurn]]
 InterpretationAdmission = Callable[[Candidate], Awaitable[Admitted]]
 
 
 @dataclass(frozen=True, slots=True)
 class InterpreterEndpoint:
-    """One configured interpreter call in fallback order."""
+    """One owned carrier and scientific tool contract in fallback order."""
 
     configuration_id: str
-    call: InterpreterCall
+    carrier: ConversationEndpoint
+    tools: tuple[dict[str, object], dict[str, object]]
+    secrets: tuple[str, ...] = field(repr=False)
 
     def __post_init__(self) -> None:
         require_interpreter_configuration_id(self.configuration_id)
-        if not callable(self.call):
-            raise TypeError("call must be callable")
+
+
+class _ScientificRejection(ToolRejected):
+    """Retain the typed provider rejection through SDK correction history."""
+
+    def __init__(self, original: InterpreterProtocolError | InterpretationCandidateRejected):
+        self.original = original
+        super().__init__(str(original))
+
+
+@dataclass(frozen=True, slots=True)
+class _EndpointReport:
+    message: ModelGeneratedText
 
 
 def require_interpreter_configuration_id(value: object, /) -> None:
@@ -292,6 +280,7 @@ async def interpret(
     interpretation_timeout_seconds: float,
     report_endpoint_failure: Callable[[InterpreterEndpointFailure], None],
     admit_interpretation: InterpretationAdmission[Candidate, Admitted],
+    retain_conversation: Callable[[ToolConversation], None],
 ) -> InterpretationResult[Admitted]:
     """Return one admitted interpretation using bounded repair and fallback.
 
@@ -336,134 +325,120 @@ async def interpret(
         async with deadline:
             for endpoint in endpoints:
                 attempted.append(endpoint.configuration_id)
-                prompt = list(base_prompt)
-
-                for turn in count(1):
+                async def dispatch(name, arguments):
                     try:
-                        # Endpoint adapters do not own generic prompt history.
-                        # Isolate the bounded JSON-like message tree so a failed
-                        # adapter cannot contaminate repair or fallback.
-                        assistant = await endpoint.call(deepcopy(prompt))
-                    except InterpreterTransportError as error:
-                        endpoint_kinds.append("operational")
-                        endpoint_failures.append(error)
-                        _report_endpoint_failure(
-                            report_endpoint_failure,
-                            endpoint.configuration_id,
-                            failure_kind="transport",
-                            failure_reason=error.reason,
-                            http_status=error.http_status,
-                            error_type=error.error_type,
-                            error_code=error.error_code,
-                            request_id=error.request_id,
-                            explanation=error.explanation,
-                        )
-                        break
-                    if type(assistant) is not InterpreterTurn:
-                        endpoint_kinds.append("operational")
-                        error = InterpreterProtocolError("invalid_turn_type")
-                        endpoint_failures.append(error)
-                        _report_endpoint_failure(
-                            report_endpoint_failure,
-                            endpoint.configuration_id,
-                            failure_kind="protocol",
-                            failure_reason=error.reason,
-                        )
-                        break
-
-                    has_repair_context = assistant.tool_call_ids is not None
-                    repair_exhausted = (
-                        turn >= MAX_TURNS_PER_ENDPOINT and has_repair_context
-                    )
-                    try:
-                        candidate = _dispatch_turn(assistant, capability=capability)
+                        candidate = _dispatch(name, arguments, capability=capability)
                         admitted = await admit_interpretation(candidate)
                     except ReportedInputProblem as report:
-                        last_report = report.message
-                        endpoint_kinds.append("report")
-                        _report_endpoint_failure(
-                            report_endpoint_failure,
-                            endpoint.configuration_id,
-                            failure_kind="report",
-                            failure_reason="reported_input_problem",
-                            explanation=report.message,
-                        )
-                        break
-                    except InterpretationCandidateRejected as rejection:
+                        return ToolFinished(_EndpointReport(ModelGeneratedText(diagnostic_text(
+                            report.message, secrets=endpoint.secrets, limit=8192,
+                        ))))
+                    except (InterpreterProtocolError, InterpretationCandidateRejected) as rejection:
+                        raise _ScientificRejection(rejection) from rejection
+                    return ToolFinished(admitted)
+
+                conversation = ToolConversation(
+                    (endpoint.carrier,),
+                    max_turns=MAX_TURNS_PER_ENDPOINT,
+                    secrets=endpoint.secrets,
+                    text_correction=TextCorrection(user_content=correction),
+                )
+                primary = None
+                retained = False
+                try:
+                    try:
+                        result = await conversation.run(base_prompt, endpoint.tools, dispatch)
+                    except ObservedWorkerCrash:
+                        retain_conversation(conversation)
+                        retained = True
+                        raise
+                    except BaseException as error:
+                        primary = error
+                        raise
+                    finally:
+                        if not retained:
+                            try:
+                                await conversation.retire()
+                            except BaseException as cleanup:
+                                if primary is not None and cleanup is not primary:
+                                    raise BaseExceptionGroup(
+                                        "Interpreter conversation and retirement failed", [primary, cleanup]
+                                    ) from None
+                                raise
+                except InterpreterTransportError as error:
+                    endpoint_kinds.append("operational")
+                    endpoint_failures.append(error)
+                    _report_endpoint_failure(
+                        report_endpoint_failure, endpoint.configuration_id,
+                        failure_kind="transport", failure_reason=error.reason,
+                        http_status=error.http_status, error_type=error.error_type,
+                        error_code=error.error_code, request_id=error.request_id,
+                        explanation=error.explanation,
+                    )
+                    continue
+                except ConversationFailed as failure:
+                    # Only the final repairable scientific rejection establishes
+                    # unanimous constructor/admission exhaustion. Earlier rejected
+                    # candidates never override a later carrier or protocol fault.
+                    rejection = None
+                    exhausted = bool(failure.cause is None and not failure.endpoint_failures
+                                     and failure.correction_failures
+                                     and failure.correction_failures[-1][0] == MAX_TURNS_PER_ENDPOINT)
+                    if exhausted:
+                        rejected = failure.correction_failures[-1][1]
+                        if isinstance(rejected, _ScientificRejection):
+                            rejection = rejected.original
+                    endpoint_failures.append(
+                        rejection if rejection is not None else
+                        failure.cause if failure.cause is not None else failure
+                    )
+                    if isinstance(rejection, InterpretationCandidateRejected):
                         last_rejection = rejection.message
                         last_rejection_token_count = rejection.token_count
-                        if repair_exhausted or not has_repair_context:
-                            endpoint_failures.append(rejection)
-                            endpoint_kinds.append(
-                                "admission" if repair_exhausted else "operational"
-                            )
-                            _report_endpoint_failure(
-                                report_endpoint_failure,
-                                endpoint.configuration_id,
-                                failure_kind="admission",
-                                failure_reason="runner_input_rejected",
-                                explanation=rejection.message,
-                                failure_state=(
-                                    "repair_exhausted"
-                                    if repair_exhausted
-                                    else "repair_unavailable"
-                                ),
-                            )
-                            break
-                        _append_repair(
-                            prompt,
-                            assistant=assistant,
-                            tool_result=rejection.message,
-                            correction=correction,
+                        endpoint_kinds.append("admission")
+                        _report_endpoint_failure(
+                            report_endpoint_failure, endpoint.configuration_id,
+                            failure_kind="admission", failure_reason="runner_input_rejected",
+                            explanation=rejection.message, failure_state="repair_exhausted",
                         )
-                        continue
-                    except InterpreterProtocolError as error:
-                        if repair_exhausted or not has_repair_context:
-                            constructor_rejection = (
-                                repair_exhausted
-                                and type(error) is InterpreterCandidateConstructionRejected
-                            )
-                            endpoint_kinds.append(
-                                "constructor" if constructor_rejection else "operational"
-                            )
-                            if constructor_rejection:
-                                last_constructor_issue = error.issue
-                            endpoint_failures.append(error)
-                            _report_endpoint_failure(
-                                report_endpoint_failure,
-                                endpoint.configuration_id,
-                                explanation=error.reason,
-                                failure_kind=(
-                                    "construction" if constructor_rejection
-                                    else "protocol"
-                                ),
-                                failure_reason=(
-                                    "candidate_constructor_rejected"
-                                    if constructor_rejection else error.reason
-                                ),
-                                failure_state=(
-                                    "repair_exhausted"
-                                    if repair_exhausted
-                                    else "repair_unavailable"
-                                ),
-                            )
-                            break
-                        # Keep the rejected assistant response in the same
-                        # bounded conversation. OpenAI tool calls must each
-                        # receive a matching result before the correction.
-                        _append_repair(
-                            prompt,
-                            assistant=assistant,
-                            tool_result=error.reason,
-                            correction=correction,
+                    elif type(rejection) is InterpreterCandidateConstructionRejected:
+                        last_constructor_issue = rejection.issue
+                        endpoint_kinds.append("constructor")
+                        _report_endpoint_failure(
+                            report_endpoint_failure, endpoint.configuration_id,
+                            failure_kind="construction", failure_reason="candidate_constructor_rejected",
+                            explanation=rejection.reason, failure_state="repair_exhausted",
                         )
-                        continue
+                    else:
+                        endpoint_kinds.append("operational")
+                        _report_endpoint_failure(
+                            report_endpoint_failure, endpoint.configuration_id,
+                            failure_kind="protocol",
+                            failure_reason=(rejection.reason if rejection is not None
+                                            else "invalid_tool_carrier" if failure.endpoint_failures
+                                            else "conversation_failed" if not exhausted
+                                            else "unexpected_tool_invocation"),
+                            explanation=(str(failure.cause) if failure.endpoint_failures
+                                         and failure.cause is not None else
+                                         str(failure) if not failure.correction_failures else None),
+                            failure_state="repair_exhausted" if exhausted else "repair_unavailable",
+                        )
+                    continue
 
-                    return InterpretationResult(
-                        admitted=admitted,
-                        configuration_id=endpoint.configuration_id,
-                        attempted_configuration_ids=tuple(attempted),
+                if type(result.value) is _EndpointReport:
+                    last_report = result.value.message
+                    endpoint_kinds.append("report")
+                    _report_endpoint_failure(
+                        report_endpoint_failure, endpoint.configuration_id,
+                        failure_kind="report", failure_reason="reported_input_problem",
+                        explanation=last_report,
                     )
+                    continue
+                return InterpretationResult(
+                    admitted=result.value,
+                    configuration_id=endpoint.configuration_id,
+                    attempted_configuration_ids=tuple(attempted),
+                )
     except TimeoutError as error:
         if not deadline.expired():
             # Endpoint adapters must translate their own operational timeouts
@@ -546,29 +521,6 @@ def _report_endpoint_failure(
     )
 
 
-def _append_repair(
-    prompt: InterpreterPrompt,
-    *,
-    assistant: InterpreterTurn,
-    tool_result: str,
-    correction: str,
-) -> None:
-    """Continue one repairable assistant turn in its original conversation."""
-
-    if assistant.tool_call_ids is None:
-        raise AssertionError("repair requires retained assistant context")
-    prompt.append(assistant.assistant_message)
-    prompt.extend(
-        {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": tool_result,
-        }
-        for call_id in assistant.tool_call_ids
-    )
-    prompt.append({"role": "user", "content": correction})
-
-
 def _require_failure_reason(reason: object, /) -> str:
     if (
         type(reason) is not str
@@ -608,23 +560,6 @@ def _read_prompt(path: Path) -> str:
     if not prompt.strip():
         raise ValueError("prompt must contain non-whitespace text")
     return prompt
-
-
-def _dispatch_turn(
-    turn: InterpreterTurn,
-    *,
-    capability: InterpretationCapability[Candidate],
-) -> Candidate:
-    invocation = turn.invocation
-    if type(invocation) is not InterpreterToolInvocation:
-        raise InterpreterProtocolError("missing_tool_invocation")
-    if type(invocation.name) is not str or type(invocation.arguments) is not dict:
-        raise InterpreterProtocolError("invalid_tool_invocation_fields")
-    return _dispatch(
-        invocation.name,
-        invocation.arguments,
-        capability=capability,
-    )
 
 
 def _dispatch(

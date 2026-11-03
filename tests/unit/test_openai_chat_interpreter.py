@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from tests.fakes.model_http import LoopbackHTTP, Reply, reply
 from provider_core.transport import ExchangeFailed
+from provider_core.conversation import ConversationFailed, ToolConversation
 
 from nmrpeak_provider.interpreter import InterpreterTransportError
 from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
@@ -36,6 +37,10 @@ _VALUE_SCHEMA = {
 
 
 
+
+
+async def call_endpoint(endpoint, prompt):
+    return await endpoint.carrier.complete(prompt, endpoint.tools)
 
 
 @asynccontextmanager
@@ -68,6 +73,52 @@ async def endpoints(script, *, request_seconds=0.2, turn_seconds=1.6, before_sen
         await server.close()
 
 class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_attempt_cancellation_does_not_inherit_previous_transport_failure(self):
+        second_started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def before_send(_request):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                second_started.set()
+                await release.wait()
+
+        async with endpoints([Reply(disconnect=True)], request_seconds=1, turn_seconds=4,
+                             before_send=before_send) as (owner, server):
+            operation = asyncio.create_task(call_endpoint(owner.endpoints[0], []))
+            try:
+                await asyncio.wait_for(second_started.wait(), 3)
+                operation.cancel()
+                with self.assertRaises(asyncio.CancelledError) as caught:
+                    await operation
+                self.assertIsNone(caught.exception.__cause__.cause)
+                self.assertEqual(len(server.requests), 1)
+            finally:
+                release.set()
+
+    async def test_conversation_retirement_fences_held_before_send(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def before_send(_request):
+            entered.set()
+            await release.wait()
+
+        async with endpoints([], before_send=before_send) as (owner, server):
+            endpoint = owner.endpoints[0]
+            conversation = ToolConversation((endpoint.carrier,), max_turns=3, secrets=())
+            operation = asyncio.create_task(conversation.run([], endpoint.tools, lambda *_: None))
+            await asyncio.wait_for(entered.wait(), 1)
+            retirement = asyncio.create_task(conversation.retire())
+            await asyncio.sleep(0.05)
+            self.assertTrue(retirement.done())
+            self.assertFalse(operation.done())
+            release.set()
+            await retirement
+            with self.assertRaises(BaseException):
+                await operation
+            self.assertEqual(server.requests, [])
+
     async def test_incomplete_and_malformed_completions_are_not_accepted(self):
         incomplete = _completion("submit_interpretation", {"value": 7})
         incomplete["choices"][0]["finish_reason"] = "length"
@@ -76,7 +127,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(reason=reason):
                 async with endpoints([reply(response)]) as (owner, server):
                     with self.assertRaises(InterpreterTransportError) as caught:
-                        await owner.endpoints[0].call([])
+                        await call_endpoint(owner.endpoints[0], [])
                     self.assertEqual(caught.exception.reason, reason)
                     self.assertEqual(len(server.requests), 1)
 
@@ -88,7 +139,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             await release.wait()
 
         async with endpoints([], before_send=before_send) as (owner, server):
-            call = asyncio.create_task(owner.endpoints[0].call([]))
+            call = asyncio.create_task(call_endpoint(owner.endpoints[0], []))
             await asyncio.wait_for(entered.wait(), 1)
             await owner.retire()
             release.set()
@@ -110,7 +161,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 )
                 try:
                     with self.assertRaises(ExchangeFailed):
-                        await owner.endpoints[0].call([])
+                        await call_endpoint(owner.endpoints[0], [])
                 finally:
                     await owner.retire()
                 self.assertEqual(server.requests, [])
@@ -131,8 +182,8 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 )
                 owner._owners[0]._trust = server.trust
                 try:
-                    result = await owner.endpoints[0].call([])
-                    self.assertEqual(result.invocation.arguments, {"value": 7})
+                    result = await call_endpoint(owner.endpoints[0], [])
+                    self.assertEqual(json.loads(result["tool_calls"][0]["function"]["arguments"]), {"value": 7})
                 finally:
                     await owner.retire()
         finally:
@@ -250,9 +301,9 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         async with endpoints([reply(_completion("submit_interpretation", {"value": 7}))], configs=configs) as (owner, server):
             await owner._owners[0].retire()
             with self.assertRaises(RuntimeError):
-                await owner.endpoints[0].call([])
-            result = await owner.endpoints[1].call([])
-            self.assertEqual(result.invocation.arguments, {"value": 7})
+                await call_endpoint(owner.endpoints[0], [])
+            result = await call_endpoint(owner.endpoints[1], [])
+            self.assertEqual(json.loads(result["tool_calls"][0]["function"]["arguments"]), {"value": 7})
             self.assertEqual(len(server.requests), 1)
 
     async def test_config_loading_is_ordered_resource_free_and_redacted(self):
@@ -282,8 +333,8 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         configs = [("20-local.toml", "local", "local-secret", "local-model", None),
                    ("10-remote.toml", "remote", "remote-secret", "remote-model", "none")]
         async with endpoints([reply(_completion("submit_interpretation", payload)) for _ in range(2)], configs=configs) as (owner, server):
-            first = await owner.endpoints[0].call([{"role":"system","content":"generic"},{"role":"user","content":"source"}])
-            await owner.endpoints[1].call([])
+            first = await call_endpoint(owner.endpoints[0], [{"role":"system","content":"generic"},{"role":"user","content":"source"}])
+            await call_endpoint(owner.endpoints[1], [])
         self.assertEqual([e.configuration_id for e in owner.endpoints], ["remote", "local"])
         request = server.requests[0]
         self.assertEqual((request.method, request.target), ("POST", "/v1/chat/completions"))
@@ -296,7 +347,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["tools"][0]["function"]["parameters"]["properties"]["value"], _VALUE_SCHEMA)
         self.assertEqual([x["role"] for x in body["messages"]], ["system", "user"])
         self.assertNotIn("reasoning_effort", json.loads(server.requests[1].content))
-        self.assertEqual(first.invocation.arguments, payload)
+        self.assertEqual(json.loads(first["tool_calls"][0]["function"]["arguments"]), payload)
         self.assertNotIn("remote-secret", repr(owner.endpoints))
 
     async def test_tool_schema_is_snapshotted(self):
@@ -315,7 +366,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                     submit_interpretation_value_schema=schema, report_input_problem_description="Report.")
                 owner._owners[0]._trust = server.trust
                 schema["properties"]["answer"]["type"] = "string"
-                await owner.endpoints[0].call([])
+                await call_endpoint(owner.endpoints[0], [])
                 await owner.retire()
             self.assertEqual(observed[0]["tools"][0]["function"]["parameters"]["properties"]["value"]["properties"]["answer"]["type"], "integer")
         finally:
@@ -326,25 +377,25 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         message["reasoning_content"] = "retained reasoning"
         script = [reply({"choices":[{"finish_reason":"tool_calls", "message":message}]}), reply(_completion("submit_interpretation", {"value":{"answer":1}}))]
         async with endpoints(script) as (owner, server):
-            first = await owner.endpoints[0].call([{"role":"user","content":"fixture"}])
-            self.assertIsNone(first.invocation)
-            await owner.endpoints[0].call([first.assistant_message, {"role":"tool","tool_call_id":"repair","content":"Rejected"}])
+            first = await call_endpoint(owner.endpoints[0], [{"role":"user","content":"fixture"}])
+            self.assertEqual(first["tool_calls"][0]["function"]["arguments"], "not JSON")
+            await call_endpoint(owner.endpoints[0], [first, {"role":"tool","tool_call_id":"repair","content":"Rejected"}])
         sent = json.loads(server.requests[1].content)
         self.assertEqual(sent["messages"][0]["reasoning_content"], "retained reasoning")
-        self.assertEqual(first.assistant_message, message)
+        self.assertEqual(first, message)
 
     async def test_reasoning_values_and_plain_turn_contract(self):
         for value in (False, 1, [], {}):
             doc = _completion("submit_interpretation", {"value":{"answer":1}})
             doc["choices"][0]["message"]["reasoning_content"] = value
             async with endpoints([reply(doc), reply(doc)]) as (owner, _server):
-                with self.assertRaises(InterpreterTransportError) as caught:
-                    await owner.endpoints[0].call([])
-            self.assertEqual(caught.exception.reason, "invalid_response_envelope")
+                endpoint = owner.endpoints[0]
+                conversation = ToolConversation((endpoint.carrier,), max_turns=3, secrets=())
+                with self.assertRaises(ConversationFailed):
+                    await conversation.run([], endpoint.tools, lambda *_: None)
         async with endpoints([reply({"choices":[{"finish_reason":"stop", "message":{"role":"assistant","content":"repair"}}]})]) as (owner, _server):
-            turn = await owner.endpoints[0].call([])
-        self.assertIsNone(turn.invocation)
-        self.assertEqual(turn.tool_call_ids, ())
+            turn = await call_endpoint(owner.endpoints[0], [])
+        self.assertNotIn("tool_calls", turn)
 
     async def test_status_and_connection_retries_are_bounded(self):
         ambiguous = {"error":{"type":"invalid_request_error","code":None,"param":None,"message":"private"}}
@@ -356,11 +407,11 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         for script, expected, count in cases:
             async with endpoints(script) as (owner, server):
                 if expected is None:
-                    result = await owner.endpoints[0].call([])
-                    self.assertEqual(result.invocation.arguments, {"value":7})
+                    result = await call_endpoint(owner.endpoints[0], [])
+                    self.assertEqual(json.loads(result["tool_calls"][0]["function"]["arguments"]), {"value":7})
                 else:
                     with self.assertRaises(InterpreterTransportError) as caught:
-                        await owner.endpoints[0].call([])
+                        await call_endpoint(owner.endpoints[0], [])
                     self.assertEqual(caught.exception.reason, expected)
             self.assertEqual(len(server.requests), count)
 
@@ -368,12 +419,12 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         oversized = json.dumps(_completion("submit_interpretation", {"value":"x"*(256*1024)})).encode()
         async with endpoints([reply(gzip.compress(oversized), headers=(("content-encoding","gzip"),))]) as (owner, _):
             with self.assertRaises(InterpreterTransportError) as caught:
-                await owner.endpoints[0].call([])
+                await call_endpoint(owner.endpoints[0], [])
         self.assertEqual(caught.exception.reason, "response_too_large")
         error = json.dumps({"error":{"message":"x"*(16*1024)}}).encode()
         async with endpoints([reply(gzip.compress(error), status=400, headers=(("content-encoding","gzip"),))]) as (owner, _):
             with self.assertRaises(InterpreterTransportError) as caught:
-                await owner.endpoints[0].call([])
+                await call_endpoint(owner.endpoints[0], [])
         self.assertEqual((caught.exception.reason, caught.exception.http_status), ("http_400",400))
 
     async def test_endpoint_diagnostics_keep_status_safe_fields_and_unknown_values(self):
@@ -382,7 +433,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
         for expected in (("authentication_error","invalid_api_key","req_safe123"), ("[redacted]_scalar","[redacted]_scalar","private_scalar")):
             async with endpoints([docs.pop(0)]) as (owner, _):
                 with self.assertRaises(InterpreterTransportError) as caught:
-                    await owner.endpoints[0].call([{"role":"user","content":"private"}])
+                    await call_endpoint(owner.endpoints[0], [{"role":"user","content":"private"}])
             error = caught.exception
             self.assertEqual((error.error_type,error.error_code,error.request_id), expected)
             self.assertEqual(error.http_status,400)
@@ -391,7 +442,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_gzip_uses_the_existing_bounded_endpoint_retry(self):
         async with endpoints([reply(b"not gzip", headers=(("content-encoding","gzip"),)), reply(b"not gzip", headers=(("content-encoding","gzip"),))]) as (owner, server):
             with self.assertRaises(InterpreterTransportError) as caught:
-                await owner.endpoints[0].call([])
+                await call_endpoint(owner.endpoints[0], [])
         self.assertEqual((caught.exception.reason,len(server.requests)),("endpoint_unavailable",2))
 
     async def test_request_and_turn_deadlines_are_original_absolute_budgets(self):
@@ -405,9 +456,9 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 _write_config(Path(d)/"10.toml",base_url=server.base_url)
                 owner=bind_openai_chat_endpoints(load_openai_chat_endpoint_specs(d),OpenAIChatCallPolicy(request_timeout_seconds=.03,turn_timeout_seconds=1.1),submit_interpretation_description="Submit.",submit_interpretation_value_schema=_VALUE_SCHEMA,report_input_problem_description="Report.")
                 owner._owners[0]._trust = server.trust
-                turn=await owner.endpoints[0].call([])
+                turn=await call_endpoint(owner.endpoints[0], [])
                 await owner.retire()
-            self.assertEqual(turn.invocation.arguments,{"value":7})
+            self.assertEqual(json.loads(turn["tool_calls"][0]["function"]["arguments"]),{"value":7})
             self.assertEqual(len(server.requests),2)
         finally: await server.close()
 
@@ -418,10 +469,10 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.04)
         async with endpoints([],request_seconds=.02,turn_seconds=1.05,before_send=pace) as (owner,server):
             with self.assertRaises(InterpreterTransportError):
-                await owner.endpoints[0].call([])
+                await call_endpoint(owner.endpoints[0], [])
             self.assertEqual(server.requests,[])
             await owner.retire()
-            with self.assertRaises(RuntimeError): await owner.endpoints[0].call([])
+            with self.assertRaises(RuntimeError): await call_endpoint(owner.endpoints[0], [])
         self.assertEqual(len(started),2)
 
     async def test_concurrent_retirement_closes_admission_and_cancels_original_exchange(self):
@@ -432,11 +483,11 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 _write_config(Path(d)/"10.toml",base_url=server.base_url)
                 owner=bind_openai_chat_endpoints(load_openai_chat_endpoint_specs(d),OpenAIChatCallPolicy(request_timeout_seconds=2,turn_timeout_seconds=5),submit_interpretation_description="Submit.",submit_interpretation_value_schema=_VALUE_SCHEMA,report_input_problem_description="Report.")
                 owner._owners[0]._trust = server.trust
-                call=asyncio.create_task(owner.endpoints[0].call([]))
+                call=asyncio.create_task(call_endpoint(owner.endpoints[0], []))
                 await asyncio.wait_for(server.request_seen.wait(),1)
                 await owner.retire()
                 with self.assertRaises(asyncio.CancelledError): await call
-                with self.assertRaises(RuntimeError): await owner.endpoints[0].call([])
+                with self.assertRaises(RuntimeError): await call_endpoint(owner.endpoints[0], [])
                 self.assertEqual(len(server.requests),1)
         finally:
             gate.set()
@@ -463,11 +514,11 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 owner=bind_openai_chat_endpoints(load_openai_chat_endpoint_specs(d),OpenAIChatCallPolicy(request_timeout_seconds=.2,turn_timeout_seconds=1.5),submit_interpretation_description="Submit.",submit_interpretation_value_schema=_VALUE_SCHEMA,report_input_problem_description="Report.")
                 with patch("nmrpeak_provider.openai_chat_interpreter.HttpTransport",side_effect=lambda **_kw: made.append(Unconfirmed()) or made[-1]):
                     with self.assertRaises(BaseExceptionGroup):
-                        await owner.endpoints[0].call([])
+                        await call_endpoint(owner.endpoints[0], [])
                     with self.assertRaises(OSError):
                         await owner.retire()
                     with self.assertRaises(RuntimeError):
-                        await owner.endpoints[0].call([])
+                        await call_endpoint(owner.endpoints[0], [])
             self.assertEqual(len(made),1)
             self.assertEqual(server.requests,[])
         finally:
@@ -486,13 +537,13 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                              request_seconds=.01, turn_seconds=1.6) as (owner, server):
             with patch('nmrpeak_provider.openai_chat_interpreter.httpx.Request', side_effect=delayed_request):
                 with self.assertRaises(InterpreterTransportError):
-                    await owner.endpoints[0].call([])
+                    await call_endpoint(owner.endpoints[0], [])
             self.assertEqual(server.requests, [])
 
     async def test_received_nonretryable_status_survives_known_body_io_failure(self):
         async with endpoints([Reply(status=400, body=b'{"error":', declared_bytes=1000)]) as (owner, server):
             with self.assertRaises(InterpreterTransportError) as caught:
-                await owner.endpoints[0].call([])
+                await call_endpoint(owner.endpoints[0], [])
         self.assertEqual(caught.exception.http_status, 400)
         self.assertEqual(caught.exception.reason, 'http_400')
         self.assertEqual(len(server.requests), 1)
@@ -516,7 +567,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 with patch('nmrpeak_provider.openai_chat_interpreter.HttpTransport',
                            side_effect=lambda **_kw: made.append(SettledFailure()) or made[-1]):
                     with self.assertRaises(ExchangeFailed) as caught:
-                        await owner.endpoints[0].call([])
+                        await call_endpoint(owner.endpoints[0], [])
                 self.assertIs(caught.exception, failure)
                 self.assertEqual(len(made), 1)
                 self.assertEqual(server.requests, [])

@@ -202,6 +202,7 @@ class InterpretationSession:
     def __init__(self, configured):
         self._configured = configured
         self._endpoints = None
+        self._retained_conversations = []
         self._closed = False
 
     @property
@@ -210,8 +211,21 @@ class InterpretationSession:
 
     async def retire(self):
         self._closed = True
+        failures = []
         if self._endpoints is not None:
-            await self._endpoints.retire()
+            try:
+                await self._endpoints.retire()
+            except BaseException as failure:
+                failures.append(failure)
+        for conversation in self._retained_conversations:
+            try:
+                await conversation.retire()
+            except BaseException as failure:
+                failures.append(failure)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Interpreter conversation retirement failed", failures)
 
     async def validate_freeform_input_async(
         self, *, source, lane, validate_input, execution_attempt_ref,
@@ -274,15 +288,18 @@ class InterpretationSession:
                 record_diagnostic=record_diagnostic,
             )
 
-        if self._endpoints is None:
-            self._endpoints = bind_openai_chat_endpoints(
-                self._configured.endpoint_specs,
-                self._configured.policy.call_policy,
-                submit_interpretation_description=_SUBMIT_DESCRIPTION,
-                submit_interpretation_value_schema=_value_schema_for(lane),
-                report_input_problem_description=_REPORT_DESCRIPTION,
-                report_endpoint_failure=report_endpoint_failure,
-            )
+        if self._endpoints is not None:
+            await self._endpoints.retire()
+        if self._closed:
+            raise RuntimeError("Cannot interpret input: this Attempt's interpretation session is retiring")
+        self._endpoints = bind_openai_chat_endpoints(
+            self._configured.endpoint_specs,
+            self._configured.policy.call_policy,
+            submit_interpretation_description=_SUBMIT_DESCRIPTION,
+            submit_interpretation_value_schema=_value_schema_for(lane),
+            report_input_problem_description=_REPORT_DESCRIPTION,
+            report_endpoint_failure=report_endpoint_failure,
+        )
         try:
             result = await interpret(
                 source_text=source_text,
@@ -293,6 +310,7 @@ class InterpretationSession:
                 ),
                 report_endpoint_failure=report_endpoint_failure,
                 admit_interpretation=admit_interpretation,
+                retain_conversation=self._retained_conversations.append,
             )
         except InterpreterUnavailable as unavailable:
             _LOG.warning(
