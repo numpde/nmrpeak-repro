@@ -21,11 +21,11 @@ TOOL_URL = "https://github.com/numpde/nmr-provider-tools/releases/download/v0.5.
 MAX_BYTES = 16 * 1024 * 1024
 
 
-def _lock(directory: int) -> None:
+def _lock(directory: int, mode: int) -> None:
     deadline = time.monotonic() + 300
     while True:
         try:
-            fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(directory, mode | fcntl.LOCK_NB)
             return
         except BlockingIOError:
             if time.monotonic() >= deadline:
@@ -73,11 +73,15 @@ def ensure_tool(pool: Path, interface: str | None, *, name: str = TOOL_NAME,
         raise ValueError("The selected network interface is invalid.")
     directory = os.open(pool, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        _lock(directory)
+        _lock(directory, fcntl.LOCK_SH)
         if _present(directory, name, expected):
             return True
         if interface is None:
             return False
+        fcntl.flock(directory, fcntl.LOCK_UN)
+        _lock(directory, fcntl.LOCK_EX)
+        if _present(directory, name, expected):
+            return True
         temporary = f".wheelhouse-tool-{secrets.token_hex(16)}.part"
         descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o600, dir_fd=directory)

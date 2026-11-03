@@ -1,6 +1,7 @@
 """Exercise shared tool acquisition without network access."""
 
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -37,6 +38,18 @@ class WheelhouseToolAssetTests(unittest.TestCase):
     def test_absent_tool_does_not_download_without_a_route(self) -> None:
         self.assertFalse(self.ensure(None, lambda *_: self.fail("unexpected download")))
         self.assertEqual(list(self.pool.iterdir()), [])
+
+    def test_cached_tool_is_readable_while_another_reader_holds_the_pool(self) -> None:
+        (self.pool / self.name).write_bytes(self.content)
+        directory = os.open(self.pool, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(directory, fcntl.LOCK_SH)
+            code = ("from pathlib import Path\n"
+                    "from repository_checks.wheelhouse_tool_asset import ensure_tool\n"
+                    f"assert ensure_tool(Path({str(self.pool)!r}), None, name={self.name!r}, expected={self.digest!r})\n")
+            subprocess.run([sys.executable, "-c", code], check=True, timeout=5)
+        finally:
+            os.close(directory)
 
     def test_conflict_is_preserved_without_download(self) -> None:
         path = self.pool / self.name
