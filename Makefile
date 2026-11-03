@@ -67,6 +67,7 @@ benchmark/image/build:
 		export NMRPEAK_NETWORK_INTERFACE_INPUT="$$NETWORK_INTERFACE_SELECTED" NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN='command line'; \
 		PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" nmrpeak_hf_v1 cpu-x86_64; \
 		PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" nmrpeak_chf_v1 cpu-x86_64; \
+		PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" benchmark benchmark-cu128; \
 		$(PYTHON) -m benchmark_tools.host build
 
 benchmark/devices:

@@ -26,7 +26,7 @@ class BenchmarkTests(unittest.TestCase):
         self.docker_host.start()
         self.addCleanup(self.docker_host.stop)
 
-    def test_benchmark_build_only_builds_its_own_image(self):
+    def test_prepare_images_resolves_without_building(self):
         calls = []
         def docker(*arguments, **_kwargs):
             calls.append(arguments)
@@ -35,10 +35,9 @@ class BenchmarkTests(unittest.TestCase):
              patch.object(host, "materialize_image_context", return_value="sha256:" + "1" * 64), \
              patch.object(host, "resolve_local_image", return_value=SimpleNamespace(image_id="sha256:" + "2" * 64)), \
              patch.object(host, "docker", side_effect=docker):
-            images = host.prepare_images("a" * 40, Path(temporary), build=True, network_arguments=("--network", "none"))
+            images = host.prepare_images("a" * 40, Path(temporary))
         builds = [arguments for arguments in calls if arguments[0] == "build"]
-        self.assertEqual(len(builds), 1)
-        self.assertIn("containers/benchmark/Dockerfile", str(builds[0][builds[0].index("--file") + 1]))
+        self.assertEqual(builds, [])
         self.assertEqual(set(images), {"benchmark", "nmrpeak_hf_v1", "nmrpeak_chf_v1"})
 
     def test_benchmark_lock_stage_uses_selected_proxy_for_build_and_renderer(self):
@@ -210,6 +209,8 @@ else:
         self.assertLess(result.stdout.index("runner-image.sh\" nmrpeak_hf_v1"),
                         result.stdout.index("runner-image.sh\" nmrpeak_chf_v1"))
         self.assertLess(result.stdout.index("runner-image.sh\" nmrpeak_chf_v1"),
+                        result.stdout.index("runner-image.sh\" benchmark benchmark-cu128"))
+        self.assertLess(result.stdout.index("runner-image.sh\" benchmark benchmark-cu128"),
                         result.stdout.index("-m benchmark_tools.host build"))
 
     def test_sigterm_enters_the_controlled_interruption_path(self):

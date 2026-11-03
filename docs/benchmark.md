@@ -24,6 +24,9 @@ committed checkout:
 
 ```bash
 git submodule update --init --recursive
+make wheelhouse/tool WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTERFACE=system
+make runner/wheelhouse/acquire TARGET=cpu-x86_64 WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>
+make runner/wheelhouse/acquire TARGET=benchmark-cu128 WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>
 make benchmark/image/build WHEELHOUSE=/absolute/path/to/wheelhouse DOCKER_CONTEXT=<name>
 ```
 
@@ -166,10 +169,9 @@ builds fetch pinned dependency artifacts. `make benchmark/lock DOCKER_CONTEXT=<n
 explicit network-route selection and stages a new hash-locked candidate in
 `/tmp` for review; it does not replace the committed lock.
 
-CPU runner builds select and verify their locked wheels from the shared
-wheelhouse, then install them without network access. Their system packages may
-still use the selected network route. The CUDA benchmark image currently uses
-the builder-wide uv cache at `/root/.cache/uv` and checks its own lock hashes.
+CPU runner and CUDA benchmark builds select and verify their locked wheels from
+the shared wheelhouse, then install them without network access. Their system
+packages may still use the selected network route.
 CPU and CUDA wheels and different package versions are not interchangeable.
 
 The common image pins PyTorch 2.10.0 with CUDA 12.8 for Ada and Blackwell support.

@@ -9,7 +9,11 @@ fail() {
     exit 2
 }
 
-[[ "$target" == cpu-x86_64 ]] || fail "runner image target must be cpu-x86_64: ${target:-<unset>}"
+if [[ "$runner" == benchmark ]]; then
+    [[ "$target" == benchmark-cu128 ]] || fail 'benchmark image target must be benchmark-cu128'
+else
+    [[ "$target" == cpu-x86_64 ]] || fail "runner image target must be cpu-x86_64: ${target:-<unset>}"
+fi
 
 case "$runner" in
     nmrpeak_chf_v1)
@@ -21,6 +25,10 @@ case "$runner" in
         readonly image_repository="numpde/nmrpeak-hf-runner"
         readonly contract_id="nmrpeak.runner_session.hf.v1"
         readonly entrypoint='["/usr/local/bin/python3.12","-P","-m","nmrpeak_provider.native_launcher","nmrpeak_hf_v1","models.nmrpeak_hf_v1.runner.worker"]'
+        ;;
+    benchmark)
+        readonly image_repository='nmrpeak-repro/benchmark'
+        readonly entrypoint='["python","-m","benchmark_tools.worker"]'
         ;;
     *)
         fail "runner image must select nmrpeak_chf_v1 or nmrpeak_hf_v1: ${runner:-<unset>}"
@@ -63,7 +71,7 @@ cleanup() {
         wait "$proxy_pid" 2>/dev/null || true
     fi
     if (( engine_active )); then
-        printf 'Build or report retirement is unconfirmed; preserve %s, inspect report CID files, proxy.log and containers nmrpeak-{native,scientific}-report-%s and proxy PID %s before cleanup or retrying.\n' "$tmp" "${tmp##*.}" "${proxy_pid:-none}" >&2
+        printf 'Build or report retirement is unconfirmed; preserve %s, inspect report CID files, proxy.log and containers nmrpeak-{native,scientific,benchmark}-report-%s and proxy PID %s before cleanup or retrying.\n' "$tmp" "${tmp##*.}" "${proxy_pid:-none}" >&2
     else
         rm -rf -- "$tmp"
     fi
@@ -82,6 +90,10 @@ readonly image_input_id="$({
         "$runner" "$repo_root" "$revision" "$context" \
         --source-allowlist "$tmp/source.json" --source-prefix "$context"
 })"
+if [[ "$runner" == benchmark ]]; then
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m repository_checks.nmrpeak_lock \
+        "$context" benchmark-cu128 "$context/containers/benchmark/requirements.lock"
+fi
 readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487'
 base_id="$(docker image inspect "$base" --format '{{.Id}}')" || fail 'the pinned Python base image must already exist on the selected Docker engine'
 [[ "$base_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'the pinned Python base image has an invalid Docker identity'
@@ -91,17 +103,28 @@ git -C "$repo_root" show "$revision:repository_checks/image_wheel_report.py" >"$
 read -r report_helper_hash _ < <(sha256sum -- "$tmp/report.py")
 readonly report_input="$tmp/report-input"
 install -d -m 0755 -- "$report_input" "$report_input/dependencies" \
-    "$report_input/families/nmrpeak/targets/cpu-x86_64"
+    "$report_input/families/nmrpeak/targets/cpu-x86_64" "$report_input/containers/benchmark"
 chmod 0711 -- "$tmp"
-for path in requirements-native.lock dependencies/provider-core-native.lock dependencies/provider-core-source.txt \
-    families/nmrpeak/targets/cpu-x86_64/requirements.lock; do
+if [[ "$runner" == benchmark ]]; then
+    paths=(containers/benchmark/requirements.lock)
+    profiles=(benchmark)
+    dockerfile=containers/benchmark/Dockerfile
+else
+    paths=(requirements-native.lock dependencies/provider-core-native.lock dependencies/provider-core-source.txt families/nmrpeak/targets/cpu-x86_64/requirements.lock)
+    profiles=(native scientific)
+    dockerfile="models/$runner/runner/Dockerfile.runner"
+fi
+for path in "${paths[@]}"; do
     install -m 0644 -- "$context/$path" "$report_input/$path"
 done
-for profile in native scientific; do
+selection_files=()
+for profile in "${profiles[@]}"; do
     if [[ "$profile" == native ]]; then
         locks=(requirements-native.lock dependencies/provider-core-native.lock dependencies/provider-core-source.txt)
-    else
+    elif [[ "$profile" == scientific ]]; then
         locks=(families/nmrpeak/targets/cpu-x86_64/requirements.lock)
+    else
+        locks=(containers/benchmark/requirements.lock)
     fi
     lock_arguments=()
     for path in "${locks[@]}"; do
@@ -120,9 +143,10 @@ for profile in native scientific; do
         --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}" >"$tmp/$profile.report.json"
     engine_active=0
     "$python" -I -S "$tool" report --report "$tmp/$profile.report.json" --pool /wheelhouse --directory wheels >"$tmp/$profile.selection.json"
+    selection_files+=("$tmp/$profile.selection.json")
 done
 "$python" -I -c 'import json,sys; print(json.dumps(sum((json.load(open(p)) for p in sys.argv[1:]), [])))' \
-    "$tmp/native.selection.json" "$tmp/scientific.selection.json" >"$tmp/selection.json"
+    "${selection_files[@]}" >"$tmp/selection.json"
 readonly selection_id="$("$python" -I -S "$tool" identity --manifest "$tmp/selection.json")"
 [[ "$selection_id" =~ ^[0-9a-f]{64}$ ]] || fail 'shared wheelhouse tool returned an invalid selection identity'
 read -r build_identity _ < <(printf 'nmrpeak-runner-build-v1\n%s\n%s\n%s\n%s\n%s\n' \
@@ -168,7 +192,7 @@ docker build --platform linux/amd64 --pull=false --network "$build_network" "${p
     --build-arg "SOURCE_REVISION=$revision" --build-arg "IMAGE_INPUT_ID=$image_input_id" \
     --label "io.numpde.nmrpeak.wheelhouse.selection=sha256:$selection_id" \
     --label "io.numpde.nmrpeak.build.input-id=sha256:$build_identity" \
-    --iidfile "$image_id_file" --file "models/$runner/runner/Dockerfile.runner" -
+    --iidfile "$image_id_file" --file "$dockerfile" -
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
 [[ "${pipeline_status[0]}" == 0 && "${pipeline_status[1]}" == 0 ]] ||
@@ -187,12 +211,17 @@ readonly image_id="$(<"$image_id_file")"
     fail "built $runner image is not Linux amd64: $image_id"
 [[ "$(docker image inspect "$image_id" --format '{{.Config.User}}')" == 65532:65532 ]] ||
     fail "built $runner image does not use the fixed non-root identity: $image_id"
+if [[ "$runner" == benchmark ]]; then
+    [[ "$(docker image inspect "$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.role"}}')" == benchmark ]] ||
+        fail "built benchmark image does not record its role: $image_id"
+else
 [[ "$(docker image inspect "$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.runner.ref"}}')" == "$runner" ]] ||
     fail "built $runner image does not record its runner reference: $image_id"
 [[ "$(docker image inspect "$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.runner.contract-id"}}')" == "$contract_id" ]] ||
     fail "built $runner image does not record its runner contract: $image_id"
 [[ "$(docker image inspect "$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.runner.target"}}')" == "$target" ]] ||
     fail "built $runner image does not record its target: $image_id"
+fi
 [[ "$(docker image inspect "$image_id" --format '{{json .Config.Entrypoint}}')" == "$entrypoint" ]] ||
     fail "built $runner image does not use its fixed entrypoint: $image_id"
 docker image tag "$image_id" "$image_repository-build:$build_identity"

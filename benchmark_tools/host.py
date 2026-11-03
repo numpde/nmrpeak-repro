@@ -166,18 +166,13 @@ def build_network(scratch, retirement_uncertain=lambda: False):
                 failure.add_note(f"Network proxy cleanup failed: {cleanup_error}")
 
 
-def prepare_images(revision, scratch, build=False, network_arguments=()):
+def prepare_images(revision, scratch):
     images = {}
     for role in ("nmrpeak_hf_v1", "nmrpeak_chf_v1", "benchmark"):
         context = scratch / role
         context.mkdir()
         input_id = materialize_image_context(ROOT, revision, context, role)
         spec = image_spec(role, input_id, revision)
-        if build and role == "benchmark":
-            file = "containers/benchmark/Dockerfile"
-            docker("build", *network_arguments, "--build-arg", f"SOURCE_REVISION={revision}",
-                   "--build-arg", f"IMAGE_INPUT_ID={input_id}", "--tag", f"{spec.repository}:{input_id[7:]}",
-                   "--file", context / file, context, timeout=7200)
         image = resolve_local_image(DOCKER, spec)
         labels = json.loads(docker("image", "inspect", image.image_id, "--format", "{{json .Config.Labels}}",
                                    stdout=subprocess.PIPE).stdout)
@@ -427,16 +422,8 @@ def main():
     if options.action == "build":
         from repository_checks.nmrpeak_lock import check_lock
         check_lock(ROOT, "benchmark-cu128", ROOT / "containers/benchmark/requirements.lock")
-        temporary = tempfile.mkdtemp(prefix="nmrpeak-benchmark-build-")
-        try:
-            with build_network(Path(temporary), lambda: sys.exc_info()[0] is not None) as network_arguments:
-                print(json.dumps(prepare_images(revision, Path(temporary), build=True,
-                                                network_arguments=network_arguments), indent=2))
-        except BaseException:
-            print(f"Build retirement is unconfirmed; preserve inputs at {temporary} and inspect Docker before retrying.", file=sys.stderr)
-            raise
-        else:
-            shutil.rmtree(temporary)
+        with tempfile.TemporaryDirectory(prefix="nmrpeak-benchmark-build-") as temporary:
+            print(json.dumps(prepare_images(revision, Path(temporary)), indent=2))
         return
     options.devices = os.environ.get("BENCHMARK_DEVICES", "all").split()
     options.lanes = os.environ.get("BENCHMARK_MODELS", "hf chf").split()

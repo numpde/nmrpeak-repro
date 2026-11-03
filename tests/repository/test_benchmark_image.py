@@ -32,11 +32,10 @@ class BenchmarkImageTests(unittest.TestCase):
     def test_benchmark_lock_matches_shared_family_intent(self):
         check_lock(ROOT, "benchmark-cu128", ROOT / "containers/benchmark/requirements.lock")
 
-    def test_benchmark_retains_the_builder_wide_package_cache(self):
-        lines = (ROOT / "containers/benchmark/Dockerfile").read_text().splitlines()
-        cache_mounts = [line.strip().removesuffix("\\").strip() for line in lines
-                        if "--mount=type=cache" in line]
-        self.assertEqual(cache_mounts, ["--mount=type=cache,target=/root/.cache/uv,sharing=locked"])
+    def test_benchmark_dependency_install_is_offline(self):
+        dockerfile = (ROOT / "containers/benchmark/Dockerfile").read_text()
+        self.assertIn("RUN --network=none --mount=type=bind,from=wheel_inputs", dockerfile)
+        self.assertIn("--no-index --find-links=/wheelhouse --no-deps --require-hashes", dockerfile)
 
     def test_runner_dependency_installs_use_the_offline_wheel_stage(self):
         for relative in ("models/nmrpeak_hf_v1/runner/Dockerfile.runner",
