@@ -17,29 +17,24 @@ IFS= read -r -d '' wheelhouse < <(realpath -e -z -- "$NMRPEAK_WHEELHOUSE_INPUT")
 readonly wheelhouse
 [[ "$wheelhouse" != / && "$wheelhouse" != *','* && "$wheelhouse" != *$'\n'* && "$wheelhouse" != *$'\r'* ]] ||
     fail 'WHEELHOUSE must be a selected subdirectory path without commas or line breaks'
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m repository_checks.wheelhouse_tool_asset check "$wheelhouse" ||
-    fail 'the pinned wheelhouse tool is missing or invalid; run make wheelhouse/tool first'
-tool_name="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 'from repository_checks.wheelhouse_tool_asset import TOOL_NAME; print(TOOL_NAME)')"
-readonly tool="$wheelhouse/$tool_name"
 source "$repo_root/scripts/network-interface.sh"
 require_local_docker
 docker() { command docker --host "$NMRPEAK_DOCKER_HOST" "$@"; }
 readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487'
 base_id="$(docker image inspect "$base" --format '{{.Id}}')" || fail 'the pinned Python base image must already exist on the selected engine'
 [[ "$base_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'the pinned Python base image has an invalid Docker identity'
-operator_uid="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m deployment.operator_container_uid "$base_id")"
 
 scratch="$(mktemp -d)"
-proxy_pid=''
-engine_active=0
+retired_receipt="$scratch/retired"
 cleanup() {
     local status=$?
     trap - EXIT
-    if (( engine_active )); then
-        printf 'Wheelhouse worker retirement is unconfirmed; preserve %s, inspect its CID files, proxy.log and nmrpeak wheelhouse containers ending in %s and proxy PID %s before cleanup or retrying.\n' "$scratch" "${scratch##*.}" "${proxy_pid:-none}" >&2
-    else
-        if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi
-        rm -rf -- "$scratch"
+    if [[ ! -f "$retired_receipt" || -L "$retired_receipt" ]] || ! cmp -s -- "$retired_receipt" <(printf 'retired\n'); then
+        printf 'Acquisition retirement is unconfirmed; preserve %s and inspect the shared owner evidence before retrying.\n' "$scratch" >&2
+        (( status != 0 )) || status=1
+    elif ! rm -rf -- "$scratch"; then
+        printf 'Cannot remove acquisition inputs at %s.\n' "$scratch" >&2
+        (( status != 0 )) || status=1
     fi
     exit "$status"
 }
@@ -120,29 +115,24 @@ check_offline_selection() {
             read -r digest _ < <(sha256sum -- "$report_input/$path")
             lock_arguments+=(--lock-sha256 "$digest")
         done
-        name="nmrpeak-$profile-$phase-${scratch##*.}"
-        engine_active=1
-        set +e
-        docker run --name "$name" --cidfile "$scratch/$profile-$phase.cid" \
-            --label "io.numpde.nmrpeak.wheelhouse=${scratch##*.}-$profile-$phase" \
-            --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" \
-            --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 512m \
-            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
-            --mount "type=bind,src=$report_input,dst=/input,readonly" \
-            --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
-            --entrypoint python "$base" -I -c "$(<"$scratch/report.py")" \
-            --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}" \
-            >"$scratch/$profile-$phase.json" 2>"$scratch/$profile-$phase.log"
-        report_status=$?
-        set -e
-        [[ "$report_status" == 0 || "$report_status" == 1 ]] || fail "Offline wheel check did not complete normally (status $report_status)."
-        [[ -s "$scratch/$profile-$phase.cid" ]] || fail 'Offline wheel check did not produce a container identity.'
-        report_cid="$(<"$scratch/$profile-$phase.cid")"
-        [[ "$report_cid" =~ ^[0-9a-f]{64}$ ]] || fail 'Offline wheel check returned an invalid container identity.'
-        [[ "$(docker inspect "$report_cid" --format '{{.State.Running}} {{.State.ExitCode}} {{index .Config.Labels "io.numpde.nmrpeak.wheelhouse"}}')" == "false $report_status ${scratch##*.}-$profile-$phase" ]] ||
-            fail 'Offline wheel check retirement or ownership could not be confirmed.'
-        docker rm "$report_cid" >/dev/null
-        engine_active=0
+        local -a report_grants=(--platform linux/amd64 --pull never --read-only
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 512m
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m
+            --mount "type=bind,src=$report_input,dst=/input,readonly"
+            --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" --entrypoint python)
+        local -a report_command=(-I -c "$(<"$scratch/report.py")"
+            --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}")
+        if acquisition_worker offline report_status "$base" report_grants report_command \
+            >"$scratch/$profile-$phase.json" 2>"$scratch/$profile-$phase.log"; then :; else
+            local owner_status=$?
+            cat "$scratch/$profile-$phase.log" >&2
+            printf 'Offline wheel check lifecycle failed for %s.\n' "$profile" >&2
+            exit "$owner_status"
+        fi
+        if [[ "$report_status" != 0 && "$report_status" != 1 ]]; then
+            cat "$scratch/$profile-$phase.log" >&2
+            fail "Offline wheel check did not complete normally (status $report_status)."
+        fi
         if (( report_status != 0 )); then
             cat "$scratch/$profile-$phase.log" >&2
             offline_complete=0
@@ -151,62 +141,35 @@ check_offline_selection() {
         [[ -s "$scratch/$profile-$phase.json" ]] || fail 'Offline wheel check returned an empty report.'
     done
 }
+run_acquisition() {
 check_offline_selection initial
 if (( offline_complete )); then
-    printf 'All locked NMRPeak %s wheels are already available in %s; no acquisition is needed.\n' "$target" "$wheelhouse"
-    exit 0
+    acquisition_message="All locked NMRPeak $target wheels are already available in $wheelhouse; no acquisition is needed."
+    return 0
 fi
-printf '%s\n' 'Offline selection did not complete; continuing with the selected acquisition route.' >&2
-select_network_interface
-network=bridge
-proxy_arguments=(--env HTTP_PROXY= --env HTTPS_PROXY= --env http_proxy= --env https_proxy= --env NO_PROXY= --env no_proxy= --env ALL_PROXY= --env all_proxy= --env FTP_PROXY= --env ftp_proxy=)
-if [[ "$NETWORK_INTERFACE_SELECTED" != system ]]; then
-    network=host
-    previous_umask="$(umask)"
-    umask 077
-    setsid bash -c 'ulimit -f 2048; exec "$@"' bash "$python" "$repo_root/docker/bound_http_proxy.py" \
-        --interface="$NETWORK_INTERFACE_SELECTED" --ready-file "$scratch/proxy.port" </dev/null >"$scratch/proxy.log" 2>&1 &
-    proxy_pid=$!
-    umask "$previous_umask"
-    for _ in {1..100}; do
-        [[ -s "$scratch/proxy.port" ]] && break
-        kill -0 "$proxy_pid" 2>/dev/null || { tail -c 8192 "$scratch/proxy.log" >&2; fail 'Network proxy stopped before wheelhouse acquisition.'; }
-        sleep 0.05
-    done
-    [[ -s "$scratch/proxy.port" ]] || { tail -c 8192 "$scratch/proxy.log" >&2; fail 'Network proxy did not become ready for wheelhouse acquisition.'; }
-    proxy_url="http://127.0.0.1:$(<"$scratch/proxy.port")"
-    proxy_arguments=(--env "HTTP_PROXY=$proxy_url" --env "HTTPS_PROXY=$proxy_url" --env "http_proxy=$proxy_url" --env "https_proxy=$proxy_url" --env NO_PROXY= --env no_proxy= --env ALL_PROXY= --env all_proxy= --env FTP_PROXY= --env ftp_proxy=)
-fi
-worker=(--platform linux/amd64 --pull never --network "$network" --read-only --user "$operator_uid:65532"
+printf '%s\n' 'Offline selection was not established; continuing with the requested acquisition.' >&2
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m repository_checks.wheelhouse_tool_asset check "$wheelhouse" ||
+    fail 'the pinned wheelhouse tool is missing or invalid; run make wheelhouse/tool first'
+tool_name="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 'from repository_checks.wheelhouse_tool_asset import TOOL_NAME; print(TOOL_NAME)')"
+readonly tool="$wheelhouse/$tool_name"
+select_network_interface || exit "$?"
+acquisition_set_route "$NETWORK_INTERFACE_SELECTED" || exit "$?"
+worker_grants=(--platform linux/amd64 --pull never --read-only
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 512m
-    --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m "${proxy_arguments[@]}"
+    --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m
     --mount "type=bind,src=$tool,dst=/tool.pyz,readonly"
-    --mount "type=bind,src=$wheelhouse,dst=/wheelhouse" --entrypoint python "$base" -I -S /tool.pyz)
+    --mount "type=bind,src=$wheelhouse,dst=/wheelhouse" --entrypoint python)
 run_network_worker() {
-    local profile="$1" operation="$2" status cid state running exit_code label extra
+    local profile="$1" operation="$2" status
     shift 2
-    local name="nmrpeak-$profile-$operation-${scratch##*.}"
-    local receipt="$scratch/$profile-$operation.cid"
-    local expected_label="${scratch##*.}-$profile-$operation"
-    engine_active=1
-    set +e
-    docker run --name "$name" --cidfile "$receipt" \
-        --label "io.numpde.nmrpeak.wheelhouse=$expected_label" "$@"
-    status=$?
-    set -e
-    [[ -s "$receipt" ]] || fail "Cannot $operation $profile wheels: worker identity is unavailable (client status $status)."
-    cid="$(<"$receipt")"
-    [[ "$cid" =~ ^[0-9a-f]{64}$ ]] || fail "Cannot $operation $profile wheels: worker identity is invalid."
-    state="$(docker inspect "$cid" --format '{{.State.Running}} {{.State.ExitCode}} {{index .Config.Labels "io.numpde.nmrpeak.wheelhouse"}}')" ||
-        fail "Cannot $operation $profile wheels: worker state could not be inspected."
-    read -r running exit_code label extra <<<"$state"
-    [[ "$running" == false && "$exit_code" =~ ^[0-9]+$ && "$label" == "$expected_label" && -z "$extra" ]] ||
-        fail "Cannot $operation $profile wheels: worker retirement or ownership is unconfirmed."
-    docker rm "$cid" >/dev/null || fail "Cannot $operation $profile wheels: the stopped worker could not be removed."
-    engine_active=0
-    if (( status != 0 || exit_code != 0 )); then
-        fail "Cannot $operation $profile wheels: client status $status, worker status $exit_code. Inspect the preceding diagnostic; any verified pool files were preserved."
+    local -a grants=("${worker_grants[@]}" "$@")
+    local -a application=(-I -S /tool.pyz "${worker_command[@]}")
+    if acquisition_worker online status "$base" grants application; then :; else
+        local owner_status=$?
+        printf 'Cannot %s %s wheels: worker lifecycle failed.\n' "$operation" "$profile" >&2
+        exit "$owner_status"
     fi
+    (( status == 0 )) || fail "Cannot $operation $profile wheels: worker status $status. Inspect the preceding diagnostic; any verified pool files were preserved."
 }
 for profile in "${profiles[@]}"; do
     if [[ "$profile" == native ]]; then
@@ -225,16 +188,29 @@ for profile in "${profiles[@]}"; do
         lock="$scratch/requirements.lock"
         locate_arguments=()
     fi
+    worker_command=(locate --lock /input/requirements.lock --pool /wheelhouse "${locate_arguments[@]}")
     run_network_worker "$profile" locate \
-        --mount "type=bind,src=$lock,dst=/input/requirements.lock,readonly" \
-        "${worker[@]}" locate --lock /input/requirements.lock --pool /wheelhouse "${locate_arguments[@]}" >"$scratch/pylock.$profile.toml"
+        --mount "type=bind,src=$lock,dst=/input/requirements.lock,readonly" >"$scratch/pylock.$profile.toml"
     [[ -s "$scratch/pylock.$profile.toml" ]] || fail "Cannot locate $profile wheels: the worker returned an empty projection."
-    chmod 0644 -- "$scratch/pylock.$profile.toml"
+    chmod 0644 -- "$scratch/pylock.$profile.toml" || exit "$?"
+    worker_command=(acquire --lock /input/pylock.toml --source-lock /input/source.lock --pool /wheelhouse)
     run_network_worker "$profile" acquire \
         --mount "type=bind,src=$scratch/pylock.$profile.toml,dst=/input/pylock.toml,readonly" \
-        --mount "type=bind,src=$lock,dst=/input/source.lock,readonly" \
-        "${worker[@]}" acquire --lock /input/pylock.toml --source-lock /input/source.lock --pool /wheelhouse
+        --mount "type=bind,src=$lock,dst=/input/source.lock,readonly"
 done
 check_offline_selection final
 (( offline_complete )) || fail 'Acquisition completed, but the locked wheel selection still fails offline.'
-printf 'Acquired the locked NMRPeak %s wheel selection in %s.\n' "$target" "$wheelhouse"
+acquisition_message="Acquired the locked NMRPeak $target wheel selection in $wheelhouse."
+
+}
+# The verified shared owner owns worker and route lifecycles for this scope.
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -P -m repository_checks.acquisition_bootstrap || {
+    printf '%s\n' 'Cannot verify the shared acquisition bootstrap.' >&2; exit 2;
+}
+source "$repo_root/bootstrap/acquisition/acquisition_tool/owner.sh"
+acquisition_message=''
+acquisition_scope --endpoint "$NMRPEAK_DOCKER_HOST" --bootstrap-image "$base" \
+    --retired-receipt "$retired_receipt" -- run_acquisition
+[[ -f "$retired_receipt" && ! -L "$retired_receipt" ]] && cmp -s -- "$retired_receipt" <(printf 'retired\n') ||
+    fail 'Acquisition retirement is unconfirmed; no success can be reported.'
+printf '%s\n' "$acquisition_message"

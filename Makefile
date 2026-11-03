@@ -4,8 +4,10 @@ override export NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN := $(origin NETWORK_INTER
 unexport WHEELHOUSE
 override export NMRPEAK_WHEELHOUSE_INPUT := $(if $(filter command line,$(origin WHEELHOUSE)),$(value WHEELHOUSE))
 override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
-unexport PROVIDER_CORE_WHEEL
-override export NMRPEAK_PROXY_WHEEL_INPUT := $(if $(filter command line,$(origin PROVIDER_CORE_WHEEL)),$(value PROVIDER_CORE_WHEEL))
+override export NMRPEAK_ACQUISITION_ARCHIVE_INPUT := $(if $(filter command line,$(origin ACQUISITION_ARCHIVE)),$(value ACQUISITION_ARCHIVE))
+unexport NMRPEAK_DOCKER_CONTEXT_INPUT NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN
+override export NMRPEAK_DOCKER_CONTEXT_INPUT := $(if $(filter command line,$(origin DOCKER_CONTEXT)),$(value DOCKER_CONTEXT))
+override export NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN := $(origin DOCKER_CONTEXT)
 
 override NMRPEAK_DOCKER_TARGETS := \
 	benchmark benchmark/image/build benchmark/lock check/test-image \
@@ -51,13 +53,13 @@ override NMRPEAK_TEST_COMPOSE = env \
 override NMRPEAK_TEST_NON_ROOT_GUARD = if [[ "$(NMRPEAK_TEST_UID)" == 0 || "$(NMRPEAK_TEST_GID)" == 0 || "$(NMRPEAK_TEST_UID)" == 65532 ]]; then printf '%s\n' 'Containerized tests require a non-root invoking user distinct from provider UID 65532.' >&2; exit 2; fi
 .DEFAULT_GOAL := help
 
-.PHONY: packages/proxy-bootstrap/check packages/proxy-bootstrap/refresh
-packages/proxy-bootstrap/check:
-	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -B -m repository_checks.proxy_bootstrap
+.PHONY: packages/acquisition-bootstrap/check packages/acquisition-bootstrap/refresh
+packages/acquisition-bootstrap/check:
+	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -P -B -m repository_checks.acquisition_bootstrap
 
-packages/proxy-bootstrap/refresh:
-	@test -n "$$NMRPEAK_PROXY_WHEEL_INPUT" || { echo 'Set PROVIDER_CORE_WHEEL to the pinned release wheel on the make command line.' >&2; exit 2; }
-	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -B -m repository_checks.proxy_bootstrap --wheel "$$NMRPEAK_PROXY_WHEEL_INPUT"
+packages/acquisition-bootstrap/refresh:
+	@test -n "$$NMRPEAK_ACQUISITION_ARCHIVE_INPUT" || { echo 'Set ACQUISITION_ARCHIVE to the pinned release bundle on the make command line.' >&2; exit 2; }
+	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -P -B -m repository_checks.acquisition_bootstrap --archive "$$NMRPEAK_ACQUISITION_ARCHIVE_INPUT"
 
 export BENCHMARK_DEVICES = $(or $(DEVICES),all)
 export BENCHMARK_MODELS = $(or $(MODELS),hf chf)
@@ -170,10 +172,10 @@ help:
 		'      Acquire the locked provider dependencies into the shared wheelhouse.' \
 		'  make provider/image/build WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
 		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
-		'  make packages/proxy-bootstrap/check' \
-		'      Verify the local shared proxy bootstrap against the pinned SDK release.' \
-		'  make packages/proxy-bootstrap/refresh PROVIDER_CORE_WHEEL=<path>' \
-		'      Refresh the bootstrap from the exact pinned release wheel.' \
+		'  make packages/acquisition-bootstrap/check' \
+		'      Verify the local acquisition bundle against the pinned SDK release.' \
+		'  make packages/acquisition-bootstrap/refresh ACQUISITION_ARCHIVE=<path>' \
+		'      Refresh the acquisition bundle from the pinned release archive.' \
 		'  make packages/images/retire DOCKER_CONTEXT=<name>' \
 		'      Retire obsolete owned images while protecting retained deployments and containers.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \

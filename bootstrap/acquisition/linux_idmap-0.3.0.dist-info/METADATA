@@ -1,0 +1,110 @@
+Metadata-Version: 2.4
+Name: linux-idmap
+Version: 0.3.0
+Summary: Read Linux process ID maps and observe host IDs for local Docker images
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+
+# linux-idmap
+
+Read Linux UID/GID maps, translate IDs, and find the host IDs used by a local
+Docker image. Requires Linux and Python 3.11+; no third-party runtime dependencies.
+
+## Install
+
+From the repository root:
+
+```sh
+python3 -m venv "$HOME/.local/share/linux-idmap"
+"$HOME/.local/share/linux-idmap/bin/python" -m pip install --no-deps ./packages/linux-idmap
+export PATH="$HOME/.local/share/linux-idmap/bin:$PATH"
+```
+
+## Read and translate maps
+
+```python
+import os
+from linux_idmap import IdMap, IdRange, observe_process
+
+maps = observe_process(os.getpid())
+print(list(maps.uid_rows))
+print(list(maps.gid_rows))
+
+mapping = IdMap([IdRange(inside=0, outside=1000, length=2)])
+print(mapping.translate(1))             # 1001
+print(mapping.translate_inverse(1001))  # 1
+```
+
+Raw rows use the kernel's reported coordinates, not necessarily host coordinates.
+`IdMap` requires caller-established, non-overlapping affine ranges; it does not
+validate their overall consistency. Invalid or unmapped IDs raise `ValueError`.
+`translate_inverse` also rejects an outside ID contained in more than one range.
+
+For checked host-coordinate maps of an existing process:
+
+```python
+import os
+from linux_idmap.process import observe_host_process
+
+maps = observe_host_process(os.getpid())
+print(maps.uid_map.translate_inverse(os.getuid()), maps.gid_map.translate_inverse(os.getgid()))
+```
+
+These inverse lookups find IDs inside the observed process namespace corresponding
+to the caller's host UID and GID. This example observes the calling process itself;
+observe another process to inspect its namespace. Run in the initial user namespace
+with readable `/proc`. Failed identity checks
+raise `IdentityError`; the result is an observation, not a lock on future state.
+
+## Probe an image before deployment
+
+```python
+from linux_idmap.probe import ProbeRequest, probe_identity
+
+request = ProbeRequest(
+    endpoint="unix:///run/docker.sock",
+    image="my-image:local",
+    interpreter="/usr/bin/python3",
+    user_uid=1000,
+    user_gid=1000,
+)
+result = probe_identity(request)
+print(result.uid_map.translate(1000), result.gid_map.translate(1000))
+```
+
+Select the local Docker socket, an already-local image without declared volumes,
+and a Python interpreter executable by the requested user. The caller needs the
+Docker CLI, readable `/proc`, and the initial user and PID namespaces.
+
+Every probe has no network, a read-only root, dropped capabilities and
+no-new-privileges. Maps are returned only after confirmed container and process
+retirement. Keep the later deployment's engine and user-namespace policy consistent
+with the probe. Permission changes remain the caller's responsibility.
+
+`ProbeRequest` also accepts `userns_mode="default"` or `"host"`, and `bounds=Bounds(...)`.
+Invalid policy raises `StepError`; operation failures raise `ProbeFailure`.
+Use `failure.as_dict()` for diagnostics. For `uncertain-outcome`, reconcile the
+reported engine, token and container before retrying. Confirmed retirement alone
+does not mean measurement succeeded.
+
+## Shell
+
+```sh
+linux-idmap-probe --endpoint unix:///run/docker.sock \
+  --image my-image:local --interpreter /usr/bin/python3 \
+  --user-uid 1000 --user-gid 1000 --uid 1000 --gid 1000 --values
+```
+
+Repeat `--uid` and `--gid` as needed. With `--values`, success prints UIDs then GIDs;
+failure leaves stdout empty and writes JSON to stderr. Without it, stdout is JSON.
+Check the exit status: `0` success, `1` settled failure, `2` invalid arguments or
+policy, `3` unresolved resource, `130` cancellation. See `--help` for options.
+
+## Examples and development
+
+Runnable scripts are in [examples](examples/). From `packages/linux-idmap`:
+
+```sh
+PYTHONPATH=src python -m unittest discover -s tests -v
+python -m pip wheel --no-deps --wheel-dir dist .
+```

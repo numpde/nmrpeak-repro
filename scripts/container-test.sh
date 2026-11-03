@@ -32,9 +32,9 @@ run_unittest() { run_test test-runner "/workspace/tests/$1" --top-level /workspa
 run_model() {
     run_test test-runner /workspace/tests/model_behavior --top-level /workspace \
         --pattern test_run_interpreter.py
-    run_test --entrypoint python test-runner -P \
+    run_test --entrypoint python test-runner -P -B \
         /workspace/tests/model_behavior/run_interpreter.py --lane hf --list
-    run_test --entrypoint python test-runner -P \
+    run_test --entrypoint python test-runner -P -B \
         /workspace/tests/model_behavior/run_interpreter.py --lane chf --list
 }
 

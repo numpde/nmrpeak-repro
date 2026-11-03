@@ -2,8 +2,8 @@
 """Route acquisition HTTP/CONNECT traffic through one explicit interface.
 
 DNS and TCP sockets bind the selected device without an unbound resolver
-fallback. This IPv4-only loopback proxy supplies cooperative routing; the
-acquisition launcher owns process lifetime and container resources.
+fallback. A private Unix listener can serve a loopback relay in a networkless
+worker namespace. The acquisition launcher owns that isolation and lifetime.
 """
 
 # Adapted from the SECS interface-bound proxy so acquisition uses the same
@@ -543,6 +543,52 @@ class ProxyServer(socketserver.ThreadingTCPServer):
         sys.stderr.write("Cannot serve proxy request: its worker failed; request contents are not logged.\n")
 
 
+class UnixProxyServer(ProxyServer):
+    """Serve the same destination proxy through a caller-owned private socket."""
+
+    address_family = socket.AF_UNIX
+
+    def __init__(self, address: Path, interface: str):
+        super().__init__(str(address), interface)
+
+    def server_bind(self):
+        # Never unlink an existing path. The launcher owns the private parent
+        # and removes it only after every container borrower has retired.
+        super().server_bind()
+        os.chmod(self.server_address, 0o600)
+
+
+class UnixRelayHandler(socketserver.BaseRequestHandler):
+    """Forward bytes to the Unix gateway, with no IP destination fallback."""
+
+    def handle(self):
+        phase = "gateway connection"
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as gateway:
+                gateway.settimeout(CONNECT_SECONDS)
+                gateway.connect(self.server.gateway_socket)
+                phase = "forwarding"
+                relay(self.request, gateway)
+        except OSError as error:
+            if phase == "gateway connection":
+                try:
+                    self.request.settimeout(1)
+                    self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                except OSError:
+                    pass
+            sys.stderr.write(f"proxy relay {phase} failed: {type(error).__name__}\n")
+
+
+class UnixRelayServer(ProxyServer):
+    """Bound loopback TCP workers and carry their proxy traffic over Unix."""
+
+    request_handler = UnixRelayHandler
+
+    def __init__(self, address: tuple[str, int], gateway_socket: Path):
+        self.gateway_socket = str(gateway_socket)
+        super().__init__(address, "system")
+
+
 def require_interface_name(interface: str) -> None:
     """Admit the Linux interface grammar without claiming a host device exists."""
     # Native lookup admits the same device name consumed by SO_BINDTODEVICE.
@@ -598,15 +644,27 @@ def publish_readiness(ready_file, content):
 def main() -> None:
     """Publish exclusive private readiness after listener and device admission.
 
-    The acquisition launcher explicitly supplies port zero for kernel selection.
-    Direct CLI callers must supply --port (use --port 0 for the same policy);
-    omission is a parse error before interface lookup or listener allocation.
+    TCP listeners explicitly supply port zero for kernel selection. A private
+    Unix gateway publishes its socket path; a loopback relay publishes its port.
+    The launcher grants the worker only the relay's networkless namespace.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interface", required=True)
-    parser.add_argument("--port", type=int, required=True, help="Listener port; 0 asks the kernel to choose a free port.")
+    upstream = parser.add_mutually_exclusive_group(required=True)
+    upstream.add_argument("--interface")
+    upstream.add_argument("--relay-socket", type=Path, help="Private Unix gateway for a loopback-only relay.")
+    listener = parser.add_mutually_exclusive_group(required=True)
+    listener.add_argument("--port", type=int, help="Listener port; 0 asks the kernel to choose a free port.")
+    listener.add_argument("--unix-socket", type=Path, help="Private Unix listener; an existing path is never replaced.")
     parser.add_argument("--ready-file", type=Path, required=True)
     args = parser.parse_args()
+
+    if args.relay_socket is not None:
+        if args.unix_socket is not None:
+            parser.error("--relay-socket requires a TCP --port listener")
+        with UnixRelayServer(("127.0.0.1", args.port), args.relay_socket) as server:
+            publish_readiness(args.ready_file, f"{server.server_address[1]}\n")
+            server.serve_forever()
+        return
 
     try:
         if args.interface != "system":
@@ -619,9 +677,14 @@ def main() -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, args.interface.encode() + b"\0")
 
-    with ProxyServer(("127.0.0.1", args.port), args.interface) as server:
-        publish_readiness(args.ready_file, f"{server.server_address[1]}\n")
-        server.serve_forever()
+    if args.unix_socket is not None:
+        with UnixProxyServer(args.unix_socket, args.interface) as server:
+            publish_readiness(args.ready_file, f"{server.server_address}\n")
+            server.serve_forever()
+    else:
+        with ProxyServer(("127.0.0.1", args.port), args.interface) as server:
+            publish_readiness(args.ready_file, f"{server.server_address[1]}\n")
+            server.serve_forever()
 
 
 if __name__ == "__main__":

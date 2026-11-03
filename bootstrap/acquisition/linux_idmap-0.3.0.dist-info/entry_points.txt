@@ -1,0 +1,2 @@
+[console_scripts]
+linux-idmap-probe = linux_idmap._cli:main

@@ -160,7 +160,7 @@ worker_label="${scratch##*.}-smoke"
 set +e
 docker run --name "nmrpeak-image-smoke-${scratch##*.}" --cidfile "$worker_cid" \
     --label "io.numpde.nmrpeak.wheel-report=$worker_label" --network none --entrypoint python "$image_id" \
-    -P -c 'import cryptography; import provider_core.controller; import nmrpeak_provider.provider_main'
+    -P -B -c 'import cryptography; import provider_core.controller; import nmrpeak_provider.provider_main'
 smoke_status=$?
 set -e
 retire_image_worker "$worker_cid" "$worker_label" || fail 'The image import worker could not be confirmed retired.'
