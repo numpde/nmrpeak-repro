@@ -177,11 +177,37 @@ if [[ "$NETWORK_INTERFACE_SELECTED" != system ]]; then
     proxy_url="http://127.0.0.1:$(<"$scratch/proxy.port")"
     proxy_arguments=(--env "HTTP_PROXY=$proxy_url" --env "HTTPS_PROXY=$proxy_url" --env "http_proxy=$proxy_url" --env "https_proxy=$proxy_url" --env NO_PROXY= --env no_proxy= --env ALL_PROXY= --env all_proxy= --env FTP_PROXY= --env ftp_proxy=)
 fi
-worker=(--rm --platform linux/amd64 --pull never --network "$network" --read-only --user "$operator_uid:65532"
+worker=(--platform linux/amd64 --pull never --network "$network" --read-only --user "$operator_uid:65532"
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 512m
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m "${proxy_arguments[@]}"
     --mount "type=bind,src=$tool,dst=/tool.pyz,readonly"
     --mount "type=bind,src=$wheelhouse,dst=/wheelhouse" --entrypoint python "$base" -I -S /tool.pyz)
+run_network_worker() {
+    local profile="$1" operation="$2" status cid state running exit_code label extra
+    shift 2
+    local name="nmrpeak-$profile-$operation-${scratch##*.}"
+    local receipt="$scratch/$profile-$operation.cid"
+    local expected_label="${scratch##*.}-$profile-$operation"
+    engine_active=1
+    set +e
+    docker run --name "$name" --cidfile "$receipt" \
+        --label "io.numpde.nmrpeak.wheelhouse=$expected_label" "$@"
+    status=$?
+    set -e
+    [[ -s "$receipt" ]] || fail "Cannot $operation $profile wheels: worker identity is unavailable (client status $status)."
+    cid="$(<"$receipt")"
+    [[ "$cid" =~ ^[0-9a-f]{64}$ ]] || fail "Cannot $operation $profile wheels: worker identity is invalid."
+    state="$(docker inspect "$cid" --format '{{.State.Running}} {{.State.ExitCode}} {{index .Config.Labels "io.numpde.nmrpeak.wheelhouse"}}')" ||
+        fail "Cannot $operation $profile wheels: worker state could not be inspected."
+    read -r running exit_code label extra <<<"$state"
+    [[ "$running" == false && "$exit_code" =~ ^[0-9]+$ && "$label" == "$expected_label" && -z "$extra" ]] ||
+        fail "Cannot $operation $profile wheels: worker retirement or ownership is unconfirmed."
+    docker rm "$cid" >/dev/null || fail "Cannot $operation $profile wheels: the stopped worker could not be removed."
+    engine_active=0
+    if (( status != 0 || exit_code != 0 )); then
+        fail "Cannot $operation $profile wheels: client status $status, worker status $exit_code. Inspect the preceding diagnostic; any verified pool files were preserved."
+    fi
+}
 for profile in "${profiles[@]}"; do
     if [[ "$profile" == native ]]; then
         lock="$scratch/native.lock"
@@ -199,20 +225,15 @@ for profile in "${profiles[@]}"; do
         lock="$scratch/requirements.lock"
         locate_arguments=()
     fi
-    engine_active=1
-    docker run --name "nmrpeak-$profile-locate-${scratch##*.}" --cidfile "$scratch/$profile-locate.cid" \
-        --label "io.numpde.nmrpeak.wheelhouse=${scratch##*.}-$profile-locate" \
+    run_network_worker "$profile" locate \
         --mount "type=bind,src=$lock,dst=/input/requirements.lock,readonly" \
         "${worker[@]}" locate --lock /input/requirements.lock --pool /wheelhouse "${locate_arguments[@]}" >"$scratch/pylock.$profile.toml"
-    engine_active=0
+    [[ -s "$scratch/pylock.$profile.toml" ]] || fail "Cannot locate $profile wheels: the worker returned an empty projection."
     chmod 0644 -- "$scratch/pylock.$profile.toml"
-    engine_active=1
-    docker run --name "nmrpeak-$profile-acquire-${scratch##*.}" --cidfile "$scratch/$profile-acquire.cid" \
-        --label "io.numpde.nmrpeak.wheelhouse=${scratch##*.}-$profile-acquire" \
+    run_network_worker "$profile" acquire \
         --mount "type=bind,src=$scratch/pylock.$profile.toml,dst=/input/pylock.toml,readonly" \
         --mount "type=bind,src=$lock,dst=/input/source.lock,readonly" \
         "${worker[@]}" acquire --lock /input/pylock.toml --source-lock /input/source.lock --pool /wheelhouse
-    engine_active=0
 done
 check_offline_selection final
 (( offline_complete )) || fail 'Acquisition completed, but the locked wheel selection still fails offline.'

@@ -17,6 +17,7 @@ class WheelhouseAcquisitionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
+        self.root = root
         self.repo, self.pool, self.engine = root / "repo", root / "pool", root / "engine"
         for directory in (self.repo / "scripts", self.repo / "repository_checks",
                           self.repo / "deployment", self.repo / "dependencies", self.pool, self.engine):
@@ -54,18 +55,23 @@ elif a[0] == "run":
     label = a[a.index("--label") + 1].split("=", 1)[1]
     phase = next(x for x in ("initial", "final", "locate", "acquire") if "-" + x + "-" in name)
     cid = str(len(list(root.glob("*.json"))) + 1) * 64
-    status = int(os.environ.get("FAKE_" + phase.upper(), "0")) if phase in ("initial", "final") else 0
-    cidfile.write_text(cid)
-    (root / (cid + ".json")).write_text(json.dumps([status, label]))
+    status = int(os.environ.get("FAKE_" + phase.upper(), "0"))
+    engine_status = int(os.environ.get("FAKE_ENGINE_" + phase.upper(), status))
+    if os.environ.get("FAKE_MISSING_CID") != phase:
+        cidfile.write_text(cid)
+    (root / (cid + ".json")).write_text(json.dumps([engine_status, label, phase]))
     with (root / "events").open("a") as log:
         log.write(phase + " " + (a[a.index("--network") + 1]) + "\\n")
     print("{{}}")
     sys.exit(status)
 elif a[0] == "inspect":
-    status, label = json.loads((root / (a[1] + ".json")).read_text())
-    running = "true" if os.environ.get("FAKE_FINAL_UNCERTAIN") and "-final" in label else "false"
+    status, label, phase = json.loads((root / (a[1] + ".json")).read_text())
+    running = "true" if os.environ.get("FAKE_UNCERTAIN") == phase else "false"
     print(running, status, label)
 elif a[0] == "rm":
+    status, label, phase = json.loads((root / (a[1] + ".json")).read_text())
+    if os.environ.get("FAKE_REMOVE_FAILURE") == phase:
+        raise SystemExit(1)
     with (root / "removed").open("a") as removed:
         removed.write(a[1] + "\\n")
 else:
@@ -79,10 +85,12 @@ else:
             'PYTHON': sys.executable, 'TMPDIR': str(root),
         }
 
-    def run_acquisition(self, initial, final, *, route=True, uncertain=False):
+    def run_acquisition(self, initial, final, *, route=True, uncertain=False, extra=None):
         env = self.env | {'FAKE_INITIAL': str(initial), 'FAKE_FINAL': str(final)}
         if uncertain:
-            env['FAKE_FINAL_UNCERTAIN'] = '1'
+            env['FAKE_UNCERTAIN'] = 'final'
+        if extra:
+            env.update(extra)
         if route:
             env |= {'NMRPEAK_NETWORK_INTERFACE_INPUT': 'system',
                     'NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN': 'command line'}
@@ -117,6 +125,46 @@ else:
         self.assertIn('worker retirement is unconfirmed', result.stderr)
         self.assertNotIn('Acquired the locked', result.stdout)
         self.assertNotIn('6' * 64, (self.engine / 'removed').read_text().splitlines())
+
+    def test_completed_network_failures_are_retired_without_another_worker(self):
+        for phase, expected in (('locate', ['initial none', 'locate bridge']),
+                                ('acquire', ['initial none', 'locate bridge', 'acquire bridge'])):
+            with self.subTest(phase=phase):
+                for path in self.engine.iterdir():
+                    path.unlink()
+                result = self.run_acquisition(1, 0, extra={'FAKE_' + phase.upper(): '1'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('client status 1, worker status 1', result.stderr)
+                self.assertNotIn('worker retirement is unconfirmed', result.stderr)
+                self.assertEqual((self.engine / 'events').read_text().splitlines(), expected)
+                self.assertEqual(len((self.engine / 'removed').read_text().splitlines()), len(expected))
+
+    def test_uncertain_network_worker_keeps_evidence_and_stops(self):
+        result = self.run_acquisition(1, 0, extra={'FAKE_UNCERTAIN': 'locate'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('worker retirement or ownership is unconfirmed', result.stderr)
+        self.assertIn('worker retirement is unconfirmed', result.stderr)
+        self.assertEqual((self.engine / 'events').read_text().splitlines(), ['initial none', 'locate bridge'])
+        self.assertNotIn('2' * 64, (self.engine / 'removed').read_text().splitlines())
+        self.assertTrue(list(self.root.glob('tmp.*/api-locate.cid')))
+
+    def test_network_worker_status_mismatch_cannot_report_success(self):
+        result = self.run_acquisition(1, 0, extra={'FAKE_ENGINE_LOCATE': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('client status 0, worker status 1', result.stderr)
+        self.assertEqual((self.engine / 'events').read_text().splitlines(), ['initial none', 'locate bridge'])
+        self.assertIn('2' * 64, (self.engine / 'removed').read_text().splitlines())
+
+    def test_missing_identity_or_failed_removal_keeps_evidence(self):
+        for extra in ({'FAKE_MISSING_CID': 'locate'}, {'FAKE_REMOVE_FAILURE': 'locate'}):
+            with self.subTest(extra=extra):
+                for path in self.engine.iterdir():
+                    path.unlink()
+                result = self.run_acquisition(1, 0, extra=extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('worker retirement is unconfirmed', result.stderr)
+                self.assertEqual((self.engine / 'events').read_text().splitlines(), ['initial none', 'locate bridge'])
+                self.assertNotIn('2' * 64, (self.engine / 'removed').read_text().splitlines())
 
 
 if __name__ == '__main__':
