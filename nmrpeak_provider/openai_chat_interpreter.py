@@ -21,11 +21,12 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from provider_core.diagnostics import failure_evidence
+from provider_core.chat import ChatEndpoint, ChatEndpointSpec, ChatFailed
 from provider_core.decoded_body import DecodedBodyRejected
 from provider_core.network import network_availability
 from provider_core.transport import ExchangeFailed, HttpTransport
 
-from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
+from nmrpeak_provider.diagnostic_text import diagnostic_text
 from nmrpeak_provider.interpreter import (
     InterpreterEndpoint,
     InterpreterEndpointFailure,
@@ -50,6 +51,7 @@ from nmrpeak_provider.local_input import (
 
 _MAX_CONFIG_DIRECTORY_ENTRIES = 32
 _MAX_MODEL_BYTES = 256
+_MAX_REQUEST_BYTES = 1024 * 1024
 _MAX_RESPONSE_BYTES = 256 * 1024
 _MAX_ERROR_RESPONSE_BYTES = 16 * 1024
 # OpenAI documents 401 as permanent. This deployment has also observed it
@@ -89,13 +91,52 @@ class _EndpointUnavailable(RuntimeError):
     """A settled SDK network or request-deadline failure permits policy retry."""
 
 
+class _ObservedTransport:
+    """Enforce the request deadline around the shared carrier's exact request."""
+
+    def __init__(self, before_send, request_deadline, deadline, owner):
+        self._transport = None
+        self._before_send = before_send
+        self._request_deadline = request_deadline
+        self._deadline = deadline
+        self._owner = owner
+
+    @property
+    def retirement_confirmed(self):
+        return self._transport is None or self._transport.retirement_confirmed
+
+    @property
+    def last_failure(self):
+        return None if self._transport is None else self._transport.last_failure
+
+    async def exchange_decoded(self, request, **arguments):
+        if self._before_send is not None:
+            async with asyncio.timeout_at(self._request_deadline):
+                await self._before_send(request)
+        if self._owner._closed:
+            raise RuntimeError("Cannot send interpreter request: this Attempt's endpoint owner is retiring")
+        now = asyncio.get_running_loop().time()
+        if now >= self._request_deadline:
+            raise TimeoutError("Interpreter request deadline expired before HTTP dispatch")
+        self._transport = HttpTransport(trust=self._owner._trust,
+                                        exchange_seconds=self._request_deadline - now,
+                                        retirement_seconds=self._deadline - now)
+        self._owner._transport = self._transport
+        return await self._transport.exchange_decoded(request, **arguments)
+
+    async def retire(self, **arguments):
+        if self._transport is not None:
+            return await self._transport.retire(**arguments)
+
+
 class _EndpointOwner:
     """Retain one endpoint's HTTP owner through its retirement."""
 
-    __slots__ = ("_transport", "_closed", "_trust", "_before_send")
+    __slots__ = ("_transport", "_carrier", "_closed", "_trust", "_before_send")
 
     def __init__(self, *, before_send):
         self._transport = None
+        self._carrier = None
         self._closed = False
         self._before_send = before_send
         self._trust = httpx.create_ssl_context(trust_env=False)
@@ -103,18 +144,15 @@ class _EndpointOwner:
     async def retire(self):
         """Close admission before observing the same original transport's cleanup."""
         self._closed = True
-        if self._transport is not None:
-            await self._transport.retire(owner=self)
+        if self._carrier is not None:
+            await self._carrier.retire()
 
-    async def post(self, request, *, request_deadline, deadline, secrets):
+    async def post(self, spec, prompt, tools, *, request_deadline, deadline, secrets):
         loop = asyncio.get_running_loop()
         if self._closed:
             raise RuntimeError("Cannot send interpreter request: this Attempt's endpoint owner is retiring")
         if loop.time() >= request_deadline:
             raise TimeoutError("Interpreter request deadline expired before HTTP dispatch")
-        if self._before_send is not None:
-            async with asyncio.timeout_at(request_deadline):
-                await self._before_send(request)
         now = loop.time()
         remaining = request_deadline - now
         if remaining <= 0:
@@ -123,30 +161,38 @@ class _EndpointOwner:
             raise RuntimeError("Cannot send interpreter request: this Attempt's endpoint owner is retiring")
         if self._transport is not None and not self._transport.retirement_confirmed:
             raise ExchangeFailed("Cannot send interpreter request: the original HTTP owner remains unsettled")
-        transport = HttpTransport(trust=self._trust, exchange_seconds=remaining,
-                                  retirement_seconds=deadline-now, allow_http=True)
-        self._transport = transport
+        observed_transport = _ObservedTransport(self._before_send, request_deadline, deadline, self)
+        carrier = ChatEndpoint(
+            ChatEndpointSpec(configuration_id=spec.configuration_id, model=spec.model,
+                             url=spec.url, api_key=spec.api_key, reasoning_effort=spec.reasoning_effort),
+            transport=observed_transport, request_bytes=_MAX_REQUEST_BYTES, response_bytes=_MAX_RESPONSE_BYTES,
+            error_response_bytes=_MAX_ERROR_RESPONSE_BYTES,
+        )
+        self._carrier = carrier
         primary = None
         try:
             try:
-                response = await transport.exchange_decoded(
-                    request, maximum_bytes=_MAX_RESPONSE_BYTES,
-                    error_maximum_bytes=_MAX_ERROR_RESPONSE_BYTES, owner=self, not_after=deadline,
-                )
+                message = await carrier.complete(prompt, tools, not_after=deadline)
             except BaseException as cause:
                 primary = cause
                 raise
             finally:
                 try:
-                    await transport.retire(owner=self)
+                    await carrier.retire()
                 except BaseException as cleanup:
                     if primary is not None and cleanup is not primary:
                         raise BaseExceptionGroup("Interpreter HTTP exchange and retirement failed", [primary, cleanup]) from None
                     raise
-        except ExchangeFailed as failure:
-            if (not transport.retirement_confirmed or failure.cleanup_failures
+        except ChatFailed as error:
+            if error.response is not None and error.reason == "http_status":
+                return error.response.status, error.endpoint_error, httpx.Headers(error.response.headers).get("x-request-id"), None
+            failure = error.cause
+            if not isinstance(failure, ExchangeFailed):
+                reason = "invalid_response_envelope" if error.reason == "invalid_response" else error.reason
+                raise InterpreterTransportError(reason, explanation=str(error)) from None
+            if (not observed_transport.retirement_confirmed or failure.cleanup_failures
                     or failure.caller_interruption is not None):
-                raise
+                raise failure from None
             head = failure.response_head
             if type(failure.primary) is DecodedBodyRejected:
                 request_id = None if head is None else httpx.Headers(head.headers).get("x-request-id")
@@ -163,8 +209,8 @@ class _EndpointOwner:
                         + json.dumps(failure_evidence(failure, secrets=secrets), ensure_ascii=True)
                     )
                 raise _EndpointUnavailable("Interpreter network request failed after confirmed retirement") from failure
-            raise
-        return response.status, response.body, httpx.Headers(response.headers).get("x-request-id"), None
+            raise failure from None
+        return 200, message, None, None
 
 
 class OpenAIChatEndpoints:
@@ -243,15 +289,6 @@ class _OpenAIChatCall:
         deadline. Unconfirmed HTTP retirement escapes retry and fallback.
         """
 
-        request_body: dict[str, object] = {
-            "model": self._spec.model,
-            "messages": prompt,
-            "tools": self._tools,
-            "tool_choice": "required",
-            "stream": False,
-        }
-        if self._spec.reasoning_effort is not None:
-            request_body["reasoning_effort"] = self._spec.reasoning_effort
         deadline = (
             asyncio.get_running_loop().time() + self._policy.turn_timeout_seconds
         )
@@ -261,7 +298,7 @@ class _OpenAIChatCall:
                     final_attempt = attempt + 1 == self._policy.maximum_attempts
                     try:
                         status, response_body, request_id, detail_problem = await self._post_once(
-                            request_body, deadline=deadline,
+                            prompt, deadline=deadline,
                         )
                     except (_EndpointUnavailable, TimeoutError) as error:
                         if final_attempt:
@@ -296,7 +333,7 @@ class _OpenAIChatCall:
             ) from None
 
         try:
-            turn = _parse_completion(response_body)
+            turn = _parse_message(response_body)
             invocation = turn.invocation
             if (invocation is not None and invocation.name == "report_input_problem"
                     and type(invocation.arguments) is dict
@@ -317,11 +354,9 @@ class _OpenAIChatCall:
                 failure_reason="endpoint_retry", http_status=http_status, **facts,
             ))
 
-    async def _post_once(self, body, *, deadline):
+    async def _post_once(self, prompt, *, deadline):
         request_deadline = min(deadline, asyncio.get_running_loop().time() + self._policy.request_timeout_seconds)
-        request = httpx.Request("POST", self._spec.url,
-                                headers={"Authorization": f"Bearer {self._spec.api_key}"}, json=body)
-        return await self._http_owner.post(request, request_deadline=request_deadline,
+        return await self._http_owner.post(self._spec, prompt, self._tools, request_deadline=request_deadline,
                                            deadline=deadline, secrets=self._secrets)
 
 
@@ -539,7 +574,7 @@ def _chat_completions_url(value: object) -> str:
     except ValueError as error:
         raise ValueError("invalid interpreter base URL") from error
     if (
-        parsed.scheme not in {"http", "https"}
+        parsed.scheme != "https"
         or not parsed.hostname
         or port == 0
         or parsed.username is not None
@@ -559,7 +594,7 @@ def _chat_completions_url(value: object) -> str:
 
 
 def _endpoint_error_facts(
-    body: bytes | None, request_id: str | None, *, secrets: tuple[str, ...],
+    body: dict[str, str] | None, request_id: str | None, *, secrets: tuple[str, ...],
     detail_problem: str | None,
 ) -> dict[str, str]:
     """Keep endpoint explanations without treating remote claims as diagnoses."""
@@ -571,38 +606,18 @@ def _endpoint_error_facts(
         if not detail_problem:
             details.append("Error body exceeded the diagnostic read limit.")
     else:
-        try:
-            document = json.loads(body.decode("utf-8", errors="strict"), object_pairs_hook=_object_without_duplicates)
-        except (UnicodeError, ValueError, RecursionError) as error:
-            details.append("Endpoint error body is not valid JSON: " + exception_diagnostic(error, secrets=secrets, limit=1024))
-            details.append(diagnostic_text(body.decode("utf-8", errors="replace"), secrets=secrets, limit=2048))
-        else:
-            error = document.get("error") if type(document) is dict else None
-            if type(error) is dict:
-                for source, destination in (("type", "error_type"), ("code", "error_code")):
-                    if type(error.get(source)) is str:
-                        facts[destination] = diagnostic_text(error[source], secrets=secrets, limit=256)
-                for name in ("message", "param"):
-                    if type(error.get(name)) is str:
-                        details.append(name + ": " + error[name])
-            else:
-                details.append("Endpoint error response: " + body.decode("utf-8", errors="replace"))
+        for source, destination in (("type", "error_type"), ("code", "error_code")):
+            if type(body.get(source)) is str:
+                facts[destination] = diagnostic_text(body[source], secrets=secrets, limit=256)
+        for name in ("message", "param", "detail_unavailable"):
+            if type(body.get(name)) is str:
+                details.append(name + ": " + body[name])
     if details:
         facts["explanation"] = diagnostic_text("\n".join(details), secrets=secrets, limit=4096)
     return facts
 
 
-def _parse_completion(body: bytes) -> InterpreterTurn:
-    document = json.loads(
-        body.decode("utf-8", errors="strict"),
-        object_pairs_hook=_object_without_duplicates,
-    )
-    if type(document) is not dict:
-        raise ValueError
-    choices = document.get("choices")
-    if type(choices) is not list or len(choices) != 1 or type(choices[0]) is not dict:
-        raise ValueError
-    raw_message = choices[0].get("message")
+def _parse_message(raw_message: object) -> InterpreterTurn:
     if type(raw_message) is not dict or raw_message.get("role") != "assistant":
         raise ValueError
     content = raw_message.get("content")

@@ -68,6 +68,13 @@ build succeed. NMRPeak's test-base interface selects the shared pool and does
 not expose a separate SDK artifact-bundle option. A cached local test-base build
 and the 88-test repository suite passed with the earlier 0.5.13 tool pin.
 
+The shared chat carrier requires HTTPS interpreter endpoints. This narrows the
+previous NMRPeak configuration, which also admitted HTTP. The configured local
+and ProArt endpoint files inspected for this migration used HTTPS; that check
+does not establish the contents of every deployed runtime snapshot.
+The shared carrier also limits each encoded chat request to 1 MiB; a request
+over that bound is refused before dispatch.
+
 Scientific retries: deploy first
 --------------------------------
 Owner: NMRPeak's scientific lane and analysis session. The joint review records

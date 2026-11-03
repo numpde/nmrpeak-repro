@@ -4,6 +4,11 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass
 import json
+from pathlib import Path
+import ssl
+import tempfile
+
+from tests.fakes.tls_certificates import write_test_certificates
 
 @dataclass(frozen=True)
 class WireRequest:
@@ -25,17 +30,27 @@ class Reply:
 
 class LoopbackHTTP:
     """One-response-per-connection HTTP/1.1 server for the SDK's real socket path."""
-    def __init__(self, script):
+    def __init__(self, script, *, tls=True):
         self.script = deque(script)
+        self.tls = tls
+        self._certificates = None
         self.requests = []
         self.request_seen = asyncio.Event()
         self._server = None
         self._connections = set()
 
     async def start(self):
-        self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
+        server_ssl = None
+        if self.tls:
+            self._certificates = tempfile.TemporaryDirectory()
+            root = Path(self._certificates.name)
+            write_test_certificates(root)
+            server_ssl = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            server_ssl.load_cert_chain(root / "server.pem", root / "server-key.pem")
+            self.trust = ssl.create_default_context(cafile=str(root / "ca.pem"))
+        self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0, ssl=server_ssl)
         host, port = self._server.sockets[0].getsockname()[:2]
-        self.base_url = f"http://{host}:{port}/v1"
+        self.base_url = f"https://localhost:{port}/v1" if self.tls else f"http://{host}:{port}/v1"
         return self
 
     async def _accept(self, reader, writer):
@@ -96,6 +111,8 @@ class LoopbackHTTP:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self._server.wait_closed()
+        if self._certificates is not None:
+            self._certificates.cleanup()
 
 
 def reply(document, *, status=200, headers=()):

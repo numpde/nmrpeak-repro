@@ -58,6 +58,8 @@ async def endpoints(script, *, request_seconds=0.2, turn_seconds=1.6, before_sen
                 report_input_problem_description="Report a fixture source problem.",
                 report_endpoint_failure=report,
             )
+            for endpoint_owner in owner._owners:
+                endpoint_owner._trust = server.trust
             try:
                 yield owner, server
             finally:
@@ -66,6 +68,76 @@ async def endpoints(script, *, request_seconds=0.2, turn_seconds=1.6, before_sen
         await server.close()
 
 class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_incomplete_and_malformed_completions_are_not_accepted(self):
+        incomplete = _completion("submit_interpretation", {"value": 7})
+        incomplete["choices"][0]["finish_reason"] = "length"
+        for response, reason in (({"choices": []}, "invalid_response_envelope"),
+                                 (incomplete, "completion_limit")):
+            with self.subTest(reason=reason):
+                async with endpoints([reply(response)]) as (owner, server):
+                    with self.assertRaises(InterpreterTransportError) as caught:
+                        await owner.endpoints[0].call([])
+                    self.assertEqual(caught.exception.reason, reason)
+                    self.assertEqual(len(server.requests), 1)
+
+    async def test_retirement_during_before_send_prevents_dispatch(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def before_send(_request):
+            entered.set()
+            await release.wait()
+
+        async with endpoints([], before_send=before_send) as (owner, server):
+            call = asyncio.create_task(owner.endpoints[0].call([]))
+            await asyncio.wait_for(entered.wait(), 1)
+            await owner.retire()
+            release.set()
+            with self.assertRaises(RuntimeError):
+                await call
+            self.assertEqual(server.requests, [])
+
+    async def test_untrusted_tls_peer_is_not_accepted(self):
+        server = await LoopbackHTTP([], tls=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                _write_config(Path(directory) / "10.toml", base_url=server.base_url)
+                owner = bind_openai_chat_endpoints(
+                    load_openai_chat_endpoint_specs(directory),
+                    OpenAIChatCallPolicy(request_timeout_seconds=1, turn_timeout_seconds=3),
+                    submit_interpretation_description="Submit.",
+                    submit_interpretation_value_schema=_VALUE_SCHEMA,
+                    report_input_problem_description="Report.",
+                )
+                try:
+                    with self.assertRaises(ExchangeFailed):
+                        await owner.endpoints[0].call([])
+                finally:
+                    await owner.retire()
+                self.assertEqual(server.requests, [])
+        finally:
+            await server.close()
+
+    async def test_verified_tls_peer_is_usable_by_interpreter(self):
+        server = await LoopbackHTTP([reply(_completion("submit_interpretation", {"value": 7}))], tls=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                _write_config(Path(directory) / "10.toml", base_url=server.base_url)
+                owner = bind_openai_chat_endpoints(
+                    load_openai_chat_endpoint_specs(directory),
+                    OpenAIChatCallPolicy(request_timeout_seconds=1, turn_timeout_seconds=3),
+                    submit_interpretation_description="Submit.",
+                    submit_interpretation_value_schema=_VALUE_SCHEMA,
+                    report_input_problem_description="Report.",
+                )
+                owner._owners[0]._trust = server.trust
+                try:
+                    result = await owner.endpoints[0].call([])
+                    self.assertEqual(result.invocation.arguments, {"value": 7})
+                finally:
+                    await owner.retire()
+        finally:
+            await server.close()
+
     async def test_cancelled_retirement_task_can_be_rechecked_after_observation(self):
         class Owner:
             _closed = False
@@ -241,6 +313,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                     OpenAIChatCallPolicy(request_timeout_seconds=.2, turn_timeout_seconds=1.5),
                     before_send=before_send, submit_interpretation_description="Submit.",
                     submit_interpretation_value_schema=schema, report_input_problem_description="Report.")
+                owner._owners[0]._trust = server.trust
                 schema["properties"]["answer"]["type"] = "string"
                 await owner.endpoints[0].call([])
                 await owner.retire()
@@ -306,7 +379,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
     async def test_endpoint_diagnostics_keep_status_safe_fields_and_unknown_values(self):
         docs = [reply({"error":{"type":"authentication_error","code":"invalid_api_key","message":"private Bearer do-not-display","param":"hidden"}}, status=400, headers=(("x-request-id","req_safe123"),)),
                 reply({"error":{"type":"private_scalar","code":"private_scalar","message":"private scalar"}}, status=400, headers=(("x-request-id","private_scalar"),))]
-        for expected in (("authentication_error","invalid_api_key","req_safe123"), ("private_scalar","private_scalar","private_scalar")):
+        for expected in (("authentication_error","invalid_api_key","req_safe123"), ("[redacted]_scalar","[redacted]_scalar","private_scalar")):
             async with endpoints([docs.pop(0)]) as (owner, _):
                 with self.assertRaises(InterpreterTransportError) as caught:
                     await owner.endpoints[0].call([{"role":"user","content":"private"}])
@@ -331,6 +404,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             with tempfile.TemporaryDirectory() as d:
                 _write_config(Path(d)/"10.toml",base_url=server.base_url)
                 owner=bind_openai_chat_endpoints(load_openai_chat_endpoint_specs(d),OpenAIChatCallPolicy(request_timeout_seconds=.03,turn_timeout_seconds=1.1),submit_interpretation_description="Submit.",submit_interpretation_value_schema=_VALUE_SCHEMA,report_input_problem_description="Report.")
+                owner._owners[0]._trust = server.trust
                 turn=await owner.endpoints[0].call([])
                 await owner.retire()
             self.assertEqual(turn.invocation.arguments,{"value":7})
@@ -357,6 +431,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             with tempfile.TemporaryDirectory() as d:
                 _write_config(Path(d)/"10.toml",base_url=server.base_url)
                 owner=bind_openai_chat_endpoints(load_openai_chat_endpoint_specs(d),OpenAIChatCallPolicy(request_timeout_seconds=2,turn_timeout_seconds=5),submit_interpretation_description="Submit.",submit_interpretation_value_schema=_VALUE_SCHEMA,report_input_problem_description="Report.")
+                owner._owners[0]._trust = server.trust
                 call=asyncio.create_task(owner.endpoints[0].call([]))
                 await asyncio.wait_for(server.request_seen.wait(),1)
                 await owner.retire()
@@ -460,7 +535,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
             with tempfile.TemporaryDirectory() as d:
                 (Path(d)/"10.toml").write_text(text)
                 with self.assertRaisesRegex(ValueError,expected): load_openai_chat_endpoint_specs(d)
-        invalid_urls=(" https://models.example/v1", "https://models.example/v1\t",
+        invalid_urls=("http://models.example/v1", " https://models.example/v1", "https://models.example/v1\t",
                       "https://models.exa\tmple/v1", "https://models.exa mple/v1",
                       "https://models.example:bad/v1", "https://models.example:0/v1",
                       "https://models.example:65536/v1", "https://models.exa\u00a0mple/v1",
@@ -495,7 +570,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                     load_openai_chat_endpoint_specs(Path("unused"))
 
 
-def _write_config(path, *, configuration_id="only", base_url="http://127.0.0.1:8000/v1", api_key="secret", model="model", reasoning_effort=None):
+def _write_config(path, *, configuration_id="only", base_url="https://localhost:8000/v1", api_key="secret", model="model", reasoning_effort=None):
     rows=[f'id = "{configuration_id}"',f'base_url = "{base_url}"',f'api_key = "{api_key}"',f'model = "{model}"']
     if reasoning_effort is not None: rows.append(f'reasoning_effort = "{reasoning_effort}"')
     path.write_text("\n".join(rows)+"\n",encoding="utf-8")

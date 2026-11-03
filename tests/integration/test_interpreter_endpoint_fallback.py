@@ -126,7 +126,7 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([spec.configuration_id for spec in specs], ["primary", "fallback"])
                 endpoints = bind_openai_chat_endpoints(
                     specs, OpenAIChatCallPolicy(
-                        request_timeout_seconds=0.02 if behavior == "timeout" else 1,
+                        request_timeout_seconds=0.2 if behavior == "timeout" else 1,
                         turn_timeout_seconds=3,
                     ),
                     before_send=before_send,
@@ -134,6 +134,8 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                     submit_interpretation_value_schema=_value_schema_for(lane),
                     report_input_problem_description="Report source evidence only.",
                 )
+                for endpoint_owner, name in zip(endpoints._owners, ("primary", "fallback"), strict=True):
+                    endpoint_owner._trust = servers[name].trust
 
                 async def admit(candidate):
                     return candidate
