@@ -36,3 +36,9 @@ retire_image_worker() {
     command docker --host "$NMRPEAK_DOCKER_HOST" rm "$cid" >/dev/null || return 1
     image_worker_exit_code=$code
 }
+
+trim_streamed_image_capture() {
+    find "$1" -mindepth 1 -maxdepth 1 \
+        ! -name base.id ! -name image.id ! -name proxy.port ! -name proxy.log \
+        -exec rm -rf -- {} +
+}

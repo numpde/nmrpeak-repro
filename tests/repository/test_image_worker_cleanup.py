@@ -10,6 +10,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ImageWorkerRetirementTests(unittest.TestCase):
+    def test_joined_stream_drops_source_inputs_but_keeps_receipts_and_proxy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "context").mkdir()
+            (root / "context/source").write_text("source")
+            for name in ("base.id", "image.id", "proxy.log", "proxy.port", "selection.json"):
+                (root / name).write_text("data")
+            subprocess.run(["bash", "-ec", 'source "$1"; trim_streamed_image_capture "$2"',
+                            "bash", str(ROOT / "scripts/image-operation-lock.sh"), directory],
+                           check=True, timeout=5)
+            self.assertEqual({path.name for path in root.iterdir()},
+                             {"base.id", "image.id", "proxy.log", "proxy.port"})
+
     def run_worker(self, state, *, removal_status=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

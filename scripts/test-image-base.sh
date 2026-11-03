@@ -48,6 +48,7 @@ readonly scratch="$(image_capture_directory "$repo_root")"
 readonly python_alias="localhost/nmrpeak-test/python-base:${python_digest#sha256:}-${scratch##*/}"
 proxy_pid=""
 engine_active=0
+build_inputs_streamed=0
 worker_cid=''
 worker_label=''
 docker_base_imported=0
@@ -82,6 +83,9 @@ cleanup() {
         fi
     fi
     if (( engine_active )) || [[ -n "$retirement_error" ]]; then
+        if (( engine_active && build_inputs_streamed )) && ! trim_streamed_image_capture "$scratch"; then
+            printf 'Cannot confirm removal of streamed image build inputs at %s.\n' "$scratch" >&2
+        fi
         printf 'Build or report retirement is unconfirmed; preserve %s, inspect report CID and nmrpeak-test-wheel-report-%s, and proxy PID %s before cleanup or retrying.\n' "$scratch" "${scratch##*.}" "${proxy_pid:-none}" >&2
         [[ -z "$retirement_error" ]] || printf 'Base alias cleanup is unconfirmed: %s.\n' "$retirement_error" >&2
         (( status != 0 )) || status=1
@@ -231,9 +235,12 @@ docker --host "$NMRPEAK_DOCKER_HOST" build --platform linux/amd64 --pull=false -
     --iidfile "$scratch/image.id" --file containers/test/Dockerfile.base -
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
+build_inputs_streamed=1
+[[ "${pipeline_status[1]}" != 0 ]] || engine_active=0
 [[ "${pipeline_status[0]}" == 0 && "${pipeline_status[1]}" == 0 ]] ||
     fail "test image input stream or build failed (stream ${pipeline_status[0]}, build ${pipeline_status[1]})"
 engine_active=0
+build_inputs_streamed=0
 
 image_id="$(<"$scratch/image.id")"
 [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'Docker returned an invalid test image ID'

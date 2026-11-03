@@ -65,6 +65,7 @@ readonly tool="$wheelhouse/$tool_name"
 tmp="$(image_capture_directory "$repo_root")"
 proxy_pid=''
 engine_active=0
+build_inputs_streamed=0
 worker_cid=''
 worker_label=''
 cleanup() {
@@ -78,6 +79,9 @@ cleanup() {
         wait "$proxy_pid" 2>/dev/null || true
     fi
     if (( engine_active )); then
+        if (( build_inputs_streamed )) && ! trim_streamed_image_capture "$tmp"; then
+            printf 'Cannot confirm removal of streamed image build inputs at %s.\n' "$tmp" >&2
+        fi
         printf 'Build or report retirement is unconfirmed; preserve %s, inspect report CID files, proxy.log and containers nmrpeak-{native,scientific,benchmark}-report-%s and proxy PID %s before cleanup or retrying.\n' "$tmp" "${tmp##*.}" "${proxy_pid:-none}" >&2
     else
         if ! rm -rf -- "$tmp"; then
@@ -214,9 +218,12 @@ docker build --platform linux/amd64 --pull=false --network "$build_network" "${p
     --iidfile "$image_id_file" --file "$dockerfile" -
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
+build_inputs_streamed=1
+[[ "${pipeline_status[1]}" != 0 ]] || engine_active=0
 [[ "${pipeline_status[0]}" == 0 && "${pipeline_status[1]}" == 0 ]] ||
     fail "runner input stream or build failed (stream ${pipeline_status[0]}, build ${pipeline_status[1]})"
 engine_active=0
+build_inputs_streamed=0
 
 readonly image_id="$(<"$image_id_file")"
 [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "Docker returned a malformed $runner image ID: $image_id"

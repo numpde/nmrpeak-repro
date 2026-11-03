@@ -36,6 +36,7 @@ readonly tool="$wheelhouse/$tool_name"
 scratch="$(image_capture_directory "$repo_root")"
 readonly report_container="nmrpeak-wheel-report-${scratch##*.}"
 engine_active=0
+build_inputs_streamed=0
 worker_cid=''
 worker_label=''
 cleanup() {
@@ -45,7 +46,10 @@ cleanup() {
         engine_active=0
     fi
     if (( engine_active )); then
-        printf 'Build or report retirement is unconfirmed; preserve inputs at %s and inspect Docker (report container %s) before cleanup or retrying.\n' "$scratch" "$report_container" >&2
+        if (( build_inputs_streamed )) && ! trim_streamed_image_capture "$scratch"; then
+            printf 'Cannot confirm removal of streamed image build inputs at %s.\n' "$scratch" >&2
+        fi
+        printf 'Build or report retirement is unconfirmed; preserve the capture at %s and inspect Docker (report container %s) before cleanup or retrying.\n' "$scratch" "$report_container" >&2
     else
         if ! rm -rf -- "$scratch"; then
             printf 'Cannot confirm removal of image build inputs at %s.\n' "$scratch" >&2
@@ -123,9 +127,12 @@ docker build --platform linux/amd64 --pull=false --network none \
     --iidfile "$image_id_file" --file containers/provider/Dockerfile -
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
+build_inputs_streamed=1
+[[ "${pipeline_status[1]}" != 0 ]] || engine_active=0
 [[ "${pipeline_status[0]}" == 0 && "${pipeline_status[1]}" == 0 ]] ||
     fail "provider input stream or build failed (stream ${pipeline_status[0]}, build ${pipeline_status[1]})"
 engine_active=0
+build_inputs_streamed=0
 
 readonly image_id="$(<"$image_id_file")"
 [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] ||
