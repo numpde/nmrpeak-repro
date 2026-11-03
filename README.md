@@ -33,9 +33,9 @@ make test DOCKER_CONTEXT=<name>
 
 Builds and dependency acquisition ask for a route when one is needed and not
 supplied. A complete wheelhouse can be checked without a network route. Choose
-a listed interface, or `system` for the default route; there is
-no default selection, and unattended commands must set `NETWORK_INTERFACE` on
-the Make command line. Interface-bound dependency downloads use a temporary
+a listed interface, or `system` for the default route; there is no default
+selection. Unattended commands that need a route must set `NETWORK_INTERFACE`
+on the Make command line. Interface-bound dependency downloads use a temporary
 proxy for tools that honor it; it is not an egress firewall. Docker base and
 frontend image acquisition uses the engine's route; test-image base bootstrap
 uses Podman's default connection.
