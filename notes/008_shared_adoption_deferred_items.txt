@@ -44,6 +44,11 @@ the local benchmark target also passed. Their report workers used network none.
 A temporary empty pool containing only a hard link to the verified tool produced
 an incomplete offline report, then rejected a nonexistent interface before any
 network operation. This witness did not exercise a real missing-wheel download.
+A separate synthetic pool omitted an early dependency and contained a corrupt
+later SDK wheel. Pip stopped at the missing dependency before diagnosing the
+conflict; an intentionally nonexistent interface stopped fallback before network
+access, and the synthetic corrupt bytes remained unchanged. This establishes the
+diagnostic ordering, not the outcome of a networked acquisition.
 Provider images were built using the pinned 0.5.12 streamer and the existing pool
 on each host: local image sha256:e7ebff226138b19a41846b2ffcc03fb05caf592f2eeb5ebc8676022abf96154f;
 ProArt image sha256:6cbd49db1af8e51060d2c4ceef9b8420c7f2101d00357d594826e19e27ce3cc2.
