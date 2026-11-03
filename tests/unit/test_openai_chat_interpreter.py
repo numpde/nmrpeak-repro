@@ -134,7 +134,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
     async def test_reasoning_turn_is_preserved_for_protocol_repair(self):
         message = _completion_message("submit_interpretation", "not JSON", call_id="repair")
         message["reasoning_content"] = "retained reasoning"
-        script = [reply({"choices":[{"message":message}]}), reply(_completion("submit_interpretation", {"value":{"answer":1}}))]
+        script = [reply({"choices":[{"finish_reason":"tool_calls", "message":message}]}), reply(_completion("submit_interpretation", {"value":{"answer":1}}))]
         async with endpoints(script) as (owner, server):
             first = await owner.endpoints[0].call([{"role":"user","content":"fixture"}])
             self.assertIsNone(first.invocation)
@@ -151,7 +151,7 @@ class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(InterpreterTransportError) as caught:
                     await owner.endpoints[0].call([])
             self.assertEqual(caught.exception.reason, "invalid_response_envelope")
-        async with endpoints([reply({"choices":[{"message":{"role":"assistant","content":"repair"}}]})]) as (owner, _server):
+        async with endpoints([reply({"choices":[{"finish_reason":"stop", "message":{"role":"assistant","content":"repair"}}]})]) as (owner, _server):
             turn = await owner.endpoints[0].call([])
         self.assertIsNone(turn.invocation)
         self.assertEqual(turn.tool_call_ids, ())
@@ -384,7 +384,7 @@ def _write_config(path, *, configuration_id="only", base_url="http://127.0.0.1:8
     path.write_text("\n".join(rows)+"\n",encoding="utf-8")
 
 def _completion(name,arguments):
-    return {"choices":[{"message":_completion_message(name,json.dumps(arguments))}]}
+    return {"choices":[{"finish_reason":"tool_calls", "message":_completion_message(name,json.dumps(arguments))}]}
 
 def _completion_message(name,arguments,*,call_id="call-1"):
     return {"role":"assistant","content":None,"tool_calls":[{"id":call_id,"type":"function","function":{"name":name,"arguments":arguments}}]}

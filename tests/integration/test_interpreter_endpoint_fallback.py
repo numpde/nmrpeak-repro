@@ -62,7 +62,7 @@ def _ethanol_source_and_value(lane_name: str) -> tuple[str, dict[str, object]]:
 
 def _completion(value: object, *, tool: str = "submit_interpretation") -> dict[str, object]:
     arguments = {"message": "The source may be incomplete."} if tool == "report_input_problem" else {"value": value}
-    return {"choices": [{"message": {
+    return {"choices": [{"finish_reason": "tool_calls", "message": {
         "role": "assistant", "content": None,
         "reasoning_content": "Private fixture reasoning.",
         "tool_calls": [{"id": "fixture-call", "type": "function", "function": {
@@ -103,7 +103,7 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                 invalid['model_input']['spectra']['1H']['peaks'][0]['multiplicity'] = 'unsupported-private-label'
                 return reply(_completion(invalid))
             if primary and behavior == 'protocol':
-                return reply({'choices': [{'message': {
+                return reply({'choices': [{'finish_reason': 'tool_calls', 'message': {
                     'role': 'assistant', 'content': None,
                     'reasoning_content': 'Private fixture reasoning.',
                     'tool_calls': [{'id': 'fixture-call', 'type': 'function', 'function': {
