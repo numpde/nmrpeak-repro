@@ -4,6 +4,8 @@ override export NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN := $(origin NETWORK_INTER
 unexport WHEELHOUSE
 override export NMRPEAK_WHEELHOUSE_INPUT := $(if $(filter command line,$(origin WHEELHOUSE)),$(value WHEELHOUSE))
 override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
+unexport PROVIDER_CORE_WHEEL
+override export NMRPEAK_PROXY_WHEEL_INPUT := $(if $(filter command line,$(origin PROVIDER_CORE_WHEEL)),$(value PROVIDER_CORE_WHEEL))
 
 override NMRPEAK_DOCKER_TARGETS := \
 	benchmark benchmark/image/build benchmark/lock check/test-image \
@@ -48,6 +50,14 @@ override NMRPEAK_TEST_COMPOSE = env \
 	-p "$(NMRPEAK_TEST_PROJECT)" -f compose/test.yml
 override NMRPEAK_TEST_NON_ROOT_GUARD = if [[ "$(NMRPEAK_TEST_UID)" == 0 || "$(NMRPEAK_TEST_GID)" == 0 || "$(NMRPEAK_TEST_UID)" == 65532 ]]; then printf '%s\n' 'Containerized tests require a non-root invoking user distinct from provider UID 65532.' >&2; exit 2; fi
 .DEFAULT_GOAL := help
+
+.PHONY: packages/proxy-bootstrap/check packages/proxy-bootstrap/refresh
+packages/proxy-bootstrap/check:
+	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -B -m repository_checks.proxy_bootstrap
+
+packages/proxy-bootstrap/refresh:
+	@test -n "$$NMRPEAK_PROXY_WHEEL_INPUT" || { echo 'Set PROVIDER_CORE_WHEEL to the pinned release wheel on the make command line.' >&2; exit 2; }
+	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -B -m repository_checks.proxy_bootstrap --wheel "$$NMRPEAK_PROXY_WHEEL_INPUT"
 
 export BENCHMARK_DEVICES = $(or $(DEVICES),all)
 export BENCHMARK_MODELS = $(or $(MODELS),hf chf)
@@ -160,6 +170,10 @@ help:
 		'      Acquire the locked provider dependencies into the shared wheelhouse.' \
 		'  make provider/image/build WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
 		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
+		'  make packages/proxy-bootstrap/check' \
+		'      Verify the local shared proxy bootstrap against the pinned SDK release.' \
+		'  make packages/proxy-bootstrap/refresh PROVIDER_CORE_WHEEL=<path>' \
+		'      Refresh the bootstrap from the exact pinned release wheel.' \
 		'  make packages/images/retire DOCKER_CONTEXT=<name>' \
 		'      Retire obsolete owned images while protecting retained deployments and containers.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
