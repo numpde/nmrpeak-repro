@@ -62,6 +62,11 @@ Provider images were built using the pinned 0.5.12 streamer and the existing poo
 on each host: local image sha256:e7ebff226138b19a41846b2ffcc03fb05caf592f2eeb5ebc8676022abf96154f;
 ProArt image sha256:6cbd49db1af8e51060d2c4ceef9b8420c7f2101d00357d594826e19e27ce3cc2.
 These builds did not restart or replace the running provider containers.
+The maintained test-base build also uses the shared selection and streamer;
+it installs the selected pool wheels offline and tags only after both stream and
+build succeed. NMRPeak's test-base interface selects the shared pool and does
+not expose a separate SDK artifact-bundle option. A cached local test-base build
+and the 88-test repository suite passed with the earlier 0.5.13 tool pin.
 
 Scientific retries: deploy first
 --------------------------------
