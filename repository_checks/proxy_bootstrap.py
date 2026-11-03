@@ -64,8 +64,8 @@ def main():
         SNAPSHOT.mkdir(parents=True, exist_ok=True)
         for name in sources:
             target = SNAPSHOT / name
-            if target.is_symlink() or (target.exists() and not target.is_file()):
-                raise ValueError(f'SDK bootstrap file must be regular and not a symlink: {name}')
+            if target.is_symlink() or (target.exists() and (not target.is_file() or target.stat().st_nlink != 1)):
+                raise ValueError(f'SDK bootstrap file must be regular with one link: {name}')
         for name, source in sources.items():
             (SNAPSHOT / name).write_bytes(source)
     else:

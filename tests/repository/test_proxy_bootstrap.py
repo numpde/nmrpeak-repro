@@ -77,9 +77,20 @@ class ProxyBootstrapTests(unittest.TestCase):
         target = self.snapshot / 'bound_http_proxy.py'
         target.unlink()
         target.symlink_to(self.wheel)
-        with self.assertRaisesRegex(ValueError, 'not a symlink'):
+        with self.assertRaisesRegex(ValueError, 'regular with one link'):
             self.invoke('--wheel', self.wheel)
         self.assertTrue(target.is_symlink())
+
+    def test_refresh_does_not_overwrite_an_existing_hard_link(self):
+        self.invoke('--wheel', self.wheel)
+        target = self.snapshot / 'bound_http_proxy.py'
+        target.unlink()
+        external = self.root / 'external'
+        external.write_text('keep')
+        os.link(external, target)
+        with self.assertRaisesRegex(ValueError, 'regular with one link'):
+            self.invoke('--wheel', self.wheel)
+        self.assertEqual(external.read_text(), 'keep')
 
     def test_changed_snapshot_and_pin_are_rejected(self):
         self.invoke('--wheel', self.wheel)
