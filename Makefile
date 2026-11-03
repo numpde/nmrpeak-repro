@@ -10,7 +10,7 @@ override NMRPEAK_DOCKER_TARGETS := \
 	test test/unit test/unit/benchmark test/contract test/integration test/repository test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool test/model-behavior-fixtures \
 	test/live/failure-propagation test/live/failure-propagation/observe \
 	test/live/success-propagation test/live/success-propagation/observe \
-	test-image/base/build runner/image/build runner/lock/stage runner/lock/compiler/check runner/wheelhouse/acquire provider/image/build \
+	test-image/base/build runner/image/build runner/lock/stage runner/lock/compiler/check runner/wheelhouse/acquire provider/wheelhouse/acquire provider/image/build \
 	provider/deployment/config provider/deployment/up provider/deployment/update provider/deployment/status provider/deployment/down \
 	provider/deployment/generation/remove provider/deployment/runtime-config/remove \
 	provider/deployment/journal/inspect provider/deployment/journal/archive-closed provider/deployment/journal/retire \
@@ -80,7 +80,7 @@ benchmark/verify:
 	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
 
 .PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/update provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
-.PHONY: test/unit/benchmark test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool wheelhouse/tool runner/wheelhouse/acquire runner/lock/compiler/check
+.PHONY: test/unit/benchmark test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool wheelhouse/tool runner/wheelhouse/acquire provider/wheelhouse/acquire runner/lock/compiler/check
 
 help:
 	@printf '%s\n' \
@@ -100,7 +100,7 @@ help:
 		'  make test DOCKER_CONTEXT=<name>' \
 		'      Run the complete default lane in the pinned, networkless test container.' \
 		'      One read-only source snapshot excludes credentials, deployment state, weights, and ignored files.' \
-		'  make test-image/base/build [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
+		'  make test-image/base/build WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'      Prepare the dependency image using an explicitly selected network route.' \
 		'      Ordinary test targets never pull images or use the network.' \
 		'  make test/unit' \
@@ -150,6 +150,8 @@ help:
 		'Build provider and runner images:' \
 		'  make wheelhouse/tool WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>]' \
 		'      Reuse or acquire the pinned shared wheelhouse tool.' \
+		'  make provider/wheelhouse/acquire WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
+		'      Acquire the locked provider dependencies into the shared wheelhouse.' \
 		'  make provider/image/build WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
 		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
@@ -216,7 +218,7 @@ check/test-image:
 	image_id="$$($(DOCKER) image ls --quiet --no-trunc "$(NMRPEAK_TEST_IMAGE)")"; \
 	if [[ -z "$$image_id" ]]; then \
 		printf '%s\n' 'The exact local test dependency image is absent.' \
-			'Run: make test-image/base/build NETWORK_INTERFACE=wlp10s0' >&2; exit 2; \
+			'Run: make test-image/base/build WHEELHOUSE=<directory> NETWORK_INTERFACE=<name|system> DOCKER_CONTEXT=<name>' >&2; exit 2; \
 	fi; \
 	observed="$$($(DOCKER) image inspect "$$image_id" --format '{{index .Config.Labels "io.numpde.nmrpeak.test-base-key"}}')"; \
 	if [[ "$$observed" != "$(NMRPEAK_TEST_BASE_KEY)" ]]; then \
@@ -369,6 +371,9 @@ runner/wheelhouse/acquire: private export TARGET_INPUT := $(value TARGET)
 runner/wheelhouse/acquire:
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" bash "$(REPOSITORY_ROOT)/scripts/runner-wheelhouse.sh" "$$TARGET_INPUT"
+
+provider/wheelhouse/acquire:
+	@PYTHON="$(PYTHON)" bash "$(REPOSITORY_ROOT)/scripts/runner-wheelhouse.sh" provider
 
 provider/image/build:
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"

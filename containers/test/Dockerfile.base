@@ -2,6 +2,8 @@
 # BuildKit pull before this Dockerfile's WLAN-bound proxy settings take effect.
 # Networked preparation image. Ordinary tests never build or pull this image.
 ARG PYTHON_BASE_IMAGE=invalid.invalid/nmrpeak-test-base:must-be-supplied
+FROM scratch AS wheel_inputs
+COPY wheels/ /
 FROM ${PYTHON_BASE_IMAGE}
 
 ARG HTTP_PROXY
@@ -25,8 +27,8 @@ ENV HOME=/tmp \
 
 WORKDIR /build
 COPY containers/test/os-packages.lock ./
-RUN test -n "$HTTP_PROXY" && test "$HTTP_PROXY" = "$http_proxy" \
-    && test -n "$HTTPS_PROXY" && test "$HTTPS_PROXY" = "$https_proxy" \
+RUN test "$HTTP_PROXY" = "$http_proxy" \
+    && test "$HTTPS_PROXY" = "$https_proxy" \
     && test -z "$NO_PROXY" && test -z "$no_proxy" \
     && packages="$(tr '\n' ' ' < os-packages.lock)" \
     && apt-get -o "Acquire::http::Proxy=$http_proxy" -o "Acquire::https::Proxy=$https_proxy" update \
@@ -35,7 +37,9 @@ RUN test -n "$HTTP_PROXY" && test "$HTTP_PROXY" = "$http_proxy" \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.lock ./
 COPY dependencies/provider-core-api.lock dependencies/provider-core-source.txt dependencies/
-RUN python -m pip install --require-hashes --only-binary=:all: \
+RUN --network=none --mount=type=bind,from=wheel_inputs,target=/wheelhouse,ro \
+    sed -E -i 's#https://github.com/numpde/nmr-provider-tools/releases/download/[^/]+/#file:///wheelhouse/#' dependencies/provider-core-source.txt \
+    && python -m pip install --no-index --find-links=/wheelhouse --require-hashes --only-binary=:all: \
         --requirement requirements.lock \
     && python -m pip check \
     && ln -s /usr/local/bin/python3 /usr/bin/python3 \

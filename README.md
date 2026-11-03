@@ -20,11 +20,14 @@ image-preparation command requires a network-route choice; building a missing
 image also requires Podman. If the matching image already exists, run
 `make test DOCKER_CONTEXT=<name>`. Otherwise, choose a local Unix-socket Docker
 context and an available network interface, or use `system` for the default
-route:
+route. Create the wheelhouse directory first and have the pinned Python base
+image available on that Docker engine; the acquisition target does not pull it:
 
 ```bash
 git submodule update --init --recursive
-make test-image/base/build NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>
+make wheelhouse/tool WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTERFACE=system
+make provider/wheelhouse/acquire WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>
+make test-image/base/build WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>
 make test DOCKER_CONTEXT=<name>
 ```
 

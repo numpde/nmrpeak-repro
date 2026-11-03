@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Project the committed runner lock and acquire its target wheels into the shared pool.
+# Project committed locks and acquire their target wheels into the shared pool.
 set -euo pipefail
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
-[[ "${1:-}" == cpu-x86_64 ]] || fail 'runner wheelhouse target must be cpu-x86_64'
+case "${1:-}" in cpu-x86_64|provider) ;; *) fail 'wheelhouse target must be cpu-x86_64 or provider' ;; esac
+readonly target="$1"
 readonly repo_root="$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/..")"
 readonly python="${PYTHON:-python3}"
 readonly revision="$(git -C "$repo_root" rev-parse --verify HEAD)"
-[[ -z "$(git -C "$repo_root" status --short)" ]] || fail 'commit runner inputs before acquiring their wheels'
+[[ -z "$(git -C "$repo_root" status --short)" ]] || fail 'commit acquisition inputs before acquiring their wheels'
 [[ "${NMRPEAK_WHEELHOUSE_INPUT_ORIGIN:-}" == 'command line' && -n "${NMRPEAK_WHEELHOUSE_INPUT:-}" ]] ||
     fail 'set WHEELHOUSE to the existing shared wheelhouse directory on the command line'
 [[ -d "$NMRPEAK_WHEELHOUSE_INPUT" && ! -L "$NMRPEAK_WHEELHOUSE_INPUT" ]] || fail 'WHEELHOUSE must be an existing non-symlink directory'
@@ -36,7 +37,7 @@ cleanup() {
     local status=$?
     trap - EXIT
     if (( engine_active )); then
-        printf 'Wheelhouse worker retirement is unconfirmed; preserve %s, inspect its CID files, proxy.log and nmrpeak-{native,scientific}-{locate,acquire}-%s containers and proxy PID %s before cleanup or retrying.\n' "$scratch" "${scratch##*.}" "${proxy_pid:-none}" >&2
+        printf 'Wheelhouse worker retirement is unconfirmed; preserve %s, inspect its CID files, proxy.log and nmrpeak wheelhouse containers ending in %s and proxy PID %s before cleanup or retrying.\n' "$scratch" "${scratch##*.}" "${proxy_pid:-none}" >&2
     else
         if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi
         rm -rf -- "$scratch"
@@ -48,10 +49,25 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 chmod 0711 -- "$scratch"
-git -C "$repo_root" show "$revision:families/nmrpeak/targets/cpu-x86_64/requirements.lock" >"$scratch/requirements.lock"
-git -C "$repo_root" show "$revision:dependencies/provider-core-native.lock" >"$scratch/native.lock"
+if [[ "$target" == provider ]]; then
+    git -C "$repo_root" show "$revision:requirements.lock" >"$scratch/composed.lock"
+    git -C "$repo_root" show "$revision:dependencies/provider-core-api.lock" >"$scratch/api.lock"
+    "$python" - "$scratch/composed.lock" "$scratch/consumer.lock" <<'PY'
+import pathlib, sys
+lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(keepends=True)
+directives = [line.strip() for line in lines if line.strip().startswith(("-c ", "-r "))]
+if directives != ["-c dependencies/provider-core-source.txt", "-r dependencies/provider-core-api.lock"]:
+    raise SystemExit("Provider requirements must reference the expected source and API locks exactly once.")
+pathlib.Path(sys.argv[2]).write_text("".join(line for line in lines if line.strip() not in directives), encoding="utf-8")
+PY
+    profiles=(api consumer)
+else
+    git -C "$repo_root" show "$revision:families/nmrpeak/targets/cpu-x86_64/requirements.lock" >"$scratch/requirements.lock"
+    git -C "$repo_root" show "$revision:dependencies/provider-core-native.lock" >"$scratch/native.lock"
+    profiles=(native scientific)
+fi
 git -C "$repo_root" show "$revision:dependencies/provider-core-source.txt" >"$scratch/native-source.txt"
-chmod 0644 -- "$scratch/requirements.lock" "$scratch/native.lock" "$scratch/native-source.txt"
+chmod 0644 -- "$scratch"/*.lock "$scratch/native-source.txt"
 native_source="$("$python" -c '
 import re, sys
 text = open(sys.argv[1], encoding="utf-8").read()
@@ -86,10 +102,16 @@ worker=(--rm --platform linux/amd64 --pull never --network "$network" --read-onl
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m "${proxy_arguments[@]}"
     --mount "type=bind,src=$tool,dst=/tool.pyz,readonly"
     --mount "type=bind,src=$wheelhouse,dst=/wheelhouse" --entrypoint python "$base" -I -S /tool.pyz)
-for profile in native scientific; do
+for profile in "${profiles[@]}"; do
     if [[ "$profile" == native ]]; then
         lock="$scratch/native.lock"
         locate_arguments=(--index-url https://pypi.org/simple --source "$native_source")
+    elif [[ "$profile" == api ]]; then
+        lock="$scratch/api.lock"
+        locate_arguments=(--index-url https://pypi.org/simple --source "$native_source")
+    elif [[ "$profile" == consumer ]]; then
+        lock="$scratch/consumer.lock"
+        locate_arguments=(--index-url https://pypi.org/simple)
     else
         lock="$scratch/requirements.lock"
         locate_arguments=()
@@ -109,4 +131,4 @@ for profile in native scientific; do
         "${worker[@]}" acquire --lock /input/pylock.toml --source-lock /input/source.lock --pool /wheelhouse
     engine_active=0
 done
-printf 'Acquired the locked NMRPeak CPU wheel selection in %s.\n' "$wheelhouse"
+printf 'Acquired the locked NMRPeak %s wheel selection in %s.\n' "$target" "$wheelhouse"

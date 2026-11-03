@@ -9,5 +9,7 @@ sha256sum \
     "$root/requirements.lock" \
     "$root/dependencies/provider-core-api.lock" \
     "$root/dependencies/provider-core-source.txt" \
+    "$root/repository_checks/wheelhouse_tool_asset.py" \
+    "$root/repository_checks/image_wheel_report.py" \
     "$root/scripts/test-image-key.sh" \
     | awk '{print $1}' | sha256sum | awk '{print $1}'
