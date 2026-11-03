@@ -65,9 +65,14 @@ readonly tool="$wheelhouse/$tool_name"
 tmp="$(image_capture_directory "$repo_root")"
 proxy_pid=''
 engine_active=0
+worker_cid=''
+worker_label=''
 cleanup() {
     local status=$?
     trap - EXIT
+    if (( engine_active )) && [[ -n "$worker_cid" ]] && retire_image_worker "$worker_cid" "$worker_label"; then
+        engine_active=0
+    fi
     if [[ -n "$proxy_pid" ]] && (( ! engine_active )); then
         kill "$proxy_pid" 2>/dev/null || true
         wait "$proxy_pid" 2>/dev/null || true
@@ -75,7 +80,10 @@ cleanup() {
     if (( engine_active )); then
         printf 'Build or report retirement is unconfirmed; preserve %s, inspect report CID files, proxy.log and containers nmrpeak-{native,scientific,benchmark}-report-%s and proxy PID %s before cleanup or retrying.\n' "$tmp" "${tmp##*.}" "${proxy_pid:-none}" >&2
     else
-        rm -rf -- "$tmp"
+        if ! rm -rf -- "$tmp"; then
+            printf 'Cannot confirm removal of image build inputs at %s.\n' "$tmp" >&2
+            (( status != 0 )) || status=1
+        fi
     fi
     exit "$status"
 }
@@ -135,16 +143,24 @@ for profile in "${profiles[@]}"; do
         lock_arguments+=(--lock-sha256 "$digest")
     done
     engine_active=1
+    worker_cid="$tmp/$profile.cid"
+    worker_label="${tmp##*.}-$profile"
+    set +e
     docker run --name "nmrpeak-$profile-report-${tmp##*.}" --cidfile "$tmp/$profile.cid" \
         --label "io.numpde.nmrpeak.wheel-report=${tmp##*.}-$profile" \
-        --rm --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
+        --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
         --security-opt no-new-privileges --pids-limit 64 --memory 512m \
         --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
         --mount "type=bind,src=$report_input,dst=/input,readonly" \
         --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
         --entrypoint python "$base" -I -c "$(<"$tmp/report.py")" \
         --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}" >"$tmp/$profile.report.json"
+    report_status=$?
+    set -e
+    retire_image_worker "$worker_cid" "$worker_label" || fail "The $profile wheel report worker could not be confirmed retired."
     engine_active=0
+    worker_cid=''
+    [[ "$report_status" == 0 && "$image_worker_exit_code" == 0 ]] || fail "The $profile wheel report worker failed."
     "$python" -I -S "$tool" report --report "$tmp/$profile.report.json" --pool /wheelhouse --directory wheels >"$tmp/$profile.selection.json"
     selection_files+=("$tmp/$profile.selection.json")
 done

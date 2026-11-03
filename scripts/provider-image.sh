@@ -36,13 +36,21 @@ readonly tool="$wheelhouse/$tool_name"
 scratch="$(image_capture_directory "$repo_root")"
 readonly report_container="nmrpeak-wheel-report-${scratch##*.}"
 engine_active=0
+worker_cid=''
+worker_label=''
 cleanup() {
     local status=$?
     trap - EXIT
+    if (( engine_active )) && [[ -n "$worker_cid" ]] && retire_image_worker "$worker_cid" "$worker_label"; then
+        engine_active=0
+    fi
     if (( engine_active )); then
         printf 'Build or report retirement is unconfirmed; preserve inputs at %s and inspect Docker (report container %s) before cleanup or retrying.\n' "$scratch" "$report_container" >&2
     else
-        rm -rf -- "$scratch"
+        if ! rm -rf -- "$scratch"; then
+            printf 'Cannot confirm removal of image build inputs at %s.\n' "$scratch" >&2
+            (( status != 0 )) || status=1
+        fi
     fi
     exit "$status"
 }
@@ -81,16 +89,24 @@ for path in requirements.lock dependencies/provider-core-api.lock dependencies/p
     install -m 0644 -- "$context/$path" "$report_input/$path"
 done
 engine_active=1
+worker_cid="$scratch/report.cid"
+worker_label="${scratch##*.}"
+set +e
 docker run --name "$report_container" --cidfile "$scratch/report.cid" \
     --label "io.numpde.nmrpeak.wheel-report=${scratch##*.}" \
-    --rm --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
+    --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 64 --memory 512m \
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
     --mount "type=bind,src=$report_input,dst=/input,readonly" \
     --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
     --entrypoint python "$base" -I -c "$(<"$scratch/report.py")" \
     --source /input --pool /wheelhouse "${lock_arguments[@]}" >"$scratch/report.json"
+report_status=$?
+set -e
+retire_image_worker "$worker_cid" "$worker_label" || fail 'The wheel report worker could not be confirmed retired.'
 engine_active=0
+worker_cid=''
+[[ "$report_status" == 0 && "$image_worker_exit_code" == 0 ]] || fail 'The wheel report worker failed.'
 "$python" -I -S "$tool" report --report "$scratch/report.json" --pool /wheelhouse --directory wheels >"$scratch/selection.json"
 readonly selection_id="$("$python" -I -S "$tool" identity --manifest "$scratch/selection.json")"
 [[ "$selection_id" =~ ^[0-9a-f]{64}$ ]] || fail 'shared wheelhouse tool returned an invalid selection identity'
@@ -131,8 +147,19 @@ readonly image_id="$(<"$image_id_file")"
 [[ "$(docker image inspect "$image_id" --format '{{json .Config.Entrypoint}}')" == '["python","-m","nmrpeak_provider.provider_main"]' ]] ||
     fail "built provider image does not use its fixed entrypoint: $image_id"
 
-docker run --rm --network none --entrypoint python "$image_id" \
+engine_active=1
+worker_cid="$scratch/smoke.cid"
+worker_label="${scratch##*.}-smoke"
+set +e
+docker run --name "nmrpeak-image-smoke-${scratch##*.}" --cidfile "$worker_cid" \
+    --label "io.numpde.nmrpeak.wheel-report=$worker_label" --network none --entrypoint python "$image_id" \
     -P -c 'import cryptography; import provider_core.controller; import nmrpeak_provider.provider_main'
+smoke_status=$?
+set -e
+retire_image_worker "$worker_cid" "$worker_label" || fail 'The image import worker could not be confirmed retired.'
+engine_active=0
+worker_cid=''
+[[ "$smoke_status" == 0 && "$image_worker_exit_code" == 0 ]] || fail 'The image import worker failed.'
 docker image tag "$image_id" "$selected_image"
 docker image tag "$image_id" "$image"
 printf 'Built %s from %s as %s\n' "$image" "$image_input_id" "$image_id"

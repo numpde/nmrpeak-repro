@@ -24,3 +24,15 @@ image_capture_directory() {
     }
     mktemp -d "$captures/build.XXXXXXXX"
 }
+
+retire_image_worker() {
+    local receipt=$1 expected=$2 cid state running code label extra
+    [[ -s "$receipt" ]] || return 1
+    cid="$(<"$receipt")"
+    [[ "$cid" =~ ^[0-9a-f]{64}$ ]] || return 1
+    state="$(command docker --host "$NMRPEAK_DOCKER_HOST" inspect "$cid" --format '{{.State.Running}} {{.State.ExitCode}} {{index .Config.Labels "io.numpde.nmrpeak.wheel-report"}}')" || return 1
+    read -r running code label extra <<<"$state"
+    [[ "$running" == false && "$code" =~ ^[0-9]+$ && "$label" == "$expected" && -z "$extra" ]] || return 1
+    command docker --host "$NMRPEAK_DOCKER_HOST" rm "$cid" >/dev/null || return 1
+    image_worker_exit_code=$code
+}

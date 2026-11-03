@@ -48,12 +48,17 @@ readonly scratch="$(image_capture_directory "$repo_root")"
 readonly python_alias="localhost/nmrpeak-test/python-base:${python_digest#sha256:}-${scratch##*/}"
 proxy_pid=""
 engine_active=0
+worker_cid=''
+worker_label=''
 docker_base_imported=0
 podman_alias_created=0
 cleanup() {
     status=$?
     local retirement_error=""
     trap - EXIT
+    if (( engine_active )) && [[ -n "$worker_cid" ]] && retire_image_worker "$worker_cid" "$worker_label"; then
+        engine_active=0
+    fi
     if [[ -n "$proxy_pid" ]] && (( ! engine_active )); then
         kill "$proxy_pid" 2>/dev/null || true
         wait "$proxy_pid" 2>/dev/null || true
@@ -192,16 +197,24 @@ for path in requirements.lock dependencies/provider-core-api.lock dependencies/p
     lock_arguments+=(--lock-sha256 "$digest")
 done
 engine_active=1
+worker_cid="$scratch/report.cid"
+worker_label="${scratch##*.}"
+set +e
 docker --host "$NMRPEAK_DOCKER_HOST" run --name "nmrpeak-test-wheel-report-${scratch##*.}" --cidfile "$scratch/report.cid" \
     --label "io.numpde.nmrpeak.wheel-report=${scratch##*.}" \
-    --rm --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
+    --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 64 --memory 512m \
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
     --mount "type=bind,src=$scratch/context,dst=/input,readonly" \
     --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
     --entrypoint python "$docker_base_image" -I -c "$(<"$scratch/report.py")" \
     --source /input --pool /wheelhouse "${lock_arguments[@]}" >"$scratch/report.json"
+report_status=$?
+set -e
+retire_image_worker "$worker_cid" "$worker_label" || fail 'The test wheel report worker could not be confirmed retired.'
 engine_active=0
+worker_cid=''
+[[ "$report_status" == 0 && "$image_worker_exit_code" == 0 ]] || fail 'The test wheel report worker failed.'
 "$python" -I -S "$tool" report --report "$scratch/report.json" --pool /wheelhouse --directory wheels >"$scratch/selection.json"
 selection_id="$("$python" -I -S "$tool" identity --manifest "$scratch/selection.json")"
 [[ "$selection_id" =~ ^[0-9a-f]{64}$ ]] || fail 'shared wheelhouse tool returned an invalid selection identity'
