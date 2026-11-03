@@ -11,6 +11,24 @@ It does not defer controller/delivery adoption or accept two-interpreter product
 images as the endpoint. The scientific and control runtimes use Python 3.12;
 shared Python 3.11 support was withdrawn.
 
+Wheelhouse migration: deferred operational qualification
+---------------------------------------------------------
+The provider and both CPU runners build from the shared wheelhouse using the
+published selector. On both hosts, the updated provider is healthy and both
+runner containers are running. This does not establish a new scientific result.
+
+Interrupted wheelhouse workers or image builds retain their scratch, available
+CID receipts and any interface-bound proxy when retirement is unconfirmed.
+Reconcile the exact operation and proxy before removing those resources; an
+empty Docker container listing is not proof of host-process retirement, and a
+build may not have a container ID receipt.
+
+The target workers map the calling host UID into the selected engine. A pool
+available only through a host group, rather than that user's ownership or public
+access, remains unqualified. The shared locator's cache preference also follows
+current index metadata and yanked-file policy; it does not promise to reuse a
+cached artifact that the index no longer lists.
+
 Scientific retries: deploy first
 --------------------------------
 Owner: NMRPeak's scientific lane and analysis session. The joint review records
