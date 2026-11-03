@@ -49,6 +49,15 @@ later SDK wheel. Pip stopped at the missing dependency before diagnosing the
 conflict; an intentionally nonexistent interface stopped fallback before network
 access, and the synthetic corrupt bytes remained unchanged. This establishes the
 diagnostic ordering, not the outcome of a networked acquisition.
+On 2026-11-03 the shared owner ran a user-authorized local cold witness with
+tool 0.5.14: the 207,324-byte provider-core 0.5.4 wheel was moved aside under
+the pool locks, and the maintained provider/wheelhouse/acquire target completed
+over wlp1s0 with DOCKER_CONTEXT=science. The target's final offline selection
+passed, and the newly acquired wheel's SHA-256 matched the provider lock:
+7a3d8d6b44e39a3fac84d6abecb0a08f84a4c881d15f8d5d2e6dd9e36472beeb.
+This exercises local provider acquisition with that one missing wheel; it does
+not establish GPU inference or a cold run on ProArt. Existing deployments were
+not restarted for the witness.
 Provider images were built using the pinned 0.5.12 streamer and the existing pool
 on each host: local image sha256:e7ebff226138b19a41846b2ffcc03fb05caf592f2eeb5ebc8676022abf96154f;
 ProArt image sha256:6cbd49db1af8e51060d2c4ceef9b8420c7f2101d00357d594826e19e27ce3cc2.
