@@ -10,7 +10,7 @@ override NMRPEAK_DOCKER_TARGETS := \
 	test test/unit test/contract test/integration test/repository test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool test/model-behavior-fixtures \
 	test/live/failure-propagation test/live/failure-propagation/observe \
 	test/live/success-propagation test/live/success-propagation/observe \
-	test-image/base/build runner/image/build runner/lock/stage runner/wheelhouse/acquire provider/image/build \
+	test-image/base/build runner/image/build runner/lock/stage runner/lock/compiler/check runner/wheelhouse/acquire provider/image/build \
 	provider/deployment/config provider/deployment/up provider/deployment/update provider/deployment/status provider/deployment/down \
 	provider/deployment/generation/remove provider/deployment/runtime-config/remove \
 	provider/deployment/journal/inspect provider/deployment/journal/archive-closed provider/deployment/journal/retire \
@@ -75,7 +75,7 @@ benchmark/verify:
 	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
 
 .PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/update provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
-.PHONY: test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool wheelhouse/tool runner/wheelhouse/acquire
+.PHONY: test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool wheelhouse/tool runner/wheelhouse/acquire runner/lock/compiler/check
 
 help:
 	@printf '%s\n' \
@@ -150,6 +150,8 @@ help:
 		'      Resolve dependencies and stage a candidate outside the checkout using the selected route.' \
 		'  make runner/lock/check TARGET=<target>' \
 		'      Verify the committed dependency lock without network access.' \
+		'  make runner/lock/compiler/check TARGET=cpu-x86_64 WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
+		'      Smoke-check the pinned compiler offline with one locked wheel.' \
 		'  make runner/lock/apply TARGET=<target>' \
 		'      Replace the committed lock with the verified staged candidate.' \
 		'  make runner/image/build RUNNER=<runner> TARGET=<target> WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
@@ -344,6 +346,11 @@ runner/lock/stage runner/lock/check runner/lock/apply: private export TARGET_INP
 runner/lock/stage runner/lock/check runner/lock/apply:
 	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
 	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-lock.sh" "$(@F)" "$$TARGET_INPUT"
+
+runner/lock/compiler/check: private export TARGET_INPUT := $(value TARGET)
+runner/lock/compiler/check:
+	@test "$(origin TARGET)" = command\ line || { echo 'TARGET must be set on the make command line' >&2; exit 2; }
+	@PYTHON="$(PYTHON)" bash "$(REPOSITORY_ROOT)/scripts/runner-lock-compiler-check.sh" "$$TARGET_INPUT"
 
 runner/image/build: private export RUNNER_INPUT := $(value RUNNER)
 runner/image/build: private export TARGET_INPUT := $(value TARGET)

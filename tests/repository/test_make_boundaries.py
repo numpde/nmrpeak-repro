@@ -132,6 +132,7 @@ else:
             ("runner/lock/stage", ("TARGET",)),
             ("runner/lock/check", ("TARGET",)),
             ("runner/lock/apply", ("TARGET",)),
+            ("runner/lock/compiler/check", ("TARGET", "WHEELHOUSE")),
             ("runner/image/build", ("RUNNER", "TARGET", "WHEELHOUSE")),
             ("runner/wheelhouse/acquire", ("TARGET", "WHEELHOUSE")),
             ("provider/image/build", ("WHEELHOUSE",)),
