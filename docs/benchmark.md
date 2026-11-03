@@ -24,11 +24,11 @@ committed checkout:
 
 ```bash
 git submodule update --init --recursive
-make benchmark/image/build DOCKER_CONTEXT=<name>
+make benchmark/image/build WHEELHOUSE=/absolute/path/to/wheelhouse DOCKER_CONTEXT=<name>
 ```
 
 To select a route without a prompt, use
-`make benchmark/image/build NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>` for
+`make benchmark/image/build WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTERFACE=system DOCKER_CONTEXT=<name>` for
 the default route, or replace `system` with an available interface name.
 Without a selection, an interactive terminal offers a choice with no default;
 unattended builds require an explicit selection. An interface selection starts
@@ -166,13 +166,11 @@ builds fetch pinned dependency artifacts. `make benchmark/lock DOCKER_CONTEXT=<n
 explicit network-route selection and stages a new hash-locked candidate in
 `/tmp` for review; it does not replace the committed lock.
 
-CPU and CUDA image builds use the builder-wide UV cache at `/root/.cache/uv`,
-without a repository or lane-specific cache ID. Other repositories using that
-same cache mount on the same builder can reuse completed artifacts. Each install
-still checks its own lockfile hashes and copies packages into its own image.
-Cache reuse does not imply that different package versions or CPU/CUDA wheels are
-interchangeable. Builder garbage collection or an incomplete download can cause
-an artifact to be fetched again; changing repositories or lanes should not.
+CPU runner builds select and verify their locked wheels from the shared
+wheelhouse, then install them without network access. Their system packages may
+still use the selected network route. The CUDA benchmark image currently uses
+the builder-wide uv cache at `/root/.cache/uv` and checks its own lock hashes.
+CPU and CUDA wheels and different package versions are not interchangeable.
 
 The common image pins PyTorch 2.10.0 with CUDA 12.8 for Ada and Blackwell support.
 Before selecting it, the PyTorch security advisories were reviewed, including the

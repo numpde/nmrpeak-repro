@@ -135,6 +135,7 @@ else:
             ("runner/lock/compiler/check", ("TARGET", "WHEELHOUSE")),
             ("runner/image/build", ("RUNNER", "TARGET", "WHEELHOUSE")),
             ("runner/wheelhouse/acquire", ("TARGET", "WHEELHOUSE")),
+            ("benchmark/image/build", ("WHEELHOUSE", "NETWORK_INTERFACE")),
             ("provider/image/build", ("WHEELHOUSE",)),
             ("benchmark/image/build", ("NETWORK_INTERFACE",)),
             ("checkpoint/import", ("RUNNER", "RELEASE", "ARCHIVE")),

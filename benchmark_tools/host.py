@@ -173,8 +173,8 @@ def prepare_images(revision, scratch, build=False, network_arguments=()):
         context.mkdir()
         input_id = materialize_image_context(ROOT, revision, context, role)
         spec = image_spec(role, input_id, revision)
-        if build:
-            file = "containers/benchmark/Dockerfile" if role == "benchmark" else f"models/{role}/runner/Dockerfile.runner"
+        if build and role == "benchmark":
+            file = "containers/benchmark/Dockerfile"
             docker("build", *network_arguments, "--build-arg", f"SOURCE_REVISION={revision}",
                    "--build-arg", f"IMAGE_INPUT_ID={input_id}", "--tag", f"{spec.repository}:{input_id[7:]}",
                    "--file", context / file, context, timeout=7200)

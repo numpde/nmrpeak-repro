@@ -26,6 +26,21 @@ class BenchmarkTests(unittest.TestCase):
         self.docker_host.start()
         self.addCleanup(self.docker_host.stop)
 
+    def test_benchmark_build_only_builds_its_own_image(self):
+        calls = []
+        def docker(*arguments, **_kwargs):
+            calls.append(arguments)
+            return SimpleNamespace(stdout=b'{}')
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(host, "materialize_image_context", return_value="sha256:" + "1" * 64), \
+             patch.object(host, "resolve_local_image", return_value=SimpleNamespace(image_id="sha256:" + "2" * 64)), \
+             patch.object(host, "docker", side_effect=docker):
+            images = host.prepare_images("a" * 40, Path(temporary), build=True, network_arguments=("--network", "none"))
+        builds = [arguments for arguments in calls if arguments[0] == "build"]
+        self.assertEqual(len(builds), 1)
+        self.assertIn("containers/benchmark/Dockerfile", str(builds[0][builds[0].index("--file") + 1]))
+        self.assertEqual(set(images), {"benchmark", "nmrpeak_hf_v1", "nmrpeak_chf_v1"})
+
     def test_benchmark_lock_stage_uses_selected_proxy_for_build_and_renderer(self):
         calls = []
         with tempfile.TemporaryDirectory() as temporary:
@@ -157,7 +172,7 @@ class BenchmarkTests(unittest.TestCase):
             (["NETWORK_INTERFACE="], {}, False),
             ([], {"NETWORK_INTERFACE": "system"}, False),
         ):
-            for target in ("benchmark/image/build", "benchmark/lock"):
+            for target in ("benchmark/lock",):
                 with self.subTest(target=target, arguments=arguments, environment=environment):
                     with tempfile.TemporaryDirectory() as temporary:
                         docker = Path(temporary) / "docker"
@@ -180,6 +195,22 @@ else:
                             stderr=subprocess.PIPE,
                         )
                     self.assertEqual(result.returncode == 0, succeeds, result.stderr.decode())
+
+    def test_benchmark_make_build_invokes_both_runner_owners_first(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            docker = Path(temporary) / "docker"
+            docker.write_text(f"#!{sys.executable}\nprint('unix:///tmp/nmrpeak-test.sock')\n")
+            docker.chmod(0o755)
+            result = subprocess.run(
+                ["make", "-n", "-C", str(host.ROOT), "benchmark/image/build", "WHEELHOUSE=/tmp/pool",
+                 "NETWORK_INTERFACE=system", "DOCKER_CONTEXT=local"],
+                env={**os.environ, "PATH": f"{temporary}:{os.environ['PATH']}"},
+                capture_output=True, text=True, check=True,
+            )
+        self.assertLess(result.stdout.index("runner-image.sh\" nmrpeak_hf_v1"),
+                        result.stdout.index("runner-image.sh\" nmrpeak_chf_v1"))
+        self.assertLess(result.stdout.index("runner-image.sh\" nmrpeak_chf_v1"),
+                        result.stdout.index("-m benchmark_tools.host build"))
 
     def test_sigterm_enters_the_controlled_interruption_path(self):
         with patch.object(host.signal, "signal") as register, patch("sys.argv", ["benchmark", "devices"]), \

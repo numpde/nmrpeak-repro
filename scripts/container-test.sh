@@ -39,6 +39,7 @@ run_model() {
 case "$lane" in
     unit|contract|integration|repository) run_unittest "$lane" ;;
     provider-image) run_test test-runner /workspace/tests/repository --top-level /workspace --pattern test_nmrpeak_provider_image.py ;;
+    benchmark) run_test test-runner /workspace/tests/unit --top-level /workspace --pattern test_benchmark.py ;;
     benchmark-image) run_test test-runner /workspace/tests/repository --top-level /workspace --pattern test_benchmark_image.py ;;
     bound-proxy) run_test test-runner /workspace/tests/repository --top-level /workspace --pattern test_bound_http_proxy.py ;;
     image-wheel-report) run_test test-runner /workspace/tests/repository --top-level /workspace --pattern test_image_wheel_report.py ;;

@@ -7,7 +7,7 @@ override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
 
 override NMRPEAK_DOCKER_TARGETS := \
 	benchmark benchmark/image/build benchmark/lock check/test-image \
-	test test/unit test/contract test/integration test/repository test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool test/model-behavior-fixtures \
+	test test/unit test/unit/benchmark test/contract test/integration test/repository test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool test/model-behavior-fixtures \
 	test/live/failure-propagation test/live/failure-propagation/observe \
 	test/live/success-propagation test/live/success-propagation/observe \
 	test-image/base/build runner/image/build runner/lock/stage runner/lock/compiler/check runner/wheelhouse/acquire provider/image/build \
@@ -62,7 +62,12 @@ benchmark:
 	@$(PYTHON) -m benchmark_tools.host run
 
 benchmark/image/build:
-	@source "$(REPOSITORY_ROOT)/scripts/network-interface.sh"; select_network_interface; $(PYTHON) -m benchmark_tools.host build
+	@[[ "$$NMRPEAK_WHEELHOUSE_INPUT_ORIGIN" == 'command line' && -n "$$NMRPEAK_WHEELHOUSE_INPUT" ]] || { echo 'Set WHEELHOUSE on the make command line.' >&2; exit 2; }; \
+		source "$(REPOSITORY_ROOT)/scripts/network-interface.sh"; select_network_interface; \
+		export NMRPEAK_NETWORK_INTERFACE_INPUT="$$NETWORK_INTERFACE_SELECTED" NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN='command line'; \
+		PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" nmrpeak_hf_v1 cpu-x86_64; \
+		PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" nmrpeak_chf_v1 cpu-x86_64; \
+		$(PYTHON) -m benchmark_tools.host build
 
 benchmark/devices:
 	@$(PYTHON) -m benchmark_tools.host devices
@@ -75,7 +80,7 @@ benchmark/verify:
 	@$(PYTHON) -m benchmark_tools.archive "$$BENCHMARK_RUN"
 
 .PHONY: help check/source check/test-image checkpoint/import checkpoint/recover provider/deployment/config provider/deployment/down provider/deployment/generation/remove provider/deployment/init provider/deployment/journal/inspect provider/deployment/journal/retire provider/deployment/status provider/deployment/up provider/deployment/update provider/identity-lock/remove provider/image/build provider/logs release/check release/install release/write runner/image/build runner/lock/apply runner/lock/check runner/lock/stage test test-image/base/build test/contract test/integration test/live/failure-propagation test/live/failure-propagation/observe test/live/success-propagation test/live/success-propagation/observe test/model-behavior-fixtures test/repository test/unit upstream-contracts/check upstream-contracts/write weights/check weights/download
-.PHONY: test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool wheelhouse/tool runner/wheelhouse/acquire runner/lock/compiler/check
+.PHONY: test/unit/benchmark test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool wheelhouse/tool runner/wheelhouse/acquire runner/lock/compiler/check
 
 help:
 	@printf '%s\n' \
@@ -85,7 +90,7 @@ help:
 		'  Example: make test DOCKER_CONTEXT=science' \
 		'' \
 		'Verify this checkout:' \
-		'  make benchmark/image/build [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
+		'  make benchmark/image/build WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'  make benchmark [DEVICES="all|cpu|GPU-<uuid> ..."] [MODELS="hf chf"] [CASES="small medium long"]' \
 		'      Compare the current CPU stack and matched CPU/GPU stack; save benchmark/<UTC>-<sha>/.' \
 		'  make benchmark/devices' \
@@ -99,6 +104,7 @@ help:
 		'      Prepare the dependency image using an explicitly selected network route.' \
 		'      Ordinary test targets never pull images or use the network.' \
 		'  make test/unit' \
+		'  make test/unit/benchmark' \
 		'  make test/contract' \
 		'  make test/integration' \
 		'  make test/model-behavior-fixtures' \
@@ -222,7 +228,7 @@ test/unit test/contract test/integration test/repository test/model-behavior-fix
 	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
 		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" "$(@F)"
 
-test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool: check/test-image
+test/unit/benchmark test/repository/benchmark-image test/repository/bound-proxy test/repository/provider-image test/repository/image-wheel-report test/repository/operator-uid test/repository/wheelhouse-tool: check/test-image
 	@"$(REPOSITORY_ROOT)/scripts/container-test.sh" \
 		"$(REPOSITORY_ROOT)" "$(NMRPEAK_TEST_IMAGE)" "$(NMRPEAK_TEST_PROJECT)" "$(@F)"
 
