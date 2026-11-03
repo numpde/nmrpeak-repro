@@ -272,11 +272,26 @@ Preserve the trees until those facts and recovery disposition are established.
 
 Acquisition cancellation
 ------------------------
-The NMRPeak build and lock-stage launchers preserve their temporary input trees
-when a Docker operation exits without confirmed completion. This does not prove
-that a daemon-side build or lock-render container has retired: a local isolated
-probe found the Docker client and its container both still running two seconds
-after the client received TERM. NMRPeak's build owner should add exact invocation
-ownership and bounded retirement before treating an interrupted lock stage as
-finished; until then inspect Docker and preserve the reported inputs before a
-retry. The probe does not establish that BuildKit read a removed context.
+The build launchers retain inputs while a mounted worker or an unjoined stream
+may still read them. Once the build stream and client have both exited, they
+discard streamed source copies even when the engine outcome is unknown, keeping
+the image and base receipts and any needed proxy state. The lock-stage launcher
+still retains its input tree when Docker retirement is unconfirmed. A local
+isolated probe found the Docker client and its container both still running two
+seconds after the client received TERM. The build and lock owners need exact
+invocation ownership and bounded retirement before treating uncertain engine
+work as finished. The probe does not establish that BuildKit read a removed
+context.
+
+Acquisition network isolation
+-----------------------------
+Owner: acquisition and build launchers, with provider-core for the shared
+proxy and relay transport. The proposed network-none relay applies to download
+workers, including shared-tool bootstrap; it does not by itself isolate a
+BuildKit executor. The HF and CHF runner, CUDA benchmark, and test-base
+Dockerfiles run networked apt-get commands during image builds. Their existing
+selected-route proxy settings do not prevent an executor from making a direct
+connection.
+Those OS-package fetches require a separate design and qualification before
+claiming that all image-build downloads follow the isolated acquisition path.
+No such isolation has been implemented or proven yet.
