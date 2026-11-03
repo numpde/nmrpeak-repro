@@ -95,7 +95,10 @@ def refresh(bundle: Path, record: dict, archive_path: Path, version: str) -> Non
             contents[member.name] = content
     if bundle.parent.is_symlink():
         raise ValueError('Acquisition bootstrap parent must not be a symlink.')
+    parent_created = not bundle.parent.exists()
     bundle.parent.mkdir(parents=True, exist_ok=True)
+    if parent_created:
+        bundle.parent.chmod(0o755)
     if not bundle.parent.is_dir():
         raise ValueError('Acquisition bootstrap parent must be a directory.')
     if bundle.is_symlink() or (bundle.exists() and not bundle.is_dir()):
@@ -108,6 +111,8 @@ def refresh(bundle: Path, record: dict, archive_path: Path, version: str) -> Non
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
             target.chmod(inventory[name]['mode'])
+        for directory, _children, _files in os.walk(stage):
+            Path(directory).chmod(0o755)
         verify(stage, record)
         if bundle.exists():
             backup = Path(tempfile.mkdtemp(prefix='.acquisition-previous-', dir=bundle.parent))

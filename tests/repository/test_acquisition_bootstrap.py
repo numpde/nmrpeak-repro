@@ -1,6 +1,7 @@
 """Verify the released acquisition closure before executing its owner."""
 
 from hashlib import sha256
+import os
 import io
 import tarfile
 from unittest.mock import patch
@@ -69,8 +70,21 @@ class AcquisitionBootstrapTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 refresh(target, self.record, archive, '1.0.0')
         self.assertFalse(target.exists())
-        refresh(target, self.record, archive, '1.0.0')
+        previous_umask = os.umask(0o077)
+        try:
+            refresh(target, self.record, archive, '1.0.0')
+        finally:
+            os.umask(previous_umask)
         verify(target, self.record)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+        self.assertEqual((target / 'acquisition_tool').stat().st_mode & 0o777, 0o755)
+        new_parent_target = self.bundle.parent / 'new-parent' / 'acquisition'
+        previous_umask = os.umask(0o077)
+        try:
+            refresh(new_parent_target, self.record, archive, '1.0.0')
+        finally:
+            os.umask(previous_umask)
+        self.assertEqual(new_parent_target.parent.stat().st_mode & 0o777, 0o755)
         (target / 'old-generated-file').write_text('old')
         original_rename = Path.rename
 
