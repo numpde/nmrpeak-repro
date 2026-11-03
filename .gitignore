@@ -13,6 +13,7 @@
 # Workspace-local agent state is not part of the deployment source.
 /.agents/
 /.codex/
+/.work/
 
 # Local configuration and credentials.
 .env

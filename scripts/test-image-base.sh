@@ -5,6 +5,8 @@ fail() { printf '%s\n' "$*" >&2; exit 2; }
 
 [[ $# -eq 2 ]] || fail "usage: test-image-base.sh <repository-root> <network-interface>"
 readonly repo_root="$1"
+source "$repo_root/scripts/image-operation-lock.sh"
+hold_image_operation_lock "$repo_root"
 readonly network_interface="$2"
 [[ "$network_interface" == system || ( "$network_interface" =~ ^[A-Za-z0-9_.:-]{1,15}$ && "$network_interface" != . && "$network_interface" != .. && -d "/sys/class/net/$network_interface" ) ]] ||
     fail "selected network interface does not exist: $network_interface"
@@ -42,7 +44,7 @@ tool_metadata="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 
 read -r tool_name tool_sha256 <<<"$tool_metadata"
 readonly tool="$wheelhouse/$tool_name"
 
-readonly scratch="$(mktemp -d)"
+readonly scratch="$(image_capture_directory "$repo_root")"
 readonly python_alias="localhost/nmrpeak-test/python-base:${python_digest#sha256:}-${scratch##*/}"
 proxy_pid=""
 engine_active=0
@@ -182,6 +184,7 @@ context = Path(sys.argv[1])
 _, entries = _context_inventory(context, PurePosixPath(context))
 _write_allowlist(Path(sys.argv[2]), entries)
 ' "$scratch/context" "$scratch/source.json"
+printf '%s\n' "$docker_base_image" >"$scratch/base.id"
 operator_uid="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m deployment.operator_container_uid "$docker_base_image")"
 lock_arguments=()
 for path in requirements.lock dependencies/provider-core-api.lock dependencies/provider-core-source.txt; do

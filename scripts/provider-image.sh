@@ -7,6 +7,8 @@ fail() {
 }
 
 readonly repo_root="$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/..")"
+source "$repo_root/scripts/image-operation-lock.sh"
+hold_image_operation_lock "$repo_root"
 readonly python="${PYTHON:-python3}"
 readonly revision="$(git -C "$repo_root" rev-parse --verify HEAD)"
 source "$repo_root/scripts/network-interface.sh"
@@ -31,7 +33,7 @@ tool_metadata="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 
 read -r tool_name tool_sha256 <<<"$tool_metadata"
 readonly tool="$wheelhouse/$tool_name"
 
-scratch="$(mktemp -d)"
+scratch="$(image_capture_directory "$repo_root")"
 readonly report_container="nmrpeak-wheel-report-${scratch##*.}"
 engine_active=0
 cleanup() {
@@ -69,6 +71,7 @@ readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef
 base_id="$(docker image inspect "$base" --format '{{.Id}}')" ||
     fail 'the pinned Python base image must already exist on the selected Docker engine'
 [[ "$base_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'the pinned Python base image has an invalid Docker identity'
+printf '%s\n' "$base_id" >"$scratch/base.id"
 operator_uid="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m deployment.operator_container_uid "$base_id")"
 readonly operator_uid
 lock_arguments=()

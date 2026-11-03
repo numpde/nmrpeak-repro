@@ -4,6 +4,8 @@ set -euo pipefail
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 [[ $# -eq 4 ]] || fail "usage: container-test.sh <repository-root> <image> <project> <lane>"
 readonly repo_root="$1" image="$2" project="$3" lane="$4"
+source "$repo_root/scripts/image-operation-lock.sh"
+hold_image_operation_lock "$repo_root"
 readonly test_uid="$(id -u)" test_gid="$(id -g)"
 [[ "$test_uid" != 0 && "$test_gid" != 0 && "$test_uid" != 65532 ]] ||
     fail "containerized tests require a non-root user distinct from provider UID 65532"

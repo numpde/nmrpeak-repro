@@ -54,6 +54,20 @@ provider journal, checkpoints, and frozen generations, then reports the image
 IDs verified on the running provider and runners. Plain `provider/deployment/up`
 does not build and still requires the reviewed plan hash.
 
+`make packages/images/retire DOCKER_CONTEXT=<name>` removes obsolete owned
+images from the selected local engine. It retains current inputs, image IDs
+recorded by retained generations and build captures, images used by running or
+stopped containers, and images with unfamiliar aliases or digests. It also keeps
+images created in the last 24 hours. Creation time is an age buffer, not a
+guarantee that a recently tagged cached image is reserved for 24 hours. Use a
+deployment pin or a separate intentional alias to retain an image across source
+changes.
+
+Retirement coordinates with maintained image work in this checkout. Other
+checkouts and direct Docker operations do not take that lock and must be kept
+out of the maintenance window. Interrupted builds may leave diagnostic captures
+in `.work/image-builds`; preserve them until their outcome is understood.
+
 ## CPU/GPU experiment
 
 The [benchmark guide](docs/benchmark.md) explains how to run a comparison.

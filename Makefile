@@ -14,7 +14,7 @@ override NMRPEAK_DOCKER_TARGETS := \
 	provider/deployment/config provider/deployment/up provider/deployment/update provider/deployment/status provider/deployment/down \
 	provider/deployment/generation/remove provider/deployment/runtime-config/remove \
 	provider/deployment/journal/inspect provider/deployment/journal/archive-closed provider/deployment/journal/retire \
-	provider/identity-lock/remove provider/logs checkpoint/import checkpoint/recover
+	provider/identity-lock/remove provider/logs checkpoint/import checkpoint/recover packages/images/retire
 # Resolve one endpoint if any requested goal uses Docker; DOCKER itself rejects unclassified Docker recipes.
 override shquote = '$(subst ','"'"',$(1))'
 unexport NMRPEAK_DOCKER_HOST
@@ -57,12 +57,17 @@ export BENCHMARK_WARMUPS = $(or $(WARMUPS),3)
 export BENCHMARK_THREADS = $(or $(THREADS),8)
 export BENCHMARK_TIMEOUT = $(or $(TIMEOUT),7200)
 
-.PHONY: benchmark benchmark/image/build benchmark/devices benchmark/lock benchmark/verify
+.PHONY: benchmark benchmark/image/build benchmark/devices benchmark/lock benchmark/verify packages/images/retire
+packages/images/retire:
+	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) "$(REPOSITORY_ROOT)/scripts/retire-images.py"
+
 benchmark:
-	@$(PYTHON) -m benchmark_tools.host run
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		$(PYTHON) -m benchmark_tools.host run
 
 benchmark/image/build:
-	@[[ "$$NMRPEAK_WHEELHOUSE_INPUT_ORIGIN" == 'command line' && -n "$$NMRPEAK_WHEELHOUSE_INPUT" ]] || { echo 'Set WHEELHOUSE on the make command line.' >&2; exit 2; }; \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		[[ "$$NMRPEAK_WHEELHOUSE_INPUT_ORIGIN" == 'command line' && -n "$$NMRPEAK_WHEELHOUSE_INPUT" ]] || { echo 'Set WHEELHOUSE on the make command line.' >&2; exit 2; }; \
 		source "$(REPOSITORY_ROOT)/scripts/network-interface.sh"; select_network_interface; \
 		export NMRPEAK_NETWORK_INTERFACE_INPUT="$$NETWORK_INTERFACE_SELECTED" NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN='command line'; \
 		PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/runner-image.sh" nmrpeak_hf_v1 cpu-x86_64; \
@@ -155,6 +160,8 @@ help:
 		'      Acquire the locked provider dependencies into the shared wheelhouse.' \
 		'  make provider/image/build WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
 		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
+		'  make packages/images/retire DOCKER_CONTEXT=<name>' \
+		'      Retire obsolete owned images while protecting retained deployments and containers.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \
 		'      Resolve dependencies and stage a candidate outside the checkout using the selected route.' \
 		'  make runner/lock/check TARGET=<target>' \
@@ -383,8 +390,9 @@ provider/deployment/update: private export DEPLOYMENT_INPUT := $(value DEPLOYMEN
 provider/deployment/update:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
-	@PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		PYTHON="$(PYTHON)" "$(REPOSITORY_ROOT)/scripts/provider-image.sh"; \
+		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment update "$$DEPLOYMENT_INPUT"
 
 provider/deployment/init: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
@@ -397,7 +405,8 @@ provider/deployment/config: private export DEPLOYMENT_INPUT := $(value DEPLOYMEN
 provider/deployment/config:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment config "$$DEPLOYMENT_INPUT"
 
 provider/deployment/up: private export DEPLOYMENT_INPUT := $(value DEPLOYMENT)
@@ -406,7 +415,8 @@ provider/deployment/up:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin EXPECTED_PLAN_SHA256)" = command\ line || { echo 'EXPECTED_PLAN_SHA256 must be set on the make command line from the reviewed config output' >&2; exit 2; }
 	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment up "$$DEPLOYMENT_INPUT" \
 		--expected-plan-sha256 "$$EXPECTED_PLAN_SHA256_INPUT"
 
@@ -438,7 +448,8 @@ provider/deployment/generation/remove:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin FROZEN_GENERATION)" = command\ line || { echo 'FROZEN_GENERATION must be set on the make command line' >&2; exit 2; }
 	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment generation-remove \
 		"$$DEPLOYMENT_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT" \
 		--confirm "$$CONFIRM_INPUT"
@@ -451,7 +462,8 @@ provider/deployment/runtime-config/remove:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin RUNTIME_CONFIG)" = command\ line || { echo 'RUNTIME_CONFIG must be set on the make command line' >&2; exit 2; }
 	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment runtime-config-remove \
 		"$$DEPLOYMENT_INPUT" --runtime-config "$$RUNTIME_CONFIG_INPUT" --confirm "$$CONFIRM_INPUT"
 
@@ -459,7 +471,8 @@ provider/deployment/journal/inspect: private export DEPLOYMENT_INPUT := $(value 
 provider/deployment/journal/inspect: private export ATTEMPT_REF_INPUT := $(value ATTEMPT_REF)
 provider/deployment/journal/inspect:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
-	@set -- journal-inspect "$$DEPLOYMENT_INPUT"; \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		set -- journal-inspect "$$DEPLOYMENT_INPUT"; \
 		if test -n "$$ATTEMPT_REF_INPUT"; then set -- "$$@" --execution-attempt-ref "$$ATTEMPT_REF_INPUT"; fi; \
 		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment "$$@"
@@ -472,7 +485,8 @@ provider/deployment/journal/archive-closed: private export ARCHIVE_REASON_INPUT 
 provider/deployment/journal/archive-closed: private export FROZEN_GENERATION_INPUT := $(value FROZEN_GENERATION)
 provider/deployment/journal/archive-closed:
 	@test "$(origin LOCALHOST_CA_CERTIFICATE)" != command\ line || { echo 'Configure API trust in provider.toml instead of LOCALHOST_CA_CERTIFICATE' >&2; exit 2; }
-	@cd "$(CURDIR)" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(CURDIR)" \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		cd "$(CURDIR)" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(CURDIR)" \
 		$(PYTHON) -m deployment.provider_deployment journal-archive-closed "$$DEPLOYMENT_INPUT" \
 		--execution-attempt-ref "$$ATTEMPT_REF_INPUT" --record-digest "$$RECORD_DIGEST_INPUT" \
 		--reason "$$ARCHIVE_REASON_INPUT" --frozen-generation "$$FROZEN_GENERATION_INPUT"
@@ -482,7 +496,8 @@ provider/deployment/journal/retire: private export CONFIRM_INPUT := $(value CONF
 provider/deployment/journal/retire:
 	@test "$(origin DEPLOYMENT)" = command\ line || { echo 'DEPLOYMENT must be set on the make command line' >&2; exit 2; }
 	@test "$(origin CONFIRM)" = command\ line || { echo 'CONFIRM must be set on the make command line' >&2; exit 2; }
-	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
+	@source "$(REPOSITORY_ROOT)/scripts/image-operation-lock.sh"; hold_image_operation_lock "$(REPOSITORY_ROOT)"; \
+		PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$(REPOSITORY_ROOT)" \
 		$(PYTHON) -m deployment.provider_deployment journal-retire \
 		"$$DEPLOYMENT_INPUT" --confirm "$$CONFIRM_INPUT"
 

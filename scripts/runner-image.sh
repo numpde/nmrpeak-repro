@@ -36,6 +36,8 @@ case "$runner" in
 esac
 
 readonly repo_root="$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/..")"
+source "$repo_root/scripts/image-operation-lock.sh"
+hold_image_operation_lock "$repo_root"
 readonly python="${PYTHON:-python3}"
 readonly revision="$(git -C "$repo_root" rev-parse --verify HEAD)"
 [[ -z "$(git -C "$repo_root" status --short)" ]] ||
@@ -60,7 +62,7 @@ tool_metadata="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 
 read -r tool_name tool_sha256 <<<"$tool_metadata"
 readonly tool="$wheelhouse/$tool_name"
 
-tmp="$(mktemp -d)"
+tmp="$(image_capture_directory "$repo_root")"
 proxy_pid=''
 engine_active=0
 cleanup() {
@@ -97,6 +99,7 @@ fi
 readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487'
 base_id="$(docker image inspect "$base" --format '{{.Id}}')" || fail 'the pinned Python base image must already exist on the selected Docker engine'
 [[ "$base_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'the pinned Python base image has an invalid Docker identity'
+printf '%s\n' "$base_id" >"$tmp/base.id"
 operator_uid="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m deployment.operator_container_uid "$base_id")"
 readonly operator_uid
 git -C "$repo_root" show "$revision:repository_checks/image_wheel_report.py" >"$tmp/report.py"
