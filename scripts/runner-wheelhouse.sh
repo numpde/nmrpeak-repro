@@ -22,7 +22,6 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -m repository_checks
 tool_name="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c 'from repository_checks.wheelhouse_tool_asset import TOOL_NAME; print(TOOL_NAME)')"
 readonly tool="$wheelhouse/$tool_name"
 source "$repo_root/scripts/network-interface.sh"
-select_network_interface
 require_local_docker
 docker() { command docker --host "$NMRPEAK_DOCKER_HOST" "$@"; }
 readonly base='docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487'
@@ -81,6 +80,79 @@ if len(urls) != 1 or len(hashes) != 1:
 print(urls[0] + "#sha256=" + hashes[0])
 ' "$scratch/native-source.txt")"
 
+# A successful target-interpreter report proves that the complete selection is
+# already available without contacting an index. Preserve the normal acquisition
+# path on a report failure; its diagnostics do not classify every miss or error.
+report_input="$scratch/report-input"
+mkdir -p -- "$report_input/dependencies" "$report_input/families/nmrpeak/targets/cpu-x86_64" "$report_input/containers/benchmark"
+case "$target" in
+    provider)
+        report_profiles=(provider)
+        report_paths=(requirements.lock dependencies/provider-core-api.lock dependencies/provider-core-source.txt) ;;
+    cpu-x86_64)
+        report_profiles=(native scientific)
+        report_paths=(requirements-native.lock dependencies/provider-core-native.lock dependencies/provider-core-source.txt families/nmrpeak/targets/cpu-x86_64/requirements.lock) ;;
+    benchmark-cu128)
+        report_profiles=(benchmark)
+        report_paths=(containers/benchmark/requirements.lock) ;;
+esac
+for path in "${report_paths[@]}"; do
+    git -C "$repo_root" show "$revision:$path" >"$report_input/$path"
+    chmod 0644 -- "$report_input/$path"
+done
+git -C "$repo_root" show "$revision:repository_checks/image_wheel_report.py" >"$scratch/report.py"
+chmod 0755 -- "$report_input" "$report_input/dependencies" "$report_input/families" "$report_input/families/nmrpeak" \
+    "$report_input/families/nmrpeak/targets" "$report_input/families/nmrpeak/targets/cpu-x86_64" \
+    "$report_input/containers" "$report_input/containers/benchmark"
+offline_complete=1
+for profile in "${report_profiles[@]}"; do
+    case "$profile" in
+        provider) paths=(requirements.lock dependencies/provider-core-api.lock dependencies/provider-core-source.txt) ;;
+        native) paths=(requirements-native.lock dependencies/provider-core-native.lock dependencies/provider-core-source.txt) ;;
+        scientific) paths=(families/nmrpeak/targets/cpu-x86_64/requirements.lock) ;;
+        benchmark) paths=(containers/benchmark/requirements.lock) ;;
+    esac
+    lock_arguments=()
+    for path in "${paths[@]}"; do
+        read -r digest _ < <(sha256sum -- "$report_input/$path")
+        lock_arguments+=(--lock-sha256 "$digest")
+    done
+    name="nmrpeak-$profile-offline-${scratch##*.}"
+    engine_active=1
+    set +e
+    docker run --name "$name" --cidfile "$scratch/$profile-offline.cid" \
+        --label "io.numpde.nmrpeak.wheelhouse=${scratch##*.}-$profile-offline" \
+        --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" \
+        --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 512m \
+        --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
+        --mount "type=bind,src=$report_input,dst=/input,readonly" \
+        --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
+        --entrypoint python "$base" -I -c "$(<"$scratch/report.py")" \
+        --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}" \
+        >"$scratch/$profile-offline.json" 2>"$scratch/$profile-offline.log"
+    report_status=$?
+    set -e
+    [[ "$report_status" == 0 || "$report_status" == 1 ]] || fail "Offline wheel check did not complete normally (status $report_status)."
+    [[ -s "$scratch/$profile-offline.cid" ]] || fail 'Offline wheel check did not produce a container identity.'
+    report_cid="$(<"$scratch/$profile-offline.cid")"
+    [[ "$report_cid" =~ ^[0-9a-f]{64}$ ]] || fail 'Offline wheel check returned an invalid container identity.'
+    [[ "$(docker inspect "$report_cid" --format '{{.State.Running}} {{.State.ExitCode}} {{index .Config.Labels "io.numpde.nmrpeak.wheelhouse"}}')" == "false $report_status ${scratch##*.}-$profile-offline" ]] ||
+        fail 'Offline wheel check retirement or ownership could not be confirmed.'
+    docker rm "$report_cid" >/dev/null
+    engine_active=0
+    if (( report_status != 0 )); then
+        cat "$scratch/$profile-offline.log" >&2
+        offline_complete=0
+        break
+    fi
+    [[ -s "$scratch/$profile-offline.json" ]] || fail 'Offline wheel check returned an empty report.'
+done
+if (( offline_complete )); then
+    printf 'All locked NMRPeak %s wheels are already available in %s; no acquisition is needed.\n' "$target" "$wheelhouse"
+    exit 0
+fi
+printf '%s\n' 'Offline selection did not complete; continuing with the selected acquisition route.' >&2
+select_network_interface
 network=bridge
 proxy_arguments=(--env HTTP_PROXY= --env HTTPS_PROXY= --env http_proxy= --env https_proxy= --env NO_PROXY= --env no_proxy= --env ALL_PROXY= --env all_proxy= --env FTP_PROXY= --env ftp_proxy=)
 if [[ "$NETWORK_INTERFACE_SELECTED" != system ]]; then

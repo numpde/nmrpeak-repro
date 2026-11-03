@@ -31,8 +31,9 @@ make test-image/base/build WHEELHOUSE=/absolute/path/to/wheelhouse NETWORK_INTER
 make test DOCKER_CONTEXT=<name>
 ```
 
-Networked build and dependency-staging commands ask for a route when one is not
-supplied. Choose a listed interface, or `system` for the default route; there is
+Builds and dependency acquisition ask for a route when one is needed and not
+supplied. A complete wheelhouse can be checked without a network route. Choose
+a listed interface, or `system` for the default route; there is
 no default selection, and unattended commands must set `NETWORK_INTERFACE` on
 the Make command line. Interface-bound dependency downloads use a temporary
 proxy for tools that honor it; it is not an egress firewall. Docker base and

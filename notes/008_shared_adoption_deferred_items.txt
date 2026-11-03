@@ -29,6 +29,12 @@ access, remains unqualified. The shared locator's cache preference also follows
 current index metadata and yanked-file policy; it does not promise to reuse a
 cached artifact that the index no longer lists.
 
+Acquisition first tries the complete locked selection with target pip offline;
+on success it does not need an interface or index. A normal report failure does
+not distinguish a missing wheel from a corrupt or otherwise unusable one. The
+existing networked acquisition path remains responsible for conflicts, so it may
+query metadata for a corrupt partial pool before refusing the existing bytes.
+
 Scientific retries: deploy first
 --------------------------------
 Owner: NMRPeak's scientific lane and analysis session. The joint review records
