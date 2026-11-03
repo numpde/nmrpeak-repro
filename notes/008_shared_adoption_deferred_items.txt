@@ -34,6 +34,10 @@ on success it does not need an interface or index. A normal report failure does
 not distinguish a missing wheel from a corrupt or otherwise unusable one. The
 existing networked acquisition path remains responsible for conflicts, so it may
 query metadata for a corrupt partial pool before refusing the existing bytes.
+After acquisition, the same networkless target-pip selection must succeed before
+the command reports success; a failed final check does not start another attempt.
+This selects the hash-locked inputs with `--no-deps`; image builds perform the
+separate installed-environment dependency check.
 With the 0.5.11 tool pin, the maintained provider and CPU acquisition targets
 passed against the existing pools on both hosts with no NETWORK_INTERFACE set;
 the local benchmark target also passed. Their report workers used network none.

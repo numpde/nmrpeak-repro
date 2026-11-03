@@ -104,49 +104,54 @@ git -C "$repo_root" show "$revision:repository_checks/image_wheel_report.py" >"$
 chmod 0755 -- "$report_input" "$report_input/dependencies" "$report_input/families" "$report_input/families/nmrpeak" \
     "$report_input/families/nmrpeak/targets" "$report_input/families/nmrpeak/targets/cpu-x86_64" \
     "$report_input/containers" "$report_input/containers/benchmark"
-offline_complete=1
-for profile in "${report_profiles[@]}"; do
-    case "$profile" in
-        provider) paths=(requirements.lock dependencies/provider-core-api.lock dependencies/provider-core-source.txt) ;;
-        native) paths=(requirements-native.lock dependencies/provider-core-native.lock dependencies/provider-core-source.txt) ;;
-        scientific) paths=(families/nmrpeak/targets/cpu-x86_64/requirements.lock) ;;
-        benchmark) paths=(containers/benchmark/requirements.lock) ;;
-    esac
-    lock_arguments=()
-    for path in "${paths[@]}"; do
-        read -r digest _ < <(sha256sum -- "$report_input/$path")
-        lock_arguments+=(--lock-sha256 "$digest")
+check_offline_selection() {
+    local phase="$1" profile path digest name report_status report_cid
+    local -a paths lock_arguments
+    offline_complete=1
+    for profile in "${report_profiles[@]}"; do
+        case "$profile" in
+            provider) paths=(requirements.lock dependencies/provider-core-api.lock dependencies/provider-core-source.txt) ;;
+            native) paths=(requirements-native.lock dependencies/provider-core-native.lock dependencies/provider-core-source.txt) ;;
+            scientific) paths=(families/nmrpeak/targets/cpu-x86_64/requirements.lock) ;;
+            benchmark) paths=(containers/benchmark/requirements.lock) ;;
+        esac
+        lock_arguments=()
+        for path in "${paths[@]}"; do
+            read -r digest _ < <(sha256sum -- "$report_input/$path")
+            lock_arguments+=(--lock-sha256 "$digest")
+        done
+        name="nmrpeak-$profile-$phase-${scratch##*.}"
+        engine_active=1
+        set +e
+        docker run --name "$name" --cidfile "$scratch/$profile-$phase.cid" \
+            --label "io.numpde.nmrpeak.wheelhouse=${scratch##*.}-$profile-$phase" \
+            --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 512m \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
+            --mount "type=bind,src=$report_input,dst=/input,readonly" \
+            --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
+            --entrypoint python "$base" -I -c "$(<"$scratch/report.py")" \
+            --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}" \
+            >"$scratch/$profile-$phase.json" 2>"$scratch/$profile-$phase.log"
+        report_status=$?
+        set -e
+        [[ "$report_status" == 0 || "$report_status" == 1 ]] || fail "Offline wheel check did not complete normally (status $report_status)."
+        [[ -s "$scratch/$profile-$phase.cid" ]] || fail 'Offline wheel check did not produce a container identity.'
+        report_cid="$(<"$scratch/$profile-$phase.cid")"
+        [[ "$report_cid" =~ ^[0-9a-f]{64}$ ]] || fail 'Offline wheel check returned an invalid container identity.'
+        [[ "$(docker inspect "$report_cid" --format '{{.State.Running}} {{.State.ExitCode}} {{index .Config.Labels "io.numpde.nmrpeak.wheelhouse"}}')" == "false $report_status ${scratch##*.}-$profile-$phase" ]] ||
+            fail 'Offline wheel check retirement or ownership could not be confirmed.'
+        docker rm "$report_cid" >/dev/null
+        engine_active=0
+        if (( report_status != 0 )); then
+            cat "$scratch/$profile-$phase.log" >&2
+            offline_complete=0
+            break
+        fi
+        [[ -s "$scratch/$profile-$phase.json" ]] || fail 'Offline wheel check returned an empty report.'
     done
-    name="nmrpeak-$profile-offline-${scratch##*.}"
-    engine_active=1
-    set +e
-    docker run --name "$name" --cidfile "$scratch/$profile-offline.cid" \
-        --label "io.numpde.nmrpeak.wheelhouse=${scratch##*.}-$profile-offline" \
-        --platform linux/amd64 --pull never --network none --read-only --user "$operator_uid:65532" \
-        --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 512m \
-        --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
-        --mount "type=bind,src=$report_input,dst=/input,readonly" \
-        --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
-        --entrypoint python "$base" -I -c "$(<"$scratch/report.py")" \
-        --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}" \
-        >"$scratch/$profile-offline.json" 2>"$scratch/$profile-offline.log"
-    report_status=$?
-    set -e
-    [[ "$report_status" == 0 || "$report_status" == 1 ]] || fail "Offline wheel check did not complete normally (status $report_status)."
-    [[ -s "$scratch/$profile-offline.cid" ]] || fail 'Offline wheel check did not produce a container identity.'
-    report_cid="$(<"$scratch/$profile-offline.cid")"
-    [[ "$report_cid" =~ ^[0-9a-f]{64}$ ]] || fail 'Offline wheel check returned an invalid container identity.'
-    [[ "$(docker inspect "$report_cid" --format '{{.State.Running}} {{.State.ExitCode}} {{index .Config.Labels "io.numpde.nmrpeak.wheelhouse"}}')" == "false $report_status ${scratch##*.}-$profile-offline" ]] ||
-        fail 'Offline wheel check retirement or ownership could not be confirmed.'
-    docker rm "$report_cid" >/dev/null
-    engine_active=0
-    if (( report_status != 0 )); then
-        cat "$scratch/$profile-offline.log" >&2
-        offline_complete=0
-        break
-    fi
-    [[ -s "$scratch/$profile-offline.json" ]] || fail 'Offline wheel check returned an empty report.'
-done
+}
+check_offline_selection initial
 if (( offline_complete )); then
     printf 'All locked NMRPeak %s wheels are already available in %s; no acquisition is needed.\n' "$target" "$wheelhouse"
     exit 0
@@ -209,4 +214,6 @@ for profile in "${profiles[@]}"; do
         "${worker[@]}" acquire --lock /input/pylock.toml --source-lock /input/source.lock --pool /wheelhouse
     engine_active=0
 done
+check_offline_selection final
+(( offline_complete )) || fail 'Acquisition completed, but the locked wheel selection still fails offline.'
 printf 'Acquired the locked NMRPeak %s wheel selection in %s.\n' "$target" "$wheelhouse"
