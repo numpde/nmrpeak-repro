@@ -67,7 +67,7 @@ def verify(bundle: Path, record: dict) -> None:
         path = bundle / name
         data = path.read_bytes()
         if (len(data) != entry['size'] or hashlib.sha256(data).hexdigest() != entry['sha256']
-                or stat.S_IMODE(path.stat().st_mode) != entry['mode']):
+                or (stat.S_IMODE(path.stat().st_mode) & 0o111) != (entry['mode'] & 0o111)):
             raise ValueError(f'Acquisition bootstrap member differs from the release record: {name}')
 
 

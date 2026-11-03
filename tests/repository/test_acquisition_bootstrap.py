@@ -37,7 +37,9 @@ class AcquisitionBootstrapTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bootstrap.pinned_wheel(record)
 
-    def test_exact_inventory_is_accepted(self):
+    def test_git_checkout_write_permissions_do_not_change_the_inventory(self):
+        verify(self.bundle, self.record)
+        self.member.chmod(0o664)
         verify(self.bundle, self.record)
 
     def test_missing_extra_or_changed_member_is_rejected(self):
