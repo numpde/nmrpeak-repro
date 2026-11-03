@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import fcntl
 import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -19,6 +22,35 @@ TOOL_NAME = "wheelhouse-tool-0.5.13.pyz"
 TOOL_SHA256 = "869c07e8909d93db7eeabce6d9c3f8043f03ed208da518538a4bbe1f88331881"
 TOOL_URL = "https://github.com/numpde/nmr-provider-tools/releases/download/v0.5.13/" + TOOL_NAME
 MAX_BYTES = 16 * 1024 * 1024
+MAX_ATTEMPTS = 3
+
+
+class TransientToolDownload(Exception):
+    def __init__(self, detail: str, retry_after: float = 0) -> None:
+        super().__init__(detail)
+        self.retry_after = retry_after
+
+
+class ToolInterrupted(Exception):
+    pass
+
+
+def _retry_after(value: str) -> float:
+    if not value:
+        return 0
+    try:
+        if value.isascii() and value.isdecimal():
+            delay = int(value)
+        else:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                raise ValueError
+            delay = max(0, math.ceil((date - datetime.now(timezone.utc)).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Cannot acquire the wheelhouse tool: invalid Retry-After response.") from None
+    if delay > 30:
+        raise ValueError("Cannot acquire the wheelhouse tool: Retry-After exceeds 30 seconds.")
+    return delay
 
 
 def _lock(directory: int, mode: int) -> None:
@@ -50,18 +82,50 @@ def _present(directory: int, name: str, expected: str) -> bool:
 
 
 def _download(output: int, directory: int, interface: str) -> None:
-    command = ["curl", "--disable", "--fail", "--silent", "--show-error", "--location",
+    command = ["curl", "--disable", "--fail", "--silent", "--location",
                "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "30",
-               "--max-time", "300", "--max-filesize", str(MAX_BYTES)]
+               "--max-time", "300", "--max-filesize", str(MAX_BYTES),
+               "--write-out", "%{stderr}%{http_code}|%{http_connect}|%header{retry-after}"]
     if interface != "system":
         command.extend(("--interface", interface))
     command.extend(("--output", "-", TOOL_URL))
 
     try:
-        subprocess.run(command, stdout=output, stderr=subprocess.DEVNULL, check=True,
-                       timeout=330, pass_fds=(directory,))
-    except (OSError, subprocess.SubprocessError) as error:
-        raise ValueError("The shared wheelhouse tool download did not complete.") from error
+        result = subprocess.run(command, stdout=output, stderr=subprocess.PIPE, check=False,
+                                timeout=330, pass_fds=(directory,))
+    except subprocess.TimeoutExpired:
+        raise TransientToolDownload("the transfer timed out") from None
+    except OSError:
+        raise ValueError("Cannot start the shared wheelhouse tool downloader.") from None
+    if result.returncode == 0:
+        return
+    metadata = result.stderr
+    if len(metadata) > 128:
+        raise ValueError("Cannot acquire the wheelhouse tool: invalid response metadata.")
+    match = re.fullmatch(rb"([0-9]{3})\|([0-9]{3})\|([^\r\n]*)", metadata)
+    if match is None:
+        raise ValueError("Cannot acquire the wheelhouse tool: response status is unavailable.")
+    status, tunnel = int(match[1]), int(match[2])
+    if status == 0 and tunnel in (429, 503):
+        raise ValueError(f"Cannot acquire the wheelhouse tool: proxy tunnel HTTP {tunnel}; Retry-After is unavailable.")
+    if status == 0 and tunnel >= 300 and tunnel not in (408, 500, 502, 504):
+        raise ValueError(f"Cannot acquire the wheelhouse tool: proxy tunnel HTTP {tunnel}.")
+    status = status or tunnel
+    if (result.returncode == 22 or (result.returncode == 56 and status == tunnel)) and status in (408, 429, 500, 502, 503, 504):
+        try:
+            retry_after = _retry_after(match[3].decode("ascii")) if status in (429, 503) else 0
+        except UnicodeDecodeError:
+            raise ValueError("Cannot acquire the wheelhouse tool: invalid Retry-After response.") from None
+        raise TransientToolDownload(f"HTTP {status}", retry_after)
+    if result.returncode in (7, 18, 28, 52, 55, 56):
+        raise TransientToolDownload("the connection or transfer failed")
+    if result.returncode in (5, 6):
+        raise ValueError("Cannot acquire the wheelhouse tool: name resolution failed; curl cannot classify it as temporary.")
+    if result.returncode in (51, 60, 77):
+        raise ValueError("Cannot acquire the wheelhouse tool: TLS verification failed.")
+    if result.returncode == 22 and status:
+        raise ValueError(f"Cannot acquire the wheelhouse tool: HTTP {status}.")
+    raise ValueError(f"Cannot acquire the wheelhouse tool: downloader exited with status {result.returncode}.")
 
 
 def ensure_tool(pool: Path, interface: str | None, *, name: str = TOOL_NAME,
@@ -82,28 +146,39 @@ def ensure_tool(pool: Path, interface: str | None, *, name: str = TOOL_NAME,
         _lock(directory, fcntl.LOCK_EX)
         if _present(directory, name, expected):
             return True
-        temporary = f".wheelhouse-tool-{secrets.token_hex(16)}.part"
-        descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o600, dir_fd=directory)
-        try:
-            with os.fdopen(descriptor, "w+b") as output:
-                download(output.fileno(), directory, interface)
-                if os.fstat(output.fileno()).st_size > MAX_BYTES:
-                    raise ValueError("The shared wheelhouse tool exceeds 16 MiB.")
-                output.seek(0)
-                if hashlib.file_digest(output, "sha256").hexdigest() != expected:
-                    raise ValueError("The downloaded wheelhouse tool differs from the pinned release.")
-                os.fchmod(output.fileno(), 0o644)
-                os.fsync(output.fileno())
+        for attempt in range(MAX_ATTEMPTS):
+            temporary = f".wheelhouse-tool-{secrets.token_hex(16)}.part"
+            descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=directory)
+            transient = None
             try:
-                os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
-            except FileExistsError:
-                if not _present(directory, name, expected):
-                    raise FileNotFoundError("The competing wheelhouse tool disappeared.")
-            os.fsync(directory)
-        finally:
-            os.unlink(temporary, dir_fd=directory)
-        return True
+                with os.fdopen(descriptor, "w+b") as output:
+                    download(output.fileno(), directory, interface)
+                    if os.fstat(output.fileno()).st_size > MAX_BYTES:
+                        raise ValueError("The shared wheelhouse tool exceeds 16 MiB.")
+                    output.seek(0)
+                    if hashlib.file_digest(output, "sha256").hexdigest() != expected:
+                        raise ValueError("The downloaded wheelhouse tool differs from the pinned release.")
+                    os.fchmod(output.fileno(), 0o644)
+                    os.fsync(output.fileno())
+                try:
+                    os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+                except FileExistsError:
+                    if not _present(directory, name, expected):
+                        raise FileNotFoundError("The competing wheelhouse tool disappeared.")
+                os.fsync(directory)
+            except TransientToolDownload as error:
+                transient = error
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except OSError as error:
+                    raise OSError(f"Cannot remove incomplete wheelhouse tool file {temporary}; it was preserved.") from error
+            if transient is None:
+                return True
+            if attempt + 1 == MAX_ATTEMPTS:
+                raise ValueError(f"Cannot acquire the wheelhouse tool after {MAX_ATTEMPTS} attempts: {transient}.") from None
+            time.sleep(max(2**attempt, transient.retry_after))
     finally:
         os.close(directory)
 
@@ -122,12 +197,12 @@ def main() -> int:
     def interrupted(_signum, _frame):
         for number in signals:
             signal.signal(number, signal.SIG_IGN)
-        raise InterruptedError("The shared wheelhouse tool operation was interrupted.")
+        raise ToolInterrupted("The shared wheelhouse tool operation was interrupted.")
 
     previous = {number: signal.signal(number, interrupted) for number in signals}
     try:
         return 0 if ensure_tool(args.pool, args.interface) else 10
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, ToolInterrupted) as error:
         parser.exit(1, f"{error}\n")
     finally:
         for number, handler in previous.items():

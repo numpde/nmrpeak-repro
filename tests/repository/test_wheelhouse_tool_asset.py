@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from repository_checks.wheelhouse_tool_asset import _download, ensure_tool
+from repository_checks.wheelhouse_tool_asset import TransientToolDownload, _download, ensure_tool
 
 
 class WheelhouseToolAssetTests(unittest.TestCase):
@@ -88,11 +88,74 @@ class WheelhouseToolAssetTests(unittest.TestCase):
 
     def test_curl_receives_only_the_selected_route(self) -> None:
         with patch("repository_checks.wheelhouse_tool_asset.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stderr=b"200|000|")
             _download(3, 4, "wlan0")
         command = run.call_args.args[0]
         self.assertEqual(command[command.index("--interface") + 1], "wlan0")
         self.assertIn("--proto-redir", command)
         self.assertEqual(run.call_args.kwargs["pass_fds"], (4,))
+
+    def test_curl_classifies_retryable_and_terminal_failures_without_raw_text(self) -> None:
+        cases = (
+            (22, b"429|000|5", TransientToolDownload, "HTTP 429", 5),
+            (22, b"503|000|", TransientToolDownload, "HTTP 503", 0),
+            (56, b"000|502|", TransientToolDownload, "HTTP 502", 0),
+            (56, b"000|503|", ValueError, "Retry-After is unavailable", None),
+            (56, b"000|403|", ValueError, "proxy tunnel HTTP 403", None),
+            (56, b"000|407|", ValueError, "proxy tunnel HTTP 407", None),
+            (28, b"000|000|", TransientToolDownload, "transfer failed", 0),
+            (22, b"404|000|", ValueError, "HTTP 404", None),
+            (6, b"000|000|", ValueError, "name resolution failed", None),
+            (60, b"000|000|", ValueError, "TLS verification failed", None),
+            (23, b"200|000|", ValueError, "status 23", None),
+            (22, b"429|000|31", ValueError, "exceeds 30 seconds", None),
+            (22, b"429|000|private-marker", ValueError, "invalid Retry-After", None),
+        )
+        for code, metadata, error_type, message, delay in cases:
+            with self.subTest(code=code, metadata=metadata), \
+                 patch("repository_checks.wheelhouse_tool_asset.subprocess.run",
+                       return_value=subprocess.CompletedProcess([], code, stderr=metadata)):
+                with self.assertRaisesRegex(error_type, message) as captured:
+                    _download(3, 4, "system")
+                self.assertNotIn('private-marker', str(captured.exception))
+                if delay is not None:
+                    self.assertEqual(captured.exception.retry_after, delay)
+
+    def test_transient_attempts_use_fresh_partials_and_bounded_backoff(self) -> None:
+        partials = []
+        def fetch(output, _directory, _interface):
+            current, = self.pool.glob('*.part')
+            self.assertEqual(os.fstat(output).st_size, 0)
+            partials.append(current.name)
+            if len(partials) < 3:
+                os.write(output, b'incomplete')
+                raise TransientToolDownload('HTTP 503', 5 if len(partials) == 1 else 0)
+            os.write(output, self.content)
+        with patch('repository_checks.wheelhouse_tool_asset.time.sleep') as sleep:
+            self.assertTrue(self.ensure('system', fetch))
+        self.assertEqual(len(set(partials)), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 2])
+        self.assertEqual((self.pool / self.name).read_bytes(), self.content)
+        self.assertEqual(list(self.pool.glob('*.part')), [])
+
+    def test_exhaustion_and_failed_cleanup_never_start_an_extra_attempt(self) -> None:
+        attempts = []
+        def fetch(output, _directory, _interface):
+            attempts.append(1)
+            os.write(output, b'incomplete')
+            raise TransientToolDownload('transfer failed')
+        with patch('repository_checks.wheelhouse_tool_asset.time.sleep') as sleep:
+            with self.assertRaisesRegex(ValueError, 'after 3 attempts'):
+                self.ensure('system', fetch)
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+        self.assertEqual(list(self.pool.glob('*.part')), [])
+        attempts.clear()
+        with patch('repository_checks.wheelhouse_tool_asset.os.unlink', side_effect=PermissionError):
+            with self.assertRaisesRegex(OSError, 'incomplete wheelhouse tool file'):
+                self.ensure('system', fetch)
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(len(list(self.pool.glob('*.part'))), 1)
 
     def test_termination_reaps_downloader_and_removes_its_partial(self) -> None:
         helper = self.pool / "bin"
