@@ -24,7 +24,7 @@ from nmrpeak_provider.interpreter import InterpreterTransportError
 from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
 from nmrpeak_provider.local_input import LocalInputFailureReason, LocalInputSnapshotError
 from nmrpeak_provider.openai_chat_interpreter import (
-    OpenAIChatEndpointSpec, bind_openai_chat_endpoints,
+    OpenAIChatEndpointSpec, OpenAIChatEndpoints, bind_openai_chat_endpoints,
     load_openai_chat_endpoint_specs,
 )
 
@@ -66,6 +66,123 @@ async def endpoints(script, *, request_seconds=0.2, turn_seconds=1.6, before_sen
         await server.close()
 
 class OpenAIChatInterpreterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_retirement_task_can_be_rechecked_after_observation(self):
+        class Owner:
+            _closed = False
+            calls = 0
+
+            async def retire(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise asyncio.CancelledError()
+
+        endpoint = Owner()
+        owner = OpenAIChatEndpoints((endpoint,), ())
+        with self.assertRaises(asyncio.CancelledError):
+            await owner.retire()
+        await owner.retire()
+        self.assertEqual(endpoint.calls, 2)
+
+    async def test_old_waiter_cannot_acknowledge_new_retirement_failure(self):
+        old_gate, old_delayed, next_gate = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class Owner:
+            _closed = False
+            calls = 0
+
+            async def retire(self):
+                self.calls += 1
+                if self.calls == 2:
+                    await next_gate.wait()
+                raise OSError(f"cleanup {self.calls}")
+
+        original_shield = asyncio.shield
+
+        async def delayed_shield(task):
+            try:
+                return await original_shield(task)
+            except OSError:
+                if asyncio.current_task().get_name() == "old-delayed":
+                    old_delayed.set()
+                    await old_gate.wait()
+                raise
+
+        endpoint = Owner()
+        owner = OpenAIChatEndpoints((endpoint,), ())
+        with patch("nmrpeak_provider.openai_chat_interpreter.asyncio.shield", delayed_shield):
+            first = asyncio.create_task(owner.retire())
+            second = asyncio.create_task(owner.retire(), name="old-delayed")
+            with self.assertRaisesRegex(OSError, "cleanup 1"):
+                await first
+            await old_delayed.wait()
+            retry = asyncio.create_task(owner.retire())
+            await asyncio.sleep(0)
+            retry.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await retry
+            old_gate.set()
+            with self.assertRaisesRegex(OSError, "cleanup 1"):
+                await second
+            next_gate.set()
+            with self.assertRaisesRegex(OSError, "cleanup 2"):
+                await owner.retire()
+        self.assertEqual(endpoint.calls, 2)
+
+    async def test_retirement_rechecks_previously_unconfirmed_owner(self):
+        class Owner:
+            _closed = False
+            calls = 0
+
+            async def retire(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError("cleanup unconfirmed")
+
+        endpoint = Owner()
+        owner = OpenAIChatEndpoints((endpoint,), ())
+        with self.assertRaisesRegex(OSError, "cleanup unconfirmed"):
+            await owner.retire()
+        await owner.retire()
+        self.assertEqual(endpoint.calls, 2)
+
+    async def test_retirement_starts_all_owners_and_retains_late_failure_after_cancellation(self):
+        gate, started = asyncio.Event(), asyncio.Event()
+
+        class Owner:
+            _closed = False
+
+            def __init__(self, blocked=False):
+                self.blocked = blocked
+
+            async def retire(self):
+                if self.blocked:
+                    await gate.wait()
+                    raise OSError("late cleanup failure")
+                started.set()
+
+        first, second = Owner(True), Owner()
+        owner = OpenAIChatEndpoints((first, second), ())
+        waiting = asyncio.create_task(owner.retire())
+        await asyncio.wait_for(started.wait(), 1)
+        self.assertTrue(first._closed and second._closed)
+        waiting.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await waiting
+        gate.set()
+        with self.assertRaisesRegex(OSError, "late cleanup failure"):
+            await owner.retire()
+
+    async def test_retiring_one_endpoint_keeps_other_endpoint_available(self):
+        configs = [("10-first.toml", "first", "secret", "model", None),
+                   ("20-second.toml", "second", "secret", "model", None)]
+        async with endpoints([reply(_completion("submit_interpretation", {"value": 7}))], configs=configs) as (owner, server):
+            await owner._owners[0].retire()
+            with self.assertRaises(RuntimeError):
+                await owner.endpoints[0].call([])
+            result = await owner.endpoints[1].call([])
+            self.assertEqual(result.invocation.arguments, {"value": 7})
+            self.assertEqual(len(server.requests), 1)
+
     async def test_config_loading_is_ordered_resource_free_and_redacted(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

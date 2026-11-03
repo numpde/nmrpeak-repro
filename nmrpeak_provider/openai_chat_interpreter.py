@@ -89,17 +89,16 @@ class _EndpointUnavailable(RuntimeError):
     """A settled SDK network or request-deadline failure permits policy retry."""
 
 
-class OpenAIChatEndpoints:
-    """Retain the actual HTTP owner across ordered endpoint calls and retirement."""
+class _EndpointOwner:
+    """Retain one endpoint's HTTP owner through its retirement."""
 
-    __slots__ = ("_transport", "_closed", "_trust", "_before_send", "endpoints")
+    __slots__ = ("_transport", "_closed", "_trust", "_before_send")
 
     def __init__(self, *, before_send):
         self._transport = None
         self._closed = False
         self._before_send = before_send
         self._trust = httpx.create_ssl_context(trust_env=False)
-        self.endpoints = ()
 
     async def retire(self):
         """Close admission before observing the same original transport's cleanup."""
@@ -168,6 +167,48 @@ class OpenAIChatEndpoints:
         return response.status, response.body, httpx.Headers(response.headers).get("x-request-id"), None
 
 
+class OpenAIChatEndpoints:
+    """Own all endpoint scopes until the interpretation session retires."""
+
+    def __init__(self, owners, endpoints):
+        self._owners = owners
+        self.endpoints = endpoints
+        self._retirement = None
+        self._retirement_observed = False
+
+    async def retire(self):
+        if (self._retirement is None or
+                self._retirement_observed and self._retirement.done()
+                and (self._retirement.cancelled() or self._retirement.exception() is not None)):
+            for owner in self._owners:
+                owner._closed = True
+            self._retirement = asyncio.create_task(self._retire_all())
+            self._retirement_observed = False
+        retirement = self._retirement
+        try:
+            await asyncio.shield(retirement)
+        except asyncio.CancelledError:
+            if (self._retirement is retirement and retirement.cancelled()
+                    and not asyncio.current_task().cancelling()):
+                self._retirement_observed = True
+            raise
+        except BaseException:
+            if self._retirement is retirement:
+                self._retirement_observed = True
+            raise
+        if self._retirement is retirement:
+            self._retirement_observed = True
+
+    async def _retire_all(self):
+        tasks = [asyncio.create_task(owner.retire()) for owner in self._owners]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Interpreter endpoint retirement failed", failures)
+
+
 class _OpenAIChatCall:
     __slots__ = (
         "_http_owner",
@@ -183,7 +224,7 @@ class _OpenAIChatCall:
         spec: OpenAIChatEndpointSpec,
         policy: OpenAIChatCallPolicy,
         *,
-        http_owner: OpenAIChatEndpoints,
+        http_owner: _EndpointOwner,
         tools: tuple[dict[str, object], dict[str, object]],
         secrets: tuple[str, ...],
         report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None,
@@ -318,12 +359,12 @@ def bind_openai_chat_endpoints(
         submit_interpretation_value_schema=submit_interpretation_value_schema,
         report_input_problem_description=report_input_problem_description,
     )
-    owner = OpenAIChatEndpoints(before_send=before_send)
-    owner.endpoints = tuple(
+    owners = tuple(_EndpointOwner(before_send=before_send) for _ in specs)
+    endpoints = tuple(
         _bind_endpoint(spec, policy, owner, tools, tuple(item.api_key for item in specs), report_endpoint_failure)
-        for spec in specs
+        for spec, owner in zip(specs, owners, strict=True)
     )
-    return owner
+    return OpenAIChatEndpoints(owners, endpoints)
 
 
 def _snapshot_endpoint_configs(directory: Path) -> tuple[bytes, ...]:
@@ -342,7 +383,7 @@ def _snapshot_endpoint_configs(directory: Path) -> tuple[bytes, ...]:
 def _bind_endpoint(
     spec: OpenAIChatEndpointSpec,
     policy: OpenAIChatCallPolicy,
-    http_owner: OpenAIChatEndpoints,
+    http_owner: _EndpointOwner,
     tools: tuple[dict[str, object], dict[str, object]],
     secrets: tuple[str, ...],
     report_endpoint_failure: Callable[[InterpreterEndpointFailure], None] | None,

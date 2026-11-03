@@ -152,7 +152,8 @@ class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
                     yield run, expected, requests, failures
                 finally:
                     await endpoints.retire()
-                    self.assertTrue(endpoints._transport.retirement_confirmed)
+                    self.assertTrue(all(owner._transport is None or owner._transport.retirement_confirmed
+                                        for owner in endpoints._owners))
                     self.assertTrue(requests)
                     self.assertEqual(requests[0][1]["messages"][2]["content"], source)
 
