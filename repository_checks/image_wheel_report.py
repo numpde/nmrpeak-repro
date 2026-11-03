@@ -21,6 +21,7 @@ LOCKS = {
     "provider": ("requirements.lock", "dependencies/provider-core-api.lock", "dependencies/provider-core-source.txt"),
     "native": ("requirements-native.lock", "dependencies/provider-core-native.lock", "dependencies/provider-core-source.txt"),
     "scientific": ("families/nmrpeak/targets/cpu-x86_64/requirements.lock",),
+    "benchmark": ("containers/benchmark/requirements.lock",),
 }
 
 
@@ -39,11 +40,12 @@ def report(source: Path, pool: Path, expected: list[str], profile: str) -> bytes
                                          pool.as_uri().encode() + b"/", content)
                 if count != 1:
                     raise ValueError("Provider source lock must contain exactly one released SDK URL.")
-            elif profile == "scientific":
-                content, count = re.subn(rb"https://download\.pytorch\.org/whl/cpu/",
+            elif profile in ("scientific", "benchmark"):
+                channel = b"cpu" if profile == "scientific" else b"cu128"
+                content, count = re.subn(rb"https://download\.pytorch\.org/whl/" + channel + rb"/",
                                          pool.as_uri().encode() + b"/", content)
                 if count != 1:
-                    raise ValueError("Scientific lock must contain exactly one CPU PyTorch URL.")
+                    raise ValueError(f"{profile.capitalize()} lock must contain exactly one {channel.decode()} PyTorch URL.")
             target = snapshot / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)

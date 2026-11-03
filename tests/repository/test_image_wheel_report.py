@@ -119,5 +119,23 @@ class ImageWheelReportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertIn("torch-2.3.0%2Bcpu", json.loads(result.stdout)["install"][0]["download_info"]["url"])
 
+    def test_benchmark_direct_url_selects_encoded_cuda_wheel(self):
+        wheel = self.pool / "torch-2.3.0+cu128-py3-none-any.whl"
+        with ZipFile(wheel, "w") as archive:
+            archive.writestr("torch-2.3.0+cu128.dist-info/METADATA", "Metadata-Version: 2.1\nName: torch\nVersion: 2.3.0+cu128\n")
+            archive.writestr("torch-2.3.0+cu128.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            archive.writestr("torch-2.3.0+cu128.dist-info/RECORD", "")
+        lock = self.source / PROFILES["benchmark"][0]
+        lock.parent.mkdir(parents=True)
+        digest = sha256(wheel.read_bytes()).hexdigest()
+        lock.write_text("torch @ https://download.pytorch.org/whl/cu128/torch-2.3.0%2Bcu128-py3-none-any.whl"
+                        f"#sha256={digest} --hash=sha256:{digest}\n")
+        lock_digest = sha256(lock.read_bytes()).hexdigest()
+        result = self.run_report("benchmark", [lock_digest])
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn("torch-2.3.0%2Bcu128", json.loads(result.stdout)["install"][0]["download_info"]["url"])
+        wheel.write_bytes(b"corrupt")
+        self.assertNotEqual(self.run_report("benchmark", [lock_digest]).returncode, 0)
+
 if __name__ == "__main__":
     unittest.main()

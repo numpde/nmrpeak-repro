@@ -3,7 +3,7 @@
 set -euo pipefail
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
-case "${1:-}" in cpu-x86_64|provider) ;; *) fail 'wheelhouse target must be cpu-x86_64 or provider' ;; esac
+case "${1:-}" in cpu-x86_64|benchmark-cu128|provider) ;; *) fail 'wheelhouse target must be cpu-x86_64, benchmark-cu128 or provider' ;; esac
 readonly target="$1"
 readonly repo_root="$(realpath -e -- "$(dirname -- "${BASH_SOURCE[0]}")/..")"
 readonly python="${PYTHON:-python3}"
@@ -61,6 +61,9 @@ if directives != ["-c dependencies/provider-core-source.txt", "-r dependencies/p
 pathlib.Path(sys.argv[2]).write_text("".join(line for line in lines if line.strip() not in directives), encoding="utf-8")
 PY
     profiles=(api consumer)
+elif [[ "$target" == benchmark-cu128 ]]; then
+    git -C "$repo_root" show "$revision:containers/benchmark/requirements.lock" >"$scratch/benchmark.lock"
+    profiles=(benchmark)
 else
     git -C "$repo_root" show "$revision:families/nmrpeak/targets/cpu-x86_64/requirements.lock" >"$scratch/requirements.lock"
     git -C "$repo_root" show "$revision:dependencies/provider-core-native.lock" >"$scratch/native.lock"
@@ -112,6 +115,9 @@ for profile in "${profiles[@]}"; do
     elif [[ "$profile" == consumer ]]; then
         lock="$scratch/consumer.lock"
         locate_arguments=(--index-url https://pypi.org/simple)
+    elif [[ "$profile" == benchmark ]]; then
+        lock="$scratch/benchmark.lock"
+        locate_arguments=()
     else
         lock="$scratch/requirements.lock"
         locate_arguments=()

@@ -164,8 +164,8 @@ help:
 		'      Replace the committed lock with the verified staged candidate.' \
 		'  make runner/image/build RUNNER=<runner> TARGET=<target> WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
 		'      Build one runner image from committed inputs; select an interface for system dependencies.' \
-		'  make runner/wheelhouse/acquire TARGET=cpu-x86_64 WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
-		'      Acquire the locked native and scientific wheels into the shared pool.' \
+		'  make runner/wheelhouse/acquire TARGET=<cpu-x86_64|benchmark-cu128> WHEELHOUSE=<directory> [NETWORK_INTERFACE=<name|system>] DOCKER_CONTEXT=<name>' \
+		'      Acquire the selected locked runner or benchmark wheels into the shared pool.' \
 		'' \
 		'Operate a named deployment:' \
 		'  make provider/deployment/init DEPLOYMENT=<name>' \
