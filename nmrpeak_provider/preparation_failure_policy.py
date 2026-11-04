@@ -22,6 +22,7 @@ from .failure_contract import (
 class FailureKind(StrEnum):
     DIRECT_SOURCE_ISSUE = "direct_source_issue"
     DIRECT_RUNNER_REJECTED = "direct_runner_rejected"
+    INTERPRETER_UNAVAILABLE = "interpreter_unavailable"
     MODEL_REPORTED_PROBLEM = "model_reported_problem"
     CANDIDATE_ISSUE = "candidate_issue"
     CANDIDATE_RUNNER_REJECTED = "candidate_runner_rejected"
@@ -61,7 +62,6 @@ def _parse_rule(kind: FailureKind, value: object) -> PreparationFailureRule:
     if type(value) is not dict or type(value.get("submit_failure_to_api")) is not bool:
         raise ValueError(f"preparation failure policy [{kind.value}] is invalid")
     if value["submit_failure_to_api"] is False:
-        # Interpreter unavailability already has its own retryable outcome.
         # Every classified kind in this table is terminal by construction.
         raise ValueError(f"determinate failure [{kind.value}] must publish")
 

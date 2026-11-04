@@ -1,6 +1,7 @@
 """Qualify NMR science through the installed shared per-Attempt session port."""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -78,7 +79,7 @@ def phase_reporter(*args, **kwargs):
 class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_revoked_permission_prevents_generation_submission(self):
         configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
-        owner = NmrpeakAnalysisSession(configured, runner, interpreter(), retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, interpreter())
         acknowledged, instructions = admission(configured, canonical_json_bytes(HF_VALUE))
         prepared = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
         reporter = phase_reporter()
@@ -95,7 +96,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_revoked_permission_prevents_validation_submission(self):
         configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
-        owner = NmrpeakAnalysisSession(configured, runner, interpreter(), retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, interpreter())
         acknowledged, instructions = admission(configured, canonical_json_bytes(HF_VALUE))
         reporter = phase_reporter()
         failure = RuntimeError("Attempt permission withdrawn")
@@ -120,7 +121,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
             return await arguments["validate_input"](model_input)
 
         translator.validate_freeform_input_async.side_effect = translate
-        owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, translator)
         acknowledged, instructions = admission(configured, b"Interpret these peaks.")
         try:
             with self.assertRaises(RuntimeError) as caught:
@@ -185,7 +186,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
         from threading import Event
         from unittest.mock import patch
         configured, runner, _, _ = await self.enterAsyncContext(scientific_lane("chf"))
-        owner = NmrpeakAnalysisSession(configured, runner, interpreter(), retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, interpreter())
         acknowledged, instructions = admission(configured, canonical_json_bytes(VALUE))
         entered, release = Event(), Event()
         failure = RuntimeError("Independent validation adapter failure")
@@ -270,7 +271,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
 
                 translator.validate_freeform_input_async.side_effect = translate
                 raw = b"Interpret these peaks." if prose else canonical_json_bytes(VALUE)
-                owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.01)
+                owner = NmrpeakAnalysisSession(configured, runner, translator)
                 acknowledged, instructions = admission(configured, raw)
                 outcome = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
                 self.assertIsInstance(outcome, AnalysisFailure)
@@ -278,65 +279,31 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(runner.retired)
                 await runner.retire()
 
-    async def test_interpreter_deadline_before_validation_remains_retryable(self):
-        configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
-        translator = interpreter()
-        translator.validate_freeform_input_async.side_effect = [
-            InterpreterUnavailable(InterpreterUnavailableReason.DEADLINE_EXCEEDED),
-            ReportedInputProblem(ModelGeneratedText("The source omits required data."), ("fixture",)),
-        ]
-        owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.001)
-        acknowledged, instructions = admission(configured, b"Interpret these peaks.")
-        conditions = phase_reporter()
-        try:
-            outcome = await owner.prepare(acknowledged, instructions, report_condition=conditions)
-            self.assertIsInstance(outcome, AnalysisFailure)
-            self.assertEqual([call.args[0] for call in conditions.await_args_list],
-                             ["interpreter_deadline_exceeded", None])
-            self.assertEqual(channel.received_frames, [])
-        finally:
-            await owner.retire()
-
-    async def test_recovered_interpreter_clears_condition_before_classified_failure(self):
-        rejected = runner_rejection_diagnostic(RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512)
-        failures = (
-            ReportedInputProblem(ModelGeneratedText("The source omits required data."), ("fixture",)),
-            CandidateConstructionExhausted(InputIssue(InputRejectionReason.INVALID_STRUCTURE), ("fixture",)),
-            InterpretationRejected(rejected, 512, ("fixture",)),
-        )
-        for failure in failures:
-            with self.subTest(failure=type(failure).__name__):
-                configured, runner, _, _ = await self.enterAsyncContext(scientific_lane("chf"))
+    async def test_exhausted_interpreter_finishes_once_without_restarting_the_ladder(self):
+        for reason in (InterpreterUnavailableReason.DEADLINE_EXCEEDED,
+                       InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED):
+            with self.subTest(reason=reason):
+                configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
                 translator = interpreter()
-                translator.validate_freeform_input_async.side_effect = [
-                    InterpreterUnavailable(InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED), failure,
-                ]
-                owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.001)
+                translator.diagnostic_secrets = ("private-credential",)
+                unavailable = InterpreterUnavailable(reason)
+                unavailable.add_note("safe context, private-credential")
+                translator.validate_freeform_input_async.side_effect = unavailable
+                owner = NmrpeakAnalysisSession(configured, runner, translator)
                 acknowledged, instructions = admission(configured, b"Interpret these peaks.")
                 conditions = phase_reporter()
                 outcome = await owner.prepare(acknowledged, instructions, report_condition=conditions)
                 self.assertIsInstance(outcome, AnalysisFailure)
-                self.assertEqual([call.args[0] for call in conditions.await_args_list],
-                                 ["interpreter_endpoints_exhausted", None])
+                self.assertEqual(outcome.code, "interpretation_failed")
+                self.assertIn("could not be completed", outcome.message)
+                self.assertNotIn("private-credential", outcome.message)
+                evidence = json.loads(outcome.evidence.content)
+                self.assertIn("safe context", evidence["cause"])
+                self.assertNotIn("private-credential", evidence["cause"])
+                self.assertEqual(translator.validate_freeform_input_async.await_count, 1)
+                self.assertEqual(conditions.await_count, 0)
+                self.assertEqual(channel.received_frames, [])
                 await owner.retire()
-                await runner.retire()
-
-    async def test_failed_condition_clear_prevents_dependent_failure_return(self):
-        configured, runner, _, _ = await self.enterAsyncContext(scientific_lane("chf"))
-        translator = interpreter()
-        translator.validate_freeform_input_async.side_effect = [
-            InterpreterUnavailable(InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED),
-            ReportedInputProblem(ModelGeneratedText("Missing source data."), ("fixture",)),
-        ]
-        owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.001)
-        acknowledged, instructions = admission(configured, b"Interpret these peaks.")
-        failure = OSError("Condition receipt unavailable")
-        with self.assertRaises(OSError) as caught:
-            await owner.prepare(acknowledged, instructions,
-                                report_condition=phase_reporter(side_effect=[None, failure]))
-        self.assertIs(caught.exception, failure)
-        await owner.retire()
-        await runner.retire()
 
     async def test_both_lanes_return_exact_results_and_release_healthy_warm_owner(self):
         for name, document in (("hf", HF_VALUE), ("chf", VALUE)):
@@ -344,7 +311,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
                 configured, runner, _, _ = await self.enterAsyncContext(scientific_lane(name))
                 translator = interpreter()
                 for _ in range(2):
-                    owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.01)
+                    owner = NmrpeakAnalysisSession(configured, runner, translator)
                     acknowledged, instructions = admission(configured, canonical_json_bytes(document))
                     handle = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
                     self.assertIsInstance(handle, PreparedAnalysis)
@@ -359,7 +326,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_malformed_structured_source_cannot_fall_back_to_interpretation(self):
         configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("chf"))
         translator = interpreter()
-        owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, translator)
         acknowledged, instructions = admission(configured, b'{"model_input":')
         outcome = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
         self.assertIsInstance(outcome, AnalysisFailure)
@@ -377,7 +344,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
             return await arguments["validate_input"](model_input)
 
         translator.validate_freeform_input_async.side_effect = translate
-        owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, translator)
         acknowledged, instructions = admission(configured, b"Formula C2H6O. Interpret these NMR peaks.")
         handle = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
         self.assertIsInstance(handle, PreparedAnalysis)
@@ -387,7 +354,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prepared_handle_is_consumed_once_and_foreign_handle_is_refused(self):
         configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("chf"))
-        owner = NmrpeakAnalysisSession(configured, runner, interpreter(), retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, interpreter())
         acknowledged, instructions = admission(configured, canonical_json_bytes(VALUE))
         handle = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
         foreign = PreparedAnalysis(handle.identity)
@@ -403,7 +370,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancellation_joins_the_original_blocking_validation(self):
         configured, runner, _, _ = await self.enterAsyncContext(scientific_lane("chf"))
-        owner = NmrpeakAnalysisSession(configured, runner, interpreter(), retry_seconds=0.01)
+        owner = NmrpeakAnalysisSession(configured, runner, interpreter())
         acknowledged, instructions = admission(configured, canonical_json_bytes(VALUE))
         from threading import Event
         from unittest.mock import patch
@@ -442,7 +409,7 @@ class InterpretationRetirementTests(unittest.IsolatedAsyncioTestCase):
 
         translator.validate_freeform_input_async.side_effect = interpreting
         translator.retire.side_effect = failure
-        owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=.01)
+        owner = NmrpeakAnalysisSession(configured, runner, translator)
         acknowledged, instructions = admission(configured, b'Proton peaks described in prose.')
         task = asyncio.create_task(owner.prepare(acknowledged, instructions, report_condition=phase_reporter()))
         try:
@@ -478,7 +445,7 @@ class InterpretationRetirementTests(unittest.IsolatedAsyncioTestCase):
         translator.retire.side_effect = http
         runner = SimpleNamespace(result_facts=configured.result_facts, quiescent=False,
                                  retire=AsyncMock(side_effect=native))
-        owner = NmrpeakAnalysisSession(configured, runner, translator, retry_seconds=.01)
+        owner = NmrpeakAnalysisSession(configured, runner, translator)
         with self.assertRaises(BaseExceptionGroup) as caught:
             await owner.retire()
         self.assertEqual(caught.exception.exceptions, (http, native))

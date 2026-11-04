@@ -8,6 +8,11 @@ submit_failure_to_api = true
 failure_code = "input_rejected"
 forward_failure_message = true
 
+[failures.interpreter_unavailable]
+submit_failure_to_api = true
+failure_code = "interpretation_failed"
+failure_message = "Interpretation could not be completed. Generation did not start."
+
 [failures.model_reported_problem]
 submit_failure_to_api = true
 failure_code = "interpretation_failed"

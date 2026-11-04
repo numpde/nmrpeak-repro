@@ -1,6 +1,5 @@
 """Supply NMR scientific preparation and results to the shared Attempt owner."""
 
-import asyncio
 from functools import partial
 from hashlib import sha256
 import json
@@ -32,11 +31,10 @@ from .text_provenance import ProviderDiagnosticText
 class NmrpeakAnalysisSession:
     """Own one Attempt's capability while its lane retains the loaded worker."""
 
-    def __init__(self, generation, runner, interpreter, *, retry_seconds):
+    def __init__(self, generation, runner, interpreter):
         if runner.result_facts != generation.result_facts:
             raise ValueError("Cannot bind analysis: runner and generation facts differ")
         self.generation, self.runner, self.interpreter = generation, runner, interpreter
-        self._retry_seconds = retry_seconds
         self._acknowledged = self._prepared = self._request = None
         self._phase = "new"
         self._closed = False
@@ -78,54 +76,38 @@ class NmrpeakAnalysisSession:
         return self._prepared
 
     async def _prepare_prose(self, source, report_condition):
-        condition = False
-        while True:
-            try:
-                validated = await self._interpretation.validate_freeform_input_async(
-                    source=source, lane=self.generation.lane, validate_input=partial(self._validate_input, report_condition=report_condition),
-                    execution_attempt_ref=self._acknowledged.admission.execution_attempt_ref,
-                )
-            except InterpreterUnavailable as unavailable:
-                if not self.runner.quiescent:
-                    raise AnalysisOutcomeUnresolved(
-                        "Cannot confirm NMR validation after the interpreter became unavailable"
-                    ) from unavailable
-                codes = {
-                    InterpreterUnavailableReason.PROMPT_UNAVAILABLE: "interpreter_prompt_unavailable",
-                    InterpreterUnavailableReason.DEADLINE_EXCEEDED: "interpreter_deadline_exceeded",
-                    InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED: "interpreter_endpoints_exhausted",
-                }
-                await report_condition(codes[unavailable.reason])
-                condition = True
-                await asyncio.sleep(self._retry_seconds)
-                continue
-            except ReportedInputProblem as problem:
-                if condition:
-                    await report_condition(None)
-                return self._failure(FailureKind.MODEL_REPORTED_PROBLEM, diagnostic_text(
-                    "The interpreter reported (not independently verified): "
-                    + diagnostic_text(problem.message, limit=900) + ". Generation did not start.", limit=1024,
-                ), reason="model_report", route=list(problem.attempted_configuration_ids))
-            except CandidateConstructionExhausted as exhausted:
-                if condition:
-                    await report_condition(None)
-                return self._failure(FailureKind.CANDIDATE_ISSUE, render_candidate_failure(exhausted.issue),
-                                     reason=exhausted.issue.reason.value, pointer=exhausted.issue.pointer,
-                                     route=list(exhausted.attempted_configuration_ids))
-            except InterpretationRejected as rejection:
-                if condition:
-                    await report_condition(None)
-                return self._failure(FailureKind.CANDIDATE_RUNNER_REJECTED,
-                                     render_candidate_runner_failure(rejection.token_count),
-                                     reason="runner_candidate_rejected",
-                                     route=list(rejection.attempted_configuration_ids))
-            except InputRejected:
-                if condition:
-                    await report_condition(None)
-                raise
-            if condition:
-                await report_condition(None)
-            return validated
+        try:
+            return await self._interpretation.validate_freeform_input_async(
+                source=source, lane=self.generation.lane,
+                validate_input=partial(self._validate_input, report_condition=report_condition),
+                execution_attempt_ref=self._acknowledged.admission.execution_attempt_ref,
+            )
+        except InterpreterUnavailable as unavailable:
+            if not self.runner.quiescent:
+                raise AnalysisOutcomeUnresolved(
+                    "Cannot confirm NMR validation after the interpreter became unavailable"
+                ) from unavailable
+            return self._failure(
+                FailureKind.INTERPRETER_UNAVAILABLE,
+                "Interpretation could not be completed. Generation did not start.",
+                reason=unavailable.reason.value,
+                route=list(unavailable.attempted_configuration_ids),
+                cause=exception_diagnostic(unavailable, secrets=self.interpreter.diagnostic_secrets),
+            )
+        except ReportedInputProblem as problem:
+            return self._failure(FailureKind.MODEL_REPORTED_PROBLEM, diagnostic_text(
+                "The interpreter reported (not independently verified): "
+                + diagnostic_text(problem.message, limit=900) + ". Generation did not start.", limit=1024,
+            ), reason="model_report", route=list(problem.attempted_configuration_ids))
+        except CandidateConstructionExhausted as exhausted:
+            return self._failure(FailureKind.CANDIDATE_ISSUE, render_candidate_failure(exhausted.issue),
+                                 reason=exhausted.issue.reason.value, pointer=exhausted.issue.pointer,
+                                 route=list(exhausted.attempted_configuration_ids))
+        except InterpretationRejected as rejection:
+            return self._failure(FailureKind.CANDIDATE_RUNNER_REJECTED,
+                                 render_candidate_runner_failure(rejection.token_count),
+                                 reason="runner_candidate_rejected",
+                                 route=list(rejection.attempted_configuration_ids))
 
     async def _validate_input(self, model_input, *, report_condition):
         digest = "sha256:" + sha256(canonical_json_bytes(model_input.wire_document())).hexdigest()

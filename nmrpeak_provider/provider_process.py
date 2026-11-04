@@ -129,8 +129,7 @@ class ProviderProcess:
                 await self._pause(max(self.policy.feed_interval_seconds, self._discovery_not_before - monotonic()))
                 continue
             pending, instructions = selected
-            session = NmrpeakAnalysisSession(lane.generation, lane.runner, self.interpreter,
-                                             retry_seconds=self.policy.feed_interval_seconds)
+            session = NmrpeakAnalysisSession(lane.generation, lane.runner, self.interpreter)
             lane.controller = self._controller(lane, session, pending, instructions)
             try:
                 result = await lane.controller.run(pending)
