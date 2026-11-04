@@ -23,3 +23,15 @@ pacing. Server Retry-After may consume the remainder instead. This is a chosen
 example policy, not a universal SDK minimum; increasing the gap also increases
 possible cancellation-detection latency. Choose deployed budgets against the
 actual admitted transport settings.
+
+Delivery acknowledgement releases only shared report backpressure. It does
+not prove that the original controller, scientific worker, or interpreter
+has retired, or that the API has applied the report. The controller and its
+claim remain owned until their own settlement rules are satisfied.
+
+Continuing a failed lane after acknowledgement remains unresolved when its
+ControllerFailed also retains an independent or cleanup failure. A later
+cleanup observation must distinguish a historical diagnostic from an owner
+whose retirement is still unconfirmed. An acknowledgement alone cannot make
+that decision; preserve the failure and original owners until a concrete
+classification and recovery witness establish when continuation is safe.

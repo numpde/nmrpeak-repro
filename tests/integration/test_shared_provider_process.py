@@ -198,13 +198,38 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
             try:
                 async with self._interpreter_executor_fixture(
                         script=[reply(completion)], runner=runner) as (
-                            _, controller, pending, _, server, queue, accepted):
+                            service, controller, pending, _, server, queue, accepted):
+                    submit = controller.delivery.submit
+                    submissions = 0
+                    handoff_acked = asyncio.Event()
+                    other_lane = service.lanes[1]
+                    service.api._transport.api.inputs['job:other'] = (
+                        other_lane.generation.generation.analysis_kind_ref, canonical_json_bytes(VALUE))
+
+                    async def pressured_submit(outcome):
+                        nonlocal submissions
+                        submissions += 1
+                        if submissions == 1:
+                            raise DeliveryFull('Fixture report capacity is temporarily full')
+                        acknowledgement = await submit(outcome)
+                        handoff_acked.set()
+                        return acknowledgement
+
                     with patch.object(Interpreter, "retire", held_retire), \
-                         patch.object(NmrpeakAnalysisSession, "_call_science", watched_science):
+                         patch.object(NmrpeakAnalysisSession, "_call_science", watched_science), \
+                         patch.object(controller.delivery, "submit", pressured_submit):
                         original = asyncio.create_task(controller.run(pending))
                         try:
                             await asyncio.wait_for(cleanup_entered.wait(), 3)
                             await asyncio.wait_for(accepted.wait(), 3)
+                            await asyncio.wait_for(handoff_acked.wait(), 3)
+                            self.assertGreaterEqual(submissions, 2)
+                            self.assertTrue(service._admission_paused.is_set())
+                            service._clear_delivery_pressure()
+                            self.assertFalse(service._admission_paused.is_set())
+                            other = await service._select(other_lane)
+                            self.assertEqual(other[0].input.job_ref, 'job:other')
+                            self.assertIn(controller, service._claims.live_owners())
                             executor = controller.operation
                             self.assertIs(type(executor), AttemptExecutor)
                             self.assertEqual(len(captured_crashes), 1)

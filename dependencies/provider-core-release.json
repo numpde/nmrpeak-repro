@@ -180,12 +180,12 @@
     }
   },
   "files": {
-    "acquisition-owner-0.6.5.tar.gz": "c713d007d0874141cc62d22b14a489e71b596c4645d3d55cb4387789c8723151",
-    "provider_core-0.6.5-install.lock": "4dd7a289aa674ba6b00ff8dbadfe8a9d73b06fb11ccbad7ff8ae38e716beb535",
-    "provider_core-0.6.5-native-install.lock": "0d392bd1d942bb0cd1716e42f20ef678f39bf24f929624ce22b8c5d70015d87d",
-    "provider_core-0.6.5-py3-none-any.whl": "a1a215d01f9021c7e0587d29b3f9c939a00328980fd8639ec08ff2a79d806709",
-    "provider_core-0.6.5.tar.gz": "6fbee1a7b1876a2649d1277722c29d95e6851ca093ddc35b2daf4b43a3f1c879",
-    "wheelhouse-tool-0.6.5.pyz": "9d8cd59c0aeffd61ce462fa81f2951a24fb8a8749a1332d5f87842b4c095d656"
+    "acquisition-owner-0.6.6.tar.gz": "c713d007d0874141cc62d22b14a489e71b596c4645d3d55cb4387789c8723151",
+    "provider_core-0.6.6-install.lock": "061429cda0dc49cf4b599609ca521ff131f095d588e716c564b6dd745846b39b",
+    "provider_core-0.6.6-native-install.lock": "090bbbbe1396de25c6015bf9fece7c1875fb5169b57fbe4f678333930af80261",
+    "provider_core-0.6.6-py3-none-any.whl": "22b5a391aa3748340b969f47c935d62a4f9b08b9fe8c98f808fec47e6546b0c7",
+    "provider_core-0.6.6.tar.gz": "0f395f3e84744b8917df78b9750386c8161297cca3adcadee5577bebe1686ac9",
+    "wheelhouse-tool-0.6.6.pyz": "9d8cd59c0aeffd61ce462fa81f2951a24fb8a8749a1332d5f87842b4c095d656"
   },
   "source_files": {
     "MANIFEST.in": {
@@ -195,12 +195,12 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "15217e9f2c84662cd76b0f22d1bc0621188edfde4abd0130711409d29c6603b7",
-      "size": 33201
+      "sha256": "14c3e04fde24e4591bb560c5ca052a8bc1d8cdf46da2e8a694f7e84df8de9f07",
+      "size": 34018
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "d6ce9a23615204a08134f15744ad12e36a7473e21d71a3bcbe90d8e0fe673d20",
+      "sha256": "f93c5760f1da7c5d5c9b9c55626e2db41967c7771bf5d4c493cc65fdbd1a59cf",
       "size": 588
     },
     "src/provider_core/__init__.py": {
@@ -255,8 +255,8 @@
     },
     "src/provider_core/chat.py": {
       "mode": 420,
-      "sha256": "c36f2f233169dea409ca30fb46a7b47eea0f926b4d81cfcad351625aeed0c1e9",
-      "size": 14690
+      "sha256": "fc3948023eee312ae44f393605d9dd20a99bcd69f7e33525eeb63047f9806f49",
+      "size": 14759
     },
     "src/provider_core/chat_errors.py": {
       "mode": 420,
@@ -360,8 +360,8 @@
     },
     "src/provider_core/execution.py": {
       "mode": 420,
-      "sha256": "2ca361ff1ac50136ea5a91888dc052978129cf717ff91c6a0cbd72c5be9e4b12",
-      "size": 60348
+      "sha256": "93469db4fe3475d29f9eb966e357a4b330c3c03e314143683dc049117f8be73f",
+      "size": 60510
     },
     "src/provider_core/failure_projection.py": {
       "mode": 420,
@@ -500,8 +500,8 @@
     },
     "src/provider_core/transport.py": {
       "mode": 420,
-      "sha256": "06b7c6e1b1ab8410c2fa90da14d930de3d6a3f385bb3273b72ede2bde9e31b85",
-      "size": 33082
+      "sha256": "23c7882f7eb7ac16f9ae250db18da5d267b5c3793d88b52730fc1c04000a67a4",
+      "size": 33472
     },
     "src/provider_core/transport_errors.py": {
       "mode": 420,
@@ -875,8 +875,8 @@
     },
     "tests/integration/chat/adversarial/test_chat.py": {
       "mode": 420,
-      "sha256": "219495a4d99197662f22e2bf0edb543e33e7dd8b1d5f8460e7d144cb47391e33",
-      "size": 13566
+      "sha256": "8abbec45cb469a9f37a6001e4e6b9222d4e933981b6316195397c2bcb277b4f1",
+      "size": 13479
     },
     "tests/integration/chat/adversarial/test_conversation.py": {
       "mode": 420,
@@ -1112,6 +1112,11 @@
       "mode": 420,
       "sha256": "d39b7c7fdca3c28a3b4875f0984ca92ab07817a2a55985865d5f28c72012c7eb",
       "size": 16316
+    },
+    "tests/integration/transport/normative/test_fuzz_retirement.py": {
+      "mode": 420,
+      "sha256": "0f1f012ac0036fc6cb46c73c6f1b771c3badaaa8661c812d380f76205d08616b",
+      "size": 3510
     },
     "tests/integration/transport/normative/test_response_file.py": {
       "mode": 420,
@@ -1550,8 +1555,8 @@
     },
     "tests/unit/normative/test_delivery_execution.py": {
       "mode": 420,
-      "sha256": "40e4a2f7f82d1076a87b3a7d61d7108c9d193994dc031a451a188fea392dc346",
-      "size": 10628
+      "sha256": "61de6f9f44fd8bf7f3245208a479cecd9ca1fb7f6594c226c63d3a9fc1cf6a35",
+      "size": 11329
     },
     "tests/unit/normative/test_delivery_handoff.py": {
       "mode": 420,
@@ -1627,6 +1632,21 @@
       "mode": 420,
       "sha256": "33c87554d3c1d9b70707e597af83eea22831fcd7bdfe0eb53583bd5ffdaf6dc4",
       "size": 10711
+    },
+    "tests/unit/normative/test_fuzz_delivery.py": {
+      "mode": 420,
+      "sha256": "a66edfea78cc4a7f9782e3197ecebbddd033f2b3b18790b58aa441fb593e2155",
+      "size": 7002
+    },
+    "tests/unit/normative/test_fuzz_interpreter.py": {
+      "mode": 420,
+      "sha256": "8c55d2e0dab23cd1a640a27912ac67d4f884533ec343b985569922699e1f495f",
+      "size": 5689
+    },
+    "tests/unit/normative/test_fuzz_transport_cleanup.py": {
+      "mode": 420,
+      "sha256": "a1fad64c1a7a9db5dc76aa7957d2743c2435818f58f20c936876036577d6d3f7",
+      "size": 6004
     },
     "tests/unit/normative/test_grant_renewal.py": {
       "mode": 420,
@@ -1740,8 +1760,8 @@
     },
     "tests/unit/normative/test_transport_not_after.py": {
       "mode": 420,
-      "sha256": "7fd8cd5e8e82939da3c8defc9b4e2dc56cab9b8c2f1a9f5ffad804dedb50418a",
-      "size": 15573
+      "sha256": "c356a80160df56ded834a6fc254db9cf3108694de3591f3440b315d3e2737916",
+      "size": 15713
     },
     "tests/unit/normative/test_upload_acquisition.py": {
       "mode": 420,
@@ -1804,7 +1824,7 @@
       "size": 5770
     }
   },
-  "source_revision": "ce06831aedc6bbe9607ff7b97bbe56decb636854",
+  "source_revision": "dc7c0016c3c28908c7a19ee0e03f75e1a85cddfa",
   "tool_source_files": {
     "__init__.py": {
       "mode": 420,

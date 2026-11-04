@@ -235,8 +235,7 @@ class ProviderProcess:
     def _clear_delivery_pressure(self):
         for controller in tuple(self._delivery_waiters):
             operation = controller.operation
-            if (type(operation) is AttemptExecutor and operation.last_failure is not None
-                    and type(operation.last_failure.attempt) is DeliveryAcceptedCheckpoint):
+            if type(operation) is AttemptExecutor and operation.delivery_accepted:
                 self._delivery_waiters.discard(controller)
         if not self._delivery_waiters and not self._stop.is_set():
             self._admission_paused.clear()
