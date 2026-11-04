@@ -1,5 +1,6 @@
 """Supply NMR scientific preparation and results to the shared Attempt owner."""
 
+import asyncio
 from functools import partial
 from hashlib import sha256
 import json
@@ -8,17 +9,16 @@ from provider_core.analysis import (
     AnalysisFailure, AnalysisOutcomeUnresolved, AnalysisSuccess, ObservedWorkerCrash, PreparedAnalysis,
 )
 from provider_core.attempt_record import ProtectedEvidence
+from provider_core.task_boundary import contain_task_exit
 
 from .canonical_json import canonical_json_bytes
 from .diagnostic_text import diagnostic_text, exception_diagnostic
 from .failure_contract import ClassifiedPreparationFailure, FailureContractError
 from .input_issue_message import (
-    render_candidate_failure, render_candidate_runner_failure,
     render_direct_runner_rejection, render_source_issue,
 )
 from .interpreter import (
-    CandidateConstructionExhausted, InterpretationRejected, InterpreterUnavailable,
-    InterpreterUnavailableReason, ReportedInputProblem,
+    InterpreterUnavailable,
 )
 from .preparation_failure_policy import FailureKind
 from .product_input import InputRejected, is_structured_source, parse_job_input
@@ -40,6 +40,12 @@ class NmrpeakAnalysisSession:
         self._closed = False
         self._interpretation = interpreter.new_session()
         self._candidate_digest = None
+        self._retirement = None
+        self._retirement_observed = False
+
+    @property
+    def diagnostic_failure(self):
+        return getattr(self._interpretation, "diagnostic_failure", None)
 
     async def prepare(self, acknowledged, instructions, *, report_condition):
         if self._closed or self._phase != "new":
@@ -94,20 +100,6 @@ class NmrpeakAnalysisSession:
                 route=list(unavailable.attempted_configuration_ids),
                 cause=exception_diagnostic(unavailable, secrets=self.interpreter.diagnostic_secrets),
             )
-        except ReportedInputProblem as problem:
-            return self._failure(FailureKind.MODEL_REPORTED_PROBLEM, diagnostic_text(
-                "The interpreter reported (not independently verified): "
-                + diagnostic_text(problem.message, limit=900) + ". Generation did not start.", limit=1024,
-            ), reason="model_report", route=list(problem.attempted_configuration_ids))
-        except CandidateConstructionExhausted as exhausted:
-            return self._failure(FailureKind.CANDIDATE_ISSUE, render_candidate_failure(exhausted.issue),
-                                 reason=exhausted.issue.reason.value, pointer=exhausted.issue.pointer,
-                                 route=list(exhausted.attempted_configuration_ids))
-        except InterpretationRejected as rejection:
-            return self._failure(FailureKind.CANDIDATE_RUNNER_REJECTED,
-                                 render_candidate_runner_failure(rejection.token_count),
-                                 reason="runner_candidate_rejected",
-                                 route=list(rejection.attempted_configuration_ids))
 
     async def _validate_input(self, model_input, *, report_condition):
         digest = "sha256:" + sha256(canonical_json_bytes(model_input.wire_document())).hexdigest()
@@ -168,15 +160,34 @@ class NmrpeakAnalysisSession:
         }))
 
     async def retire(self):
+        """Retain one original retirement task across caller interruption."""
         self._closed = True
-        failures = []
+        if self._retirement is None or (self._retirement_observed and self._retirement.done()
+                                        and (self._retirement.cancelled() or self._retirement.exception() is not None)):
+            self._retirement = asyncio.create_task(self._retire_owners())
+            self._retirement_observed = False
+        retirement = self._retirement
+        cancellation_count = asyncio.current_task().cancelling()
         try:
-            await self._interpretation.retire()
-        except BaseException as cause:
-            failures.append(cause)
+            await asyncio.shield(retirement)
+        except asyncio.CancelledError:
+            if retirement.cancelled() and asyncio.current_task().cancelling() == cancellation_count:
+                self._retirement_observed = True
+            raise
+        except BaseException:
+            self._retirement_observed = True
+            raise
+        self._retirement_observed = True
+
+    async def _retire_owners(self):
+        owners = [contain_task_exit(self._interpretation.retire)]
         if not self.runner.quiescent:
+            owners.append(contain_task_exit(self.runner.retire))
+        results = await asyncio.gather(*owners, return_exceptions=True)
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if not failures:
             try:
-                await self.runner.retire()
+                await self._interpretation.join()
             except BaseException as cause:
                 failures.append(cause)
         if len(failures) == 1:

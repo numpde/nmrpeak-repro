@@ -22,6 +22,7 @@ from .provider_diagnostics import describe_nmrpeak_failure
 from .analysis_session import NmrpeakAnalysisSession
 from .canonical_json import canonical_json_bytes
 from .provider_config import ProviderProcessPolicy
+from .provider_events import bounded_exception_type
 from .run_generation import run_generation_fingerprint
 
 
@@ -145,6 +146,14 @@ class ProviderProcess:
                     self._delivery_waiters.discard(lane.controller)
                 if lane.runner.retired:
                     raise RuntimeError("The loaded NMR lane retired; retain its owners before replacing it")
+            finally:
+                if session.diagnostic_failure is not None:
+                    try:
+                        _LOG.warning("Interpreter diagnostic reporting failed; exception_type=%s",
+                                     bounded_exception_type(session.diagnostic_failure))
+                    except Exception as diagnostic:
+                        if self.diagnostic_failure is None:
+                            self.diagnostic_failure = diagnostic
 
     def _controller(self, lane, session, pending, instructions):
         policy = self.policy

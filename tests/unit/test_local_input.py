@@ -13,10 +13,31 @@ from nmrpeak_provider.local_input import (
     LocalInputSnapshotError,
     read_bounded_regular_file,
     read_ordered_bounded_regular_files,
+    read_ordered_files_with_references,
 )
 
 
 class LocalInputTests(unittest.TestCase):
+    def test_referenced_key_stays_with_the_selected_directory(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = root / "endpoints"
+            selected.mkdir()
+            (selected / "first.toml").write_bytes(b"first")
+            (selected / "key").write_bytes(b"original")
+
+            def references(_selected):
+                selected.rename(root / "held")
+                selected.mkdir()
+                (selected / "key").write_bytes(b"replacement")
+                return {"key": 100}
+
+            documents, inputs = read_ordered_files_with_references(
+                selected, filename_suffix=".toml", maximum_directory_entries=4,
+                maximum_files=2, maximum_file_bytes=100, references=references)
+            self.assertEqual(documents, (("first.toml", b"first"),))
+            self.assertEqual(inputs["key"], b"original")
+
     def test_exact_limit_and_partial_reads_produce_the_complete_file(self) -> None:
         with TemporaryDirectory() as temporary:
             path = Path(temporary) / "input"
@@ -102,6 +123,19 @@ class LocalInputTests(unittest.TestCase):
 
         self.assertIs(raised.exception.reason, LocalInputFailureReason.UNREADABLE)
         self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
+
+    def test_ordered_snapshot_retains_each_filename_with_its_bytes(self) -> None:
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "20-strong.toml").write_bytes(b"strong")
+            (directory / "00-fast.toml").write_bytes(b"fast")
+            self.assertEqual(
+                read_ordered_bounded_regular_files(
+                    directory, filename_suffix=".toml", maximum_directory_entries=4,
+                    maximum_files=2, maximum_file_bytes=100,
+                ),
+                (("00-fast.toml", b"fast"), ("20-strong.toml", b"strong")),
+            )
 
     def test_invalid_selected_file_retains_the_snapshot_cause_chain(self) -> None:
         with TemporaryDirectory() as temporary:

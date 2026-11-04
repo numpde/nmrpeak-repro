@@ -6,10 +6,13 @@ import importlib.util
 from pathlib import Path
 import socket
 import struct
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
 
+RESOLVER_FILE = Path("/test/resolv.conf")
 PROXY_PATH = Path(__file__).parents[2] / "docker/bound_http_proxy.py"
 SPEC = importlib.util.spec_from_file_location("nmrpeak_bound_http_proxy", PROXY_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -18,13 +21,33 @@ SPEC.loader.exec_module(PROXY)
 
 
 class BoundHttpProxyTests(unittest.TestCase):
+    def test_unconfirmed_build_retains_proxy_resolver_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "resolv.conf").write_text("nameserver 192.0.2.53\n")
+            (root / "context").mkdir()
+            script = Path(__file__).parents[2] / "scripts/image-operation-lock.sh"
+            subprocess.run(("bash", "-c", 'source "$1"; trim_streamed_image_capture "$2"',
+                            "test", str(script), str(root)), check=True)
+            self.assertTrue((root / "resolv.conf").is_file())
+            self.assertFalse((root / "context").exists())
+
+    def test_captured_resolvers_are_used_without_global_dns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            captured = Path(directory) / "resolv.conf"
+            captured.write_text("nameserver 192.0.2.53\nnameserver 192.0.2.53\n")
+            self.assertEqual(PROXY._dns_servers(captured), ("192.0.2.53",))
+            captured.write_text("nameserver 127.0.0.1\n")
+            with self.assertRaises(OSError):
+                PROXY._dns_servers(captured)
+
     def test_dns_timeout_retries_same_bound_server_then_succeeds(self) -> None:
         with (
             mock.patch.object(PROXY, "_dns_servers", return_value=("resolver",)),
             mock.patch.object(PROXY, "_query_ipv4", side_effect=[TimeoutError("timed out"),
                 ({"packages.example": ["192.0.2.1"]}, {})]) as query,
         ):
-            self.assertEqual(PROXY.resolve_ipv4_bound("packages.example", "wlan-test"), ("192.0.2.1",))
+            self.assertEqual(PROXY.resolve_ipv4_bound("packages.example", "wlan-test", RESOLVER_FILE), ("192.0.2.1",))
         self.assertEqual(query.call_args_list, [mock.call("packages.example", "resolver", "wlan-test")] * 2)
 
     def test_dns_timeout_retry_is_bounded(self) -> None:
@@ -33,7 +56,7 @@ class BoundHttpProxyTests(unittest.TestCase):
             mock.patch.object(PROXY, "_query_ipv4", side_effect=TimeoutError("timed out")) as query,
             self.assertRaisesRegex(OSError, "resolver: timed out"),
         ):
-            PROXY.resolve_ipv4_bound("packages.example", "wlan-test")
+            PROXY.resolve_ipv4_bound("packages.example", "wlan-test", RESOLVER_FILE)
         self.assertEqual(query.call_count, 2)
 
     def test_exhausted_dns_timeout_uses_next_bound_server(self) -> None:
@@ -42,7 +65,7 @@ class BoundHttpProxyTests(unittest.TestCase):
             mock.patch.object(PROXY, "_query_ipv4", side_effect=[TimeoutError("timed out"),
                 TimeoutError("timed out"), ({"packages.example": ["192.0.2.1"]}, {})]) as query,
         ):
-            self.assertEqual(PROXY.resolve_ipv4_bound("packages.example", "wlan-test"), ("192.0.2.1",))
+            self.assertEqual(PROXY.resolve_ipv4_bound("packages.example", "wlan-test", RESOLVER_FILE), ("192.0.2.1",))
         self.assertEqual(query.call_args_list, [mock.call("packages.example", "first", "wlan-test")] * 2 +
                          [mock.call("packages.example", "second", "wlan-test")])
 
@@ -105,7 +128,7 @@ class BoundHttpProxyTests(unittest.TestCase):
             mock.patch.object(PROXY, "resolve_ipv4_bound", return_value=("192.0.2.1",)),
             mock.patch.object(PROXY.socket, "socket", return_value=fake),
         ):
-            connected = PROXY.connect_bound("packages.example", 443, "wlan-test")
+            connected = PROXY.connect_bound("packages.example", 443, "wlan-test", RESOLVER_FILE)
         self.assertIs(connected, fake)
         self.assertEqual(
             events[:3],
@@ -128,7 +151,7 @@ class BoundHttpProxyTests(unittest.TestCase):
             mock.patch.object(PROXY, "_dns_servers", return_value=("resolver",)),
             mock.patch.object(PROXY, "_query_ipv4", side_effect=query),
         ):
-            addresses = PROXY.resolve_ipv4_bound("bücher.example", "wlan-test")
+            addresses = PROXY.resolve_ipv4_bound("bücher.example", "wlan-test", RESOLVER_FILE)
 
         self.assertEqual(addresses, ("192.0.2.2",))
         self.assertEqual(
@@ -149,7 +172,7 @@ class BoundHttpProxyTests(unittest.TestCase):
             mock.patch.object(PROXY, "_dns_servers", return_value=("malformed", "working")),
             mock.patch.object(PROXY, "_query_ipv4", side_effect=query),
         ):
-            addresses = PROXY.resolve_ipv4_bound("packages.example", "wlan-test")
+            addresses = PROXY.resolve_ipv4_bound("packages.example", "wlan-test", RESOLVER_FILE)
 
         self.assertEqual(addresses, ("192.0.2.1",))
         self.assertEqual(

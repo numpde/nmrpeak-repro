@@ -26,6 +26,7 @@ nmrpeak_provider/input_issue_message.py
 nmrpeak_provider/inspection_document.py
 nmrpeak_provider/interpreter.py
 nmrpeak_provider/interpreter_policy.py
+nmrpeak_provider/interpreter_settings.py
 nmrpeak_provider/journal_api.py
 nmrpeak_provider/journal_archive.py
 nmrpeak_provider/journal_archive_record.py
@@ -52,7 +53,6 @@ nmrpeak_provider/product_result.py
 nmrpeak_provider/prompts/chf_interpreter.md
 nmrpeak_provider/prompts/hf_interpreter.md
 nmrpeak_provider/prompts/interpreter.md
-nmrpeak_provider/prompts/protocol_correction.md
 nmrpeak_provider/provider_config.py
 nmrpeak_provider/provider_diagnostics.py
 nmrpeak_provider/provider_events.py

@@ -8,6 +8,11 @@
       "sha256": "7b5133133e741c8a916b04c13c35c31943c179225c4b123439bc0ca677a673d1",
       "size": 73
     },
+    "acquisition_tool/dns.py": {
+      "mode": 420,
+      "sha256": "6a34ecdce3d5e06bba87ed1e38fd751a75ef7c04c6cc7a7eaa65b2a25bc0dfe2",
+      "size": 3485
+    },
     "acquisition_tool/identity.py": {
       "mode": 420,
       "sha256": "c982ba74531125b95d93b6c0d9d87526d866cc197eb41bffb653ff578d8e3b7b",
@@ -15,8 +20,8 @@
     },
     "acquisition_tool/owner.sh": {
       "mode": 420,
-      "sha256": "9f0a5240b6df854fa5e4e565a0bc94fcc89d9ccf61a187665c36587943fa56a7",
-      "size": 23348
+      "sha256": "73b38ef3273ddf2ecfb5dcb430bc1b981e98284c8a3d684a448fa94fb92faee2",
+      "size": 23489
     },
     "acquisition_tool/proxy.py": {
       "mode": 420,
@@ -130,8 +135,8 @@
     },
     "provider_core/bound_http_proxy.py": {
       "mode": 420,
-      "sha256": "a96e2e8f7e0322f6f13fc7d092f97c6e93dbd4b093615e00dcf05502fad99b5e",
-      "size": 34055
+      "sha256": "8a59a93c0e9591f506d68b4498282f5bf8ecf0b74a04d7c2d7f8b94f90928bbf",
+      "size": 34787
     },
     "provider_core/container_guard.py": {
       "mode": 420,
@@ -175,12 +180,12 @@
     }
   },
   "files": {
-    "acquisition-owner-0.6.2.tar.gz": "b3bab12dd27e50664a0110e10946239800b9b5f6a5726f198f982175edc2de17",
-    "provider_core-0.6.2-install.lock": "b684ec269dd984b2b4b2cbdef219da09d3b9404d8a7f8590a344aa80f8c9a60a",
-    "provider_core-0.6.2-native-install.lock": "d50bc7c06ab1c3ccaf3572bade912ec5aa2e810f286b9283d9483b3bf28c3cea",
-    "provider_core-0.6.2-py3-none-any.whl": "565214e6495248afb02243e216cb0e7b2a269ca93d72b28cb0df00921c0182b1",
-    "provider_core-0.6.2.tar.gz": "ad1f640fe14547aecfb8c6c9f4852f9a3c2395de4d51a8771ecea69b282cbecd",
-    "wheelhouse-tool-0.6.2.pyz": "9d8cd59c0aeffd61ce462fa81f2951a24fb8a8749a1332d5f87842b4c095d656"
+    "acquisition-owner-0.6.5.tar.gz": "c713d007d0874141cc62d22b14a489e71b596c4645d3d55cb4387789c8723151",
+    "provider_core-0.6.5-install.lock": "4dd7a289aa674ba6b00ff8dbadfe8a9d73b06fb11ccbad7ff8ae38e716beb535",
+    "provider_core-0.6.5-native-install.lock": "0d392bd1d942bb0cd1716e42f20ef678f39bf24f929624ce22b8c5d70015d87d",
+    "provider_core-0.6.5-py3-none-any.whl": "a1a215d01f9021c7e0587d29b3f9c939a00328980fd8639ec08ff2a79d806709",
+    "provider_core-0.6.5.tar.gz": "6fbee1a7b1876a2649d1277722c29d95e6851ca093ddc35b2daf4b43a3f1c879",
+    "wheelhouse-tool-0.6.5.pyz": "9d8cd59c0aeffd61ce462fa81f2951a24fb8a8749a1332d5f87842b4c095d656"
   },
   "source_files": {
     "MANIFEST.in": {
@@ -190,12 +195,12 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "56602f26107a613a8234af41b0758852ef24caee05c376d8415428ac56cf04d8",
-      "size": 21067
+      "sha256": "15217e9f2c84662cd76b0f22d1bc0621188edfde4abd0130711409d29c6603b7",
+      "size": 33201
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "ba7e6ed879d088f986a52fb7bba929173b06bce7971a3682d7334c884826ce7a",
+      "sha256": "d6ce9a23615204a08134f15744ad12e36a7473e21d71a3bcbe90d8e0fe673d20",
       "size": 588
     },
     "src/provider_core/__init__.py": {
@@ -215,8 +220,8 @@
     },
     "src/provider_core/api_config.py": {
       "mode": 420,
-      "sha256": "172143359581ef2dd83c20e46e2b74a54c46610695a5bc0f3297e614dd427fb3",
-      "size": 7503
+      "sha256": "8eaa17d34d64dff50163ca805819cdfe23d4918de8e94cca77a69bba5d50b51d",
+      "size": 7829
     },
     "src/provider_core/async_runner_session.py": {
       "mode": 420,
@@ -245,13 +250,13 @@
     },
     "src/provider_core/bound_http_proxy.py": {
       "mode": 420,
-      "sha256": "a96e2e8f7e0322f6f13fc7d092f97c6e93dbd4b093615e00dcf05502fad99b5e",
-      "size": 34055
+      "sha256": "8a59a93c0e9591f506d68b4498282f5bf8ecf0b74a04d7c2d7f8b94f90928bbf",
+      "size": 34787
     },
     "src/provider_core/chat.py": {
       "mode": 420,
-      "sha256": "83c2c1e6ded63e7cbf8cb1b89c4c59bee240f6c4bf0c3ca0ec72007d87c47d28",
-      "size": 13322
+      "sha256": "c36f2f233169dea409ca30fb46a7b47eea0f926b4d81cfcad351625aeed0c1e9",
+      "size": 14690
     },
     "src/provider_core/chat_errors.py": {
       "mode": 420,
@@ -270,8 +275,8 @@
     },
     "src/provider_core/conversation.py": {
       "mode": 420,
-      "sha256": "8985ea180a6d70a3fd36a6b97c777e455820725469cf81c679b49c022a435f24",
-      "size": 21233
+      "sha256": "ac28d1fc7f3919be2ee753482b78c3e958ca03a95c80c74dd21fb3502d57440a",
+      "size": 23962
     },
     "src/provider_core/credential.py": {
       "mode": 420,
@@ -360,13 +365,18 @@
     },
     "src/provider_core/failure_projection.py": {
       "mode": 420,
-      "sha256": "bedc29f73b5b67ccf09fe79e80d926eb06254f7d5053947a434dd92e2f2a19b6",
-      "size": 11893
+      "sha256": "2863064c0c10a6286e52697d50e76f3f530f619d5adb07e1d263a0d69caf1deb",
+      "size": 12484
     },
     "src/provider_core/hello.py": {
       "mode": 420,
       "sha256": "fb485c0657249328084bf4fe33adfa099de5ae6b5b6166356faeae172b2d2e06",
       "size": 4428
+    },
+    "src/provider_core/interpreter.py": {
+      "mode": 420,
+      "sha256": "4bd73e779e51d8896dea558b69a5e4da4be40d24ccd7e8b7b8c7dc6a1d1702ee",
+      "size": 35431
     },
     "src/provider_core/job_feed.py": {
       "mode": 420,
@@ -490,8 +500,8 @@
     },
     "src/provider_core/transport.py": {
       "mode": 420,
-      "sha256": "51e9015410ec0f09f1d7f307b2364661054cca56cee2d80021c27c3ee3df9dbe",
-      "size": 32238
+      "sha256": "06b7c6e1b1ab8410c2fa90da14d930de3d6a3f385bb3273b72ede2bde9e31b85",
+      "size": 33082
     },
     "src/provider_core/transport_errors.py": {
       "mode": 420,
@@ -500,8 +510,8 @@
     },
     "src/provider_core/unix_http.py": {
       "mode": 420,
-      "sha256": "6d25ee6bbb912c61c0a53b9d4b2f92be3cd3bd24f4b536e2a3befad2ed9bd442",
-      "size": 1648
+      "sha256": "6c49228bc24ef48db5f2401cd748e24cf39c105a2196f596e3091dcd55a59f75",
+      "size": 1685
     },
     "src/provider_core/upload_file.py": {
       "mode": 420,
@@ -565,8 +575,8 @@
     },
     "tests/contract/test_installation.py": {
       "mode": 420,
-      "sha256": "46a0b8a250d25de8da431d75b4e655fbd70629ba0c485b9d3bdcd30afcfce815",
-      "size": 9564
+      "sha256": "85f887d2e637240643fe1db3068092af0062b628bca71258d0c66c7bc4539783",
+      "size": 9612
     },
     "tests/fakes/__init__.py": {
       "mode": 420,
@@ -893,6 +903,11 @@
       "sha256": "57f7ee1ef7655f5f250657837bc73933bd9d0ec6aee85e3f9e63d2dab435f76d",
       "size": 4008
     },
+    "tests/integration/chat/normative/test_interpreter.py": {
+      "mode": 420,
+      "sha256": "abcc0bf096092a0013ce2bd8034d6b306b457fa1943041465db8d17e522ebc25",
+      "size": 8185
+    },
     "tests/integration/chat/normative/test_text_correction.py": {
       "mode": 420,
       "sha256": "a0a07bf33435db13de0fad32fd1333dea595e6b15e463c67aafe8dfd46de5468",
@@ -1155,8 +1170,8 @@
     },
     "tests/native/test_installation.py": {
       "mode": 420,
-      "sha256": "74a7deb04bbb1deddb139c23be27f0bfd0823380c3acffb7da78c66e20e25b75",
-      "size": 3509
+      "sha256": "9642ab1f5aa2e20198c26038f76f677abc46a11b86756b9cc79cfdf9b81bcda3",
+      "size": 5562
     },
     "tests/native/test_original_future.py": {
       "mode": 420,
@@ -1200,8 +1215,8 @@
     },
     "tests/unit/adversarial/test_api_config.py": {
       "mode": 420,
-      "sha256": "0b925d2008a470e0de8828031078512f075ffcf038414c3e9db102af0e56a3ee",
-      "size": 3090
+      "sha256": "7087bd07139ab821e845d61623500ae626da9a6e8a1599943d867c484e9dd2bf",
+      "size": 4427
     },
     "tests/unit/adversarial/test_api_envelope.py": {
       "mode": 420,
@@ -1475,8 +1490,8 @@
     },
     "tests/unit/normative/test_bound_http_proxy.py": {
       "mode": 420,
-      "sha256": "620a7bee1769626ee8d6adef5f6eefbe193983384e175f73b62f00495bbe4b69",
-      "size": 21034
+      "sha256": "d3278572886b4bbba4f2cc7018a8cdaa248d15539d305e7a41d4cd93e80219cd",
+      "size": 22471
     },
     "tests/unit/normative/test_bound_http_proxy_unix.py": {
       "mode": 420,
@@ -1623,6 +1638,11 @@
       "sha256": "9bf5979a6f99395f248f8ee98043fcdff232e3b61fff61236032a0df26120333",
       "size": 3198
     },
+    "tests/unit/normative/test_interpreter.py": {
+      "mode": 420,
+      "sha256": "2aaefda7b932fa83fd60e9996722d4ae6659d1ad64b78f3b6fd135bee8f581ba",
+      "size": 46845
+    },
     "tests/unit/normative/test_job_feed.py": {
       "mode": 420,
       "sha256": "c29d626c1f3117ab9c2abe31f3b3d3e601a2e4ba61d0c5a0d656718fa53773d2",
@@ -1745,8 +1765,8 @@
     },
     "tests/unit/normative/test_upload_recovery.py": {
       "mode": 420,
-      "sha256": "75b25b3b0b0c33067649128e40175ba80761d252f32520afb4e57fad54b134cb",
-      "size": 24207
+      "sha256": "abb8c795e18c2a1200efe471adbf19193f87739a78b0ade23f0a6be831a2d0ec",
+      "size": 24277
     },
     "tests/unit/normative/test_upload_recovery_cleanup.py": {
       "mode": 420,
@@ -1784,7 +1804,7 @@
       "size": 5770
     }
   },
-  "source_revision": "9ce6a609071dee532cb5fb2db10650a7b19af8d7",
+  "source_revision": "ce06831aedc6bbe9607ff7b97bbe56decb636854",
   "tool_source_files": {
     "__init__.py": {
       "mode": 420,

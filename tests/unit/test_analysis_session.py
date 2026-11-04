@@ -21,8 +21,7 @@ from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.generation_runtime import GenerationLane
 from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE, HF_LIFECYCLE_LANE
 from nmrpeak_provider.interpreter import (
-    CandidateConstructionExhausted, InterpretationRejected, InterpreterUnavailable,
-    InterpreterUnavailableReason, ReportedInputProblem,
+    InterpreterUnavailable, InterpreterUnavailableReason,
 )
 from nmrpeak_provider.product_input import InputIssue, InputRejectionReason
 from nmrpeak_provider.product_result import canonical_result_bytes
@@ -35,18 +34,19 @@ from nmrpeak_provider.text_provenance import ModelGeneratedText
 from tests.fakes.native_runner import lane_contract
 from tests.fakes.runner import FakeRunnerChannel, admit_fake_session
 from tests.unit.test_generation_runtime import generation
-from tests.unit.test_input_interpreter import HF_VALUE, VALUE
+from tests.fakes.interpreter_values import HF_VALUE, VALUE
 from tests.unit.test_runner_session import ATTEMPT_KEY, ATTEMPT_REF, DEADLINES
 
 
 @asynccontextmanager
-async def scientific_lane(name, *, rejected_validations=0):
+async def scientific_lane(name, *, rejected_validations=0, validate_seconds=0.1):
     facts, codec, ready, model_input = lane_contract(name)
     lane = HF_LIFECYCLE_LANE if name == "hf" else CHF_LIFECYCLE_LANE
     configured = GenerationLane(lane, generation(lane.offering.analysis_kind_ref, name), facts, codec)
     channel = FakeRunnerChannel(codec, ready, candidates=("CCO", "OCC"),
                                 rejected_validations=rejected_validations)
     async with admit_fake_session(channel, facts, replace(DEADLINES, connect_seconds=2, ready_seconds=2,
+                                                        validate_seconds=validate_seconds,
                                                         retire_seconds=2), codec) as runner:
         yield configured, runner, channel, model_input
 
@@ -65,7 +65,7 @@ def admission(configured, raw):
 
 
 def interpreter():
-    configured = SimpleNamespace(diagnostic_secrets=(), validate_freeform_input_async=AsyncMock(), retire=AsyncMock())
+    configured = SimpleNamespace(diagnostic_secrets=(), validate_freeform_input_async=AsyncMock(), retire=AsyncMock(), join=AsyncMock())
     configured.new_session = lambda: configured
     return configured
 
@@ -77,6 +77,50 @@ def phase_reporter(*args, **kwargs):
 
 
 class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prior_waiter_cancellation_does_not_hide_later_owned_cancellation(self):
+        configured, runner, _, _ = await self.enterAsyncContext(scientific_lane("hf"))
+        translator = interpreter()
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def retire():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                await release.wait()
+                raise asyncio.CancelledError()
+
+        translator.retire.side_effect = retire
+        owner = NmrpeakAnalysisSession(configured, runner, translator)
+
+        async def interrupted_waiter():
+            try:
+                await owner.retire()
+            except asyncio.CancelledError:
+                pass
+            release.set()
+            await asyncio.wait({owner._retirement})
+            with self.assertRaises(asyncio.CancelledError):
+                await owner.retire()
+            await owner.retire()
+
+        waiter = asyncio.create_task(interrupted_waiter())
+        await asyncio.wait_for(entered.wait(), 1)
+        waiter.cancel()
+        await asyncio.wait_for(waiter, 2)
+        self.assertEqual(calls, 2)
+
+    async def test_cancelled_owned_retirement_can_be_reobserved(self):
+        configured, runner, _, _ = await self.enterAsyncContext(scientific_lane("hf"))
+        translator = interpreter()
+        translator.retire.side_effect = [asyncio.CancelledError(), None]
+        owner = NmrpeakAnalysisSession(configured, runner, translator)
+        with self.assertRaises(asyncio.CancelledError):
+            await owner.retire()
+        await owner.retire()
+        self.assertEqual(translator.retire.await_count, 2)
+
     async def test_revoked_permission_prevents_generation_submission(self):
         configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
         owner = NmrpeakAnalysisSession(configured, runner, interpreter())
@@ -267,7 +311,7 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
 
                 async def translate(**arguments):
                     rejection = await arguments["validate_input"](model_input)
-                    raise InterpretationRejected(rejection.message, rejection.token_count, ("fixture",))
+                    raise InterpreterUnavailable(InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED, ("fixture",))
 
                 translator.validate_freeform_input_async.side_effect = translate
                 raw = b"Interpret these peaks." if prose else canonical_json_bytes(VALUE)

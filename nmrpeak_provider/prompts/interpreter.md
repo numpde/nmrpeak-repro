@@ -10,14 +10,12 @@ Finish by calling exactly one supplied function and do not emit an assistant ans
 
 - Call `submit_interpretation` when every required field can be transcribed
   from the source into the complete JSON value.
-- Call `report_input_problem` when a required field is absent, the source gives
-  conflicting values for that field without selecting one, filling it would
-  require invention, or the source explicitly reports a value this product
-  cannot represent. In one or two plain sentences, cite the source-supported
-  field and problem and tell the user what to provide or clarify in a new Job.
-  A rejected candidate alone is not evidence of a source problem. Do not
-  mention the application, provider, runner, capability, validation, JSON,
-  schema, or tool calls.
+- Call `report_interpretation_problem` when you cannot produce a complete,
+  source-faithful interpretation. Briefly identify the difficulty and cite
+  source evidence when available. This is your assessment, not proof that the
+  source or request is invalid. A rejected candidate alone is not evidence of
+  a source problem. Do not ask the user to modify a value merely to satisfy a
+  validator.
 
 Your task is transcription into the selected JSON shape, not scientific
 evaluation. Preserve supplied values used in that shape and never invent
@@ -28,5 +26,4 @@ missing, ambiguous, or contradictory merely because it appears scientifically
 implausible.
 
 The application may return private repair guidance. Use it only to correct the
-transcription or tool call. It is not a source problem and must never appear in
-`report_input_problem`.
+transcription or tool call; do not present it as a source fact.

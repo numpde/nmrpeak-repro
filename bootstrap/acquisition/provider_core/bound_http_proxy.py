@@ -219,10 +219,11 @@ def _read_dns_name(message: bytes, offset: int, depth: int = 0) -> tuple[str, in
         raise DNSNameRejected("DNS name contains a non-ASCII label") from cause
 
 
-def _dns_servers() -> tuple[str, ...]:
-    """Choose configured non-loopback IPv4 resolvers instead of a local DNS stub."""
+def _dns_servers(resolver_file: Path | None = None) -> tuple[str, ...]:
+    """Read explicit captured resolvers, or existing service resolver configuration."""
 
-    paths = (Path("/run/systemd/resolve/resolv.conf"), Path("/etc/resolv.conf"))
+    paths = ((resolver_file,) if resolver_file is not None else
+             (Path("/run/systemd/resolve/resolv.conf"), Path("/etc/resolv.conf")))
     for path in paths:
         try:
             lines = path.read_text(encoding="ascii").splitlines()
@@ -310,7 +311,8 @@ def _query_ipv4(
     return addresses, aliases
 
 
-def resolve_ipv4_bound(host: str, interface: str, *, deadline: float) -> tuple[str, ...]:
+def resolve_ipv4_bound(host: str, interface: str, *, deadline: float,
+                       dns_servers: tuple[str, ...] | None = None) -> tuple[str, ...]:
     """Follow bounded IPv4 aliases without using an unbound system resolver."""
     try:
         return (str(ipaddress.IPv4Address(host)),)
@@ -320,7 +322,7 @@ def resolve_ipv4_bound(host: str, interface: str, *, deadline: float) -> tuple[s
     normalized_host = host.rstrip(".").encode("idna").decode("ascii").lower()
     errors = []
     failures = []
-    for server in _dns_servers():
+    for server in _dns_servers() if dns_servers is None else dns_servers:
         try:
             _remaining(deadline, "DNS resolution")
         except TimeoutError as expired:
@@ -353,12 +355,13 @@ def resolve_ipv4_bound(host: str, interface: str, *, deadline: float) -> tuple[s
     raise failure
 
 
-def connect_bound(host: str, port: int, interface: str) -> socket.socket:
+def connect_bound(host: str, port: int, interface: str, *,
+                  dns_servers: tuple[str, ...] | None = None) -> socket.socket:
     """Return one device-bound connection within a shared DNS/address budget."""
 
     deadline = time.monotonic() + CONNECT_SECONDS
     last_error: OSError | None = None
-    for address in resolve_ipv4_bound(host, interface, deadline=deadline):
+    for address in resolve_ipv4_bound(host, interface, deadline=deadline, dns_servers=dns_servers):
         _remaining(deadline, "connection")
         outbound = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -414,7 +417,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
     def connect(self, host, port):
         """Acquire the admitted destination through this listener's device."""
-        return connect_bound(host, port, self.server.outbound_interface)
+        return connect_bound(host, port, self.server.outbound_interface, dns_servers=self.server.dns_servers)
 
     def admission_reply(self, _error):
         """Keep the acquisition listener's existing fixed failure response."""
@@ -505,9 +508,10 @@ class ProxyServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
     request_handler = ProxyHandler
 
-    def __init__(self, address: tuple[str, int], interface: str):
+    def __init__(self, address: tuple[str, int], interface: str, *, dns_servers=None):
         """Own the selected device and the bounded worker slots for this listener."""
         self.outbound_interface = interface
+        self.dns_servers = dns_servers
         self._slots = ConnectionAdmission(MAX_CONNECTIONS)
         super().__init__(address, self.request_handler)
 
@@ -548,8 +552,8 @@ class UnixProxyServer(ProxyServer):
 
     address_family = socket.AF_UNIX
 
-    def __init__(self, address: Path, interface: str):
-        super().__init__(str(address), interface)
+    def __init__(self, address: Path, interface: str, *, dns_servers=None):
+        super().__init__(str(address), interface, dns_servers=dns_servers)
 
     def server_bind(self):
         # Never unlink an existing path. The launcher owns the private parent
@@ -656,6 +660,7 @@ def main() -> None:
     listener.add_argument("--port", type=int, help="Listener port; 0 asks the kernel to choose a free port.")
     listener.add_argument("--unix-socket", type=Path, help="Private Unix listener; an existing path is never replaced.")
     parser.add_argument("--ready-file", type=Path, required=True)
+    parser.add_argument("--resolver-file", type=Path, help="Captured DNS configuration; no fallback to host or container resolvers.")
     args = parser.parse_args()
 
     if args.relay_socket is not None:
@@ -669,7 +674,8 @@ def main() -> None:
     try:
         if args.interface != "system":
             require_interface(args.interface)
-    except ValueError as error:
+        dns_servers = None if args.resolver_file is None else _dns_servers(args.resolver_file)
+    except (ValueError, OSError) as error:
         raise SystemExit(str(error)) from None
 
     # Prove interface binding before publishing readiness, without any transfer.
@@ -678,11 +684,11 @@ def main() -> None:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, args.interface.encode() + b"\0")
 
     if args.unix_socket is not None:
-        with UnixProxyServer(args.unix_socket, args.interface) as server:
+        with UnixProxyServer(args.unix_socket, args.interface, dns_servers=dns_servers) as server:
             publish_readiness(args.ready_file, f"{server.server_address}\n")
             server.serve_forever()
     else:
-        with ProxyServer(("127.0.0.1", args.port), args.interface) as server:
+        with ProxyServer(("127.0.0.1", args.port), args.interface, dns_servers=dns_servers) as server:
             publish_readiness(args.ready_file, f"{server.server_address[1]}\n")
             server.serve_forever()
 

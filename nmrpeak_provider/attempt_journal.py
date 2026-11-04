@@ -45,7 +45,7 @@ _DIAGNOSTIC_REASONS = frozenset({
     "invalid_json", "duplicate_field", "invalid_structure", "wrong_spectra",
     "invalid_formula", "unsupported_multiplicity", "coupling_must_be_nonnegative",
     "token_limit_exceeded", "tokenizer_empty_output", "dictionary_token_missing",
-    "prompt_unavailable", "deadline_exceeded", "endpoints_exhausted",
+    "prompt_unavailable", "input_rejected", "deadline_exceeded", "endpoints_exhausted",
     "model_report", "runner_candidate_rejected",
 })
 _DIAGNOSTIC_PATH_PARTS = frozenset({

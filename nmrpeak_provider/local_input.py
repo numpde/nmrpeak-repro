@@ -65,8 +65,8 @@ def read_ordered_bounded_regular_files(
     maximum_directory_entries: int,
     maximum_files: int,
     maximum_file_bytes: int,
-) -> tuple[bytes, ...]:
-    """Read selected files through one held directory descriptor.
+) -> tuple[tuple[str, bytes], ...]:
+    """Read selected names and files through one held directory descriptor.
 
     Names are enumerated once, then leaves are opened sequentially relative to
     the descriptor. A regular replacement may win before its leaf opens, so
@@ -96,7 +96,7 @@ def _read_directory_snapshot(
     maximum_entries: int,
     maximum_files: int,
     maximum_file_bytes: int,
-) -> tuple[bytes, ...]:
+) -> tuple[tuple[str, bytes], ...]:
     primary = None
     try:
         snapshot = _snapshot_selected_files(
@@ -125,7 +125,7 @@ def _snapshot_selected_files(
     maximum_entries: int,
     maximum_files: int,
     maximum_file_bytes: int,
-) -> tuple[bytes, ...]:
+) -> tuple[tuple[str, bytes], ...]:
     names = _read_selected_names(
         descriptor,
         suffix,
@@ -133,7 +133,7 @@ def _snapshot_selected_files(
         maximum_files=maximum_files,
     )
     return tuple(
-        _read_directory_file(descriptor, name, maximum_bytes=maximum_file_bytes)
+        (name, _read_directory_file(descriptor, name, maximum_bytes=maximum_file_bytes))
         for name in names
     )
 
@@ -343,3 +343,29 @@ def _read_directory_file(
             LocalInputFailureReason.INVALID_SELECTED_FILE
         ) from error
     return raw
+
+
+def read_ordered_files_with_references(
+    directory: Path, /, *, filename_suffix: str, maximum_directory_entries: int,
+    maximum_files: int, maximum_file_bytes: int, references: Callable,
+) -> tuple[tuple[tuple[str, bytes], ...], dict[str, bytes]]:
+    """Read selected files and their admitted siblings from the same held directory."""
+    _require_directory_request(directory=directory, filename_suffix=filename_suffix,
+                               maximum_directory_entries=maximum_directory_entries,
+                               maximum_files=maximum_files, maximum_file_bytes=maximum_file_bytes)
+    descriptor = _open_directory(directory)
+    primary = None
+    try:
+        selected = _snapshot_selected_files(descriptor, filename_suffix,
+                                            maximum_entries=maximum_directory_entries,
+                                            maximum_files=maximum_files,
+                                            maximum_file_bytes=maximum_file_bytes)
+        requested = references(selected)
+        return selected, {name: _read_directory_file(descriptor, name, maximum_bytes=limit)
+                          for name, limit in requested.items()}
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        _close_owned(lambda: os.close(descriptor), primary=primary,
+                     failure_reason=LocalInputFailureReason.DIRECTORY_UNREADABLE)

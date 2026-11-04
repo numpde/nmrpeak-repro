@@ -116,20 +116,6 @@ def render_candidate_correction(issue: InputIssue) -> str:
     return message
 
 
-def render_candidate_failure(issue: InputIssue) -> str:
-    """Describe exhausted model output without blaming the submitted source."""
-
-    message = (
-        f"Interpretation failed: the interpreter's candidate{_location(issue)} "
-        f"was rejected after all correction routes: {_constraint(issue)}. "
-        "Generation did not start. Review the submitted description; the "
-        "candidate's defect has not been proven to occur in the source."
-    )
-    if not is_failure_message(message):
-        raise ValueError("rendered candidate failure violates the Attempt contract")
-    return message
-
-
 def render_direct_runner_rejection(token_count: int) -> str:
     """Publish a measured direct-input constraint without runner-authored prose."""
 
@@ -144,22 +130,4 @@ def render_direct_runner_rejection(token_count: int) -> str:
     )
     if not is_failure_message(message):
         raise ValueError("rendered runner rejection violates the Attempt contract")
-    return message
-
-
-def render_candidate_runner_failure(token_count: int) -> str:
-    """Name the last measured candidate without asserting a source defect."""
-
-    runner_rejection_diagnostic(
-        RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, token_count
-    )
-    message = (
-        "Interpretation failed: the last candidate produced "
-        f"{token_count} tokenizer tokens; this model accepts at most "
-        f"{MAXIMUM_TOKENIZED_INPUT_LENGTH}. All correction routes were tried. "
-        "Generation did not start. This does not prove the submitted description "
-        "exceeds the limit. Keep every measurement when revising the Job."
-    )
-    if not is_failure_message(message):
-        raise ValueError("rendered candidate runner failure violates the Attempt contract")
     return message

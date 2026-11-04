@@ -94,26 +94,21 @@ def _read_dns_name(message: bytes, offset: int, depth: int = 0) -> tuple[str, in
     return b".".join(labels).decode("ascii").lower(), next_offset
 
 
-def _dns_servers() -> tuple[str, ...]:
-    paths = (Path("/run/systemd/resolve/resolv.conf"), Path("/etc/resolv.conf"))
-    for path in paths:
-        try:
-            lines = path.read_text(encoding="ascii").splitlines()
-        except OSError:
-            continue
-        servers = []
-        for line in lines:
-            fields = line.split()
-            if len(fields) == 2 and fields[0] == "nameserver":
-                try:
-                    address = ipaddress.ip_address(fields[1])
-                except ValueError:
-                    continue
-                if address.version == 4 and not address.is_loopback:
-                    servers.append(str(address))
-        if servers:
-            return tuple(dict.fromkeys(servers))
-    raise OSError("no non-loopback IPv4 DNS servers are configured")
+def _dns_servers(resolver_file: Path) -> tuple[str, ...]:
+    lines = resolver_file.read_text(encoding="ascii").splitlines()
+    servers = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "nameserver":
+            try:
+                address = ipaddress.ip_address(fields[1])
+            except ValueError:
+                continue
+            if address.version == 4 and not address.is_loopback:
+                servers.append(str(address))
+    if not servers:
+        raise OSError("the captured interface DNS configuration has no usable IPv4 server")
+    return tuple(dict.fromkeys(servers))
 
 
 def _query_ipv4(host: str, server: str, interface: str) -> tuple[dict[str, list[str]], dict[str, str]]:
@@ -176,14 +171,14 @@ def _query_ipv4_retrying_timeouts(host: str, server: str, interface: str) -> tup
         return _query_ipv4(host, server, interface)
 
 
-def resolve_ipv4_bound(host: str, interface: str) -> tuple[str, ...]:
+def resolve_ipv4_bound(host: str, interface: str, resolver_file: Path) -> tuple[str, ...]:
     try:
         return (str(ipaddress.IPv4Address(host)),)
     except ipaddress.AddressValueError:
         pass
     normalized_host = host.rstrip(".").encode("idna").decode("ascii").lower()
     errors = []
-    for server in _dns_servers():
+    for server in _dns_servers(resolver_file):
         try:
             current = normalized_host
             visited = set()
@@ -203,9 +198,9 @@ def resolve_ipv4_bound(host: str, interface: str) -> tuple[str, ...]:
     raise OSError("Interface-bound DNS resolution failed: " + "; ".join(errors))
 
 
-def connect_bound(host: str, port: int, interface: str) -> socket.socket:
+def connect_bound(host: str, port: int, interface: str, resolver_file: Path) -> socket.socket:
     last_error: OSError | None = None
-    for address in resolve_ipv4_bound(host, interface):
+    for address in resolve_ipv4_bound(host, interface, resolver_file):
         outbound = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             outbound.setsockopt(
@@ -240,7 +235,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         try:
             header, remainder = receive_headers(self.request)
             method, host, port, forwarded_header = parse_destination(header)
-            with connect_bound(host, port, self.server.outbound_interface) as outbound:
+            with connect_bound(host, port, self.server.outbound_interface, self.server.resolver_file) as outbound:
                 if method == "CONNECT":
                     self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 else:
@@ -262,14 +257,16 @@ class ProxyServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], interface: str):
+    def __init__(self, address: tuple[str, int], interface: str, resolver_file: Path):
         self.outbound_interface = interface
+        self.resolver_file = resolver_file
         super().__init__(address, ProxyHandler)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--interface", required=True)
+    parser.add_argument("--resolver-file", type=Path, required=True)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--ready-file", type=Path, required=True)
     args = parser.parse_args()
@@ -279,7 +276,8 @@ def main() -> None:
             or args.interface in {".", ".."} or not interface.is_dir()):
         raise SystemExit(f"network interface does not exist: {args.interface}")
 
-    with ProxyServer(("127.0.0.1", args.port), args.interface) as server:
+    _dns_servers(args.resolver_file)
+    with ProxyServer(("127.0.0.1", args.port), args.interface, args.resolver_file) as server:
         port = server.server_address[1]
         args.ready_file.write_text(f"{port}\n", encoding="ascii")
         os.chmod(args.ready_file, 0o600)

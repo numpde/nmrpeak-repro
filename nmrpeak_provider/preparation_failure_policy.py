@@ -23,9 +23,6 @@ class FailureKind(StrEnum):
     DIRECT_SOURCE_ISSUE = "direct_source_issue"
     DIRECT_RUNNER_REJECTED = "direct_runner_rejected"
     INTERPRETER_UNAVAILABLE = "interpreter_unavailable"
-    MODEL_REPORTED_PROBLEM = "model_reported_problem"
-    CANDIDATE_ISSUE = "candidate_issue"
-    CANDIDATE_RUNNER_REJECTED = "candidate_runner_rejected"
 
 
 def parse_preparation_failure_policy(raw: bytes) -> PreparationFailurePolicy:
@@ -78,11 +75,8 @@ def _parse_rule(kind: FailureKind, value: object) -> PreparationFailureRule:
         )
     if set(value) == reported and value["forward_failure_message"] is True:
         if kind not in {
-            FailureKind.MODEL_REPORTED_PROBLEM,
             FailureKind.DIRECT_SOURCE_ISSUE,
             FailureKind.DIRECT_RUNNER_REJECTED,
-            FailureKind.CANDIDATE_ISSUE,
-            FailureKind.CANDIDATE_RUNNER_REJECTED,
         }:
             raise ValueError(f"unreviewed forwarding for [{kind.value}]")
         return PreparationFailureRule(

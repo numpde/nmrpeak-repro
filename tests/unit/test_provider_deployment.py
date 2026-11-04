@@ -906,24 +906,35 @@ class ProviderDeploymentTests(unittest.TestCase):
             compose_up.assert_not_called()
 
 
-    def test_interpreter_config_capture_keeps_exact_bounded_source_bytes(self) -> None:
+    def test_interpreter_capture_includes_referenced_key_and_ca(self) -> None:
         with TemporaryDirectory() as temporary:
             state = Path(temporary)
             directory = state / "openai-chat-completions.d"
             directory.mkdir(mode=0o700)
             endpoint = directory / "10-primary.toml"
-            source = b'id="primary"\nbase_url="https://example.test"\napi_key="secret"\nmodel="model"\n'
+            source = (b'url="https://example.test/v1/chat/completions"\nmodel="model"\n'
+                      b'key_file="primary.key"\nca_file="trust.pem"\n')
             endpoint.write_bytes(source)
             endpoint.chmod(0o600)
+            key = directory / "primary.key"
+            key.write_bytes(b"fixture-key\n")
+            key.chmod(0o600)
+            ca = directory / "trust.pem"
+            ca.write_bytes(b"fixture-ca")
+            ca.chmod(0o644)
             with patch.object(provider_deployment, "_read_acl",
                               return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL):
-                self.assertEqual(provider_deployment._capture_interpreter_inputs(state),
-                                 {"interpreter/10-primary.toml": source})
-            (directory / "README").write_text("unexpected", encoding="utf-8")
-            with patch.object(provider_deployment, "_read_acl",
-                              return_value=provider_deployment._PRIVATE_WRITABLE_FILE_ACL), \
-                 self.assertRaisesRegex(DeploymentOperationRejected, "non-TOML entry"):
-                provider_deployment._capture_interpreter_inputs(state)
+                captured = provider_deployment._capture_interpreter_inputs(state)
+                self.assertEqual(captured, {"interpreter/10-primary.toml": source,
+                                            "interpreter/primary.key": b"fixture-key\n",
+                                            "interpreter/trust.pem": b"fixture-ca"})
+                original = provider_deployment.runtime_config_id(captured)
+                key.write_bytes(b"changed-key\n")
+                self.assertNotEqual(original, provider_deployment.runtime_config_id(provider_deployment._capture_interpreter_inputs(state)))
+                (directory / "unreferenced.key").write_bytes(b"unexpected")
+                with self.assertRaisesRegex(DeploymentOperationRejected, "unreferenced"):
+                    provider_deployment._capture_interpreter_inputs(state)
+
 
 
     def test_compose_up_consumes_the_exact_normalized_plan(self) -> None:
@@ -2519,8 +2530,10 @@ class render_repository:
         for directory in (root / "secrets", root / "secrets/deployments", endpoint_root.parent, endpoint_root):
             directory.chmod(0o700)
         endpoint = endpoint_root / "10-primary.toml"
-        endpoint.write_text('id="primary"\nbase_url="https://example.test"\napi_key="test-secret"\nmodel="model"\n', encoding="utf-8")
+        endpoint.write_text('url="https://example.test/v1/chat/completions"\nkey_file="primary.key"\nmodel="model"\n', encoding="utf-8")
         endpoint.chmod(0o600)
+        (endpoint_root / "primary.key").write_text("test-secret\n", encoding="utf-8")
+        (endpoint_root / "primary.key").chmod(0o600)
         self._projection_patch = patch.object(provider_deployment, "_contained_shared_projection", side_effect=self._project_shared)
         self._projection_patch.start()
         self._validate_patch = patch.object(provider_deployment, "_validate_captured_runtime", side_effect=self._validate_captured)

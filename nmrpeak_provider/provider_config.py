@@ -10,7 +10,7 @@ import tomllib
 
 from .attempt_journal import validate_frozen_generation_id
 from .canonical_json import canonical_json_bytes
-from .interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
+from .interpreter_policy import InterpreterPolicy
 from .native_policy import RETIREMENT_SECONDS
 
 SCHEMA_ID = "nmrpeak.provider.runtime_config.v3"
@@ -160,8 +160,6 @@ def render_provider_runtime_config(policy, *, frozen_generation_id, api_proxy_so
         }),
         ("runner", asdict(policy.runner)),
         ("interpreter", {
-            "request_timeout_seconds": policy.interpreter.call_policy.request_timeout_seconds,
-            "turn_timeout_seconds": policy.interpreter.call_policy.turn_timeout_seconds,
             "interpretation_timeout_seconds": policy.interpreter.interpretation_timeout_seconds,
         }),
         ("api_route", {"proxy_socket": api_proxy_socket, "outbox_socket": outbox_socket}),
@@ -253,16 +251,10 @@ def _policy(document, shared_project, shared_gid):
         "interpreter",
         {
             "interpretation_timeout_seconds",
-            "request_timeout_seconds",
-            "turn_timeout_seconds",
         },
     )
     try:
         interpreter_policy = InterpreterPolicy(
-            call_policy=OpenAIChatCallPolicy(
-                request_timeout_seconds=interpreter["request_timeout_seconds"],
-                turn_timeout_seconds=interpreter["turn_timeout_seconds"],
-            ),
             interpretation_timeout_seconds=interpreter[
                 "interpretation_timeout_seconds"
             ],

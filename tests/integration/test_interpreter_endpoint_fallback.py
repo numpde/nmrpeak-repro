@@ -6,30 +6,22 @@ simulated; NMRPeak's product constructor remains the final candidate authority.
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import asynccontextmanager
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
-import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock
 
 from tests.fakes.model_http import LoopbackHTTP, Reply, reply
 
-from nmrpeak_provider.input_interpreter import _InterpretationCapability, _value_schema_for
+from nmrpeak_provider.input_interpreter import InputInterpreter, _InterpretationCapability
 from nmrpeak_provider.interpreter import (
     InterpreterUnavailable,
     InterpreterUnavailableReason,
-    interpret,
 )
-from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
+from nmrpeak_provider.interpreter_policy import InterpreterPolicy
 from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE, HF_LIFECYCLE_LANE
-from nmrpeak_provider.openai_chat_interpreter import (
-    bind_openai_chat_endpoints,
-    load_openai_chat_endpoint_specs,
-)
-from nmrpeak_provider.text_provenance import UserProvidedText
+from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
 
 
 _FIXTURES = Path(__file__).parents[1] / "model_behavior/fixtures"
@@ -61,7 +53,7 @@ def _ethanol_source_and_value(lane_name: str) -> tuple[str, dict[str, object]]:
 
 
 def _completion(value: object, *, tool: str = "submit_interpretation", call_id: str = "fixture-call") -> dict[str, object]:
-    arguments = {"message": "The source may be incomplete."} if tool == "report_input_problem" else {"value": value}
+    arguments = {"message": "The source may be incomplete."} if tool == "report_interpretation_problem" else {"value": value}
     return {"choices": [{"finish_reason": "tool_calls", "message": {
         "role": "assistant", "content": None,
         "reasoning_content": "Private fixture reasoning.",
@@ -72,167 +64,89 @@ def _completion(value: object, *, tool: str = "submit_interpretation", call_id: 
 
 
 class InterpreterEndpointFallbackTests(unittest.IsolatedAsyncioTestCase):
-    @asynccontextmanager
-    async def route(self, lane, behavior):
-        source, value = _ethanol_source_and_value(lane.offering.implementation_ref)
-        capability = _InterpretationCapability(lane)
-        expected = capability.construct_interpretation(value)
-        requests: list[tuple[str, dict[str, object]]] = []
-        failures = []
-        self.send_attempts = []
-
-        async def before_send(request):
-            body = json.loads(request.content)
-            self.send_attempts.append(body['model'])
-
-        async def handle(request, _index):
-            body = json.loads(request.content)
-            primary = body['model'] == 'primary-model'
-            host = 'primary.example.test' if primary else 'fallback.example.test'
-            requests.append((host, body))
-            if behavior == 'all_unavailable' or (primary and behavior == 'unavailable'):
-                return Reply(disconnect=True)
-            if primary and behavior == 'timeout':
-                return Reply(wait_for=asyncio.Event())
-            if primary and behavior == 'busy':
-                return reply({'error': {'message': 'private busy detail'}}, status=429)
-            if primary and behavior == 'reported':
-                return reply(_completion(value, tool='report_input_problem', call_id=f'fixture-call-{len(requests)}'))
-            if primary and behavior == 'constructor' and len(requests) == 1:
-                invalid = deepcopy(value)
-                invalid['model_input']['spectra']['1H']['peaks'][0]['multiplicity'] = 'unsupported-private-label'
-                return reply(_completion(invalid, call_id=f'fixture-call-{len(requests)}'))
-            if primary and behavior == 'protocol':
-                return reply({'choices': [{'finish_reason': 'tool_calls', 'message': {
-                    'role': 'assistant', 'content': None,
-                    'reasoning_content': 'Private fixture reasoning.',
-                    'tool_calls': [{'id': f'fixture-call-{len(requests)}', 'type': 'function', 'function': {
-                        'name': 'submit_interpretation', 'arguments': 'not JSON',
-                    }}],
-                }}]})
-            return reply(_completion(value, call_id=f'fixture-call-{len(requests)}'))
-
-        servers = {name: await LoopbackHTTP([handle]*10).start() for name in ('primary', 'fallback')}
+    async def exercise_repair(self, *, transient):
+        source, value = _ethanol_source_and_value("hf")
+        invalid = deepcopy(value)
+        invalid["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "unsupported"
+        first = reply({"error": {"message": "private service detail"}}, status=503) if transient else reply(
+            _completion(invalid, call_id="invalid"))
+        server = await LoopbackHTTP([first, reply(_completion(value, call_id="valid"))]).start()
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                for filename, name in (("10-fallback.toml", "fallback"), ("05-primary.toml", "primary")):
-                    (root / filename).write_text(
-                        f'id = "{name}"\nbase_url = "{servers[name].base_url}"\n'
-                        f'api_key = "fixture-only"\nmodel = "{name}-model"\n',
-                        encoding="utf-8",
-                    )
-                specs = load_openai_chat_endpoint_specs(root)
-                self.assertEqual([spec.configuration_id for spec in specs], ["primary", "fallback"])
-                endpoints = bind_openai_chat_endpoints(
-                    specs, OpenAIChatCallPolicy(
-                        request_timeout_seconds=0.2 if behavior == "timeout" else 1,
-                        turn_timeout_seconds=3,
-                    ),
-                    before_send=before_send,
-                    submit_interpretation_description="Copy source-supported values.",
-                    submit_interpretation_value_schema=_value_schema_for(lane),
-                    report_input_problem_description="Report source evidence only.",
-                )
-                for endpoint_owner, name in zip(endpoints._owners, ("primary", "fallback"), strict=True):
-                    endpoint_owner._trust = servers[name].trust
-
-                async def admit(candidate):
-                    return candidate
-
-                async def run():
-                    return await interpret(
-                        source_text=UserProvidedText(source),
-                        capability=capability,
-                        endpoints=endpoints.endpoints,
-                        interpretation_timeout_seconds=10,
-                        report_endpoint_failure=failures.append,
-                        admit_interpretation=admit,
-                        retain_conversation=lambda conversation: None,
-                    )
-
-                try:
-                    yield run, expected, requests, failures
-                finally:
-                    await endpoints.retire()
-                    self.assertTrue(all(owner._transport is None or owner._transport.retirement_confirmed
-                                        for owner in endpoints._owners))
-                    self.assertTrue(requests)
-                    self.assertEqual(requests[0][1]["messages"][2]["content"], source)
-
+            spec = OpenAIChatEndpointSpec(configuration_id="primary", url=server.base_url + "/chat/completions",
+                                          api_key="fixture-only", model="primary", trust=server.trust)
+            session = InputInterpreter((spec,), InterpreterPolicy(interpretation_timeout_seconds=5)).new_session()
+            validate = AsyncMock(side_effect=lambda candidate: candidate)
+            events = []
+            try:
+                result = await session.validate_freeform_input_async(
+                    source=source.encode(), lane=HF_LIFECYCLE_LANE, validate_input=validate,
+                    execution_attempt_ref="attempt", record_diagnostic=events.append)
+                expected = HF_LIFECYCLE_LANE.bind_runner_input(_InterpretationCapability(HF_LIFECYCLE_LANE).construct_interpretation(value))
+                self.assertEqual(result, expected)
+                self.assertEqual(len(server.requests), 2)
+                validate.assert_awaited_once()
+                if transient:
+                    self.assertTrue(any("http_status=503" in event for event in events))
+                    self.assertNotIn("private service detail", str(events))
+            finally:
+                await session.retire()
+                await session.join()
         finally:
-            for server in servers.values():
-                await server.close()
+            await server.close()
 
-    async def test_constructor_repair_preserves_reasoning_and_source_fidelity(self):
+    async def test_transient_service_failure_retries_same_endpoint(self):
+        await self.exercise_repair(transient=True)
+
+    async def test_rejected_candidate_is_corrected_before_runner_admission(self):
+        await self.exercise_repair(transient=False)
+
+    async def test_report_handoff_keeps_source_and_accepts_next_model(self):
         for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
-            with self.subTest(lane=lane.offering.implementation_ref):
-                async with self.route(lane, "constructor") as (run, expected, requests, failures):
-                    result = await run()
-                    self.assertEqual(result.admitted, expected)
-                    self.assertEqual(result.attempted_configuration_ids, ("primary",))
-                    self.assertEqual(len(requests), 2)
-                    repair = requests[1][1]["messages"]
-                    self.assertEqual(repair[3]["reasoning_content"], "Private fixture reasoning.")
-                    self.assertIn("unsupported-private-label", json.dumps(repair[4:]))
-                    self.assertEqual(failures, [])
+            source, value = _ethanol_source_and_value(lane.offering.implementation_ref)
+            primary = await LoopbackHTTP([reply(_completion(value, tool="report_interpretation_problem"))]).start()
+            fallback = await LoopbackHTTP([reply(_completion(value))]).start()
+            try:
+                specs = tuple(OpenAIChatEndpointSpec(
+                    configuration_id=name, url=server.base_url + "/chat/completions",
+                    api_key="fixture-only", model=name, trust=server.trust,
+                ) for name, server in (("primary", primary), ("fallback", fallback)))
+                session = InputInterpreter(specs, InterpreterPolicy(interpretation_timeout_seconds=10)).new_session()
+                validate = AsyncMock(side_effect=lambda value: value)
+                try:
+                    result = await session.validate_freeform_input_async(
+                        source=source.encode(), lane=lane, validate_input=validate,
+                        execution_attempt_ref="attempt")
+                    self.assertEqual(result, lane.bind_runner_input(_InterpretationCapability(lane).construct_interpretation(value)))
+                    validate.assert_awaited_once()
+                    second = json.loads(fallback.requests[0].content)
+                    self.assertTrue(any(message.get("content") == source for message in second["messages"]))
+                    self.assertNotIn("The source may be incomplete.", json.dumps(second))
+                    self.assertEqual(len(primary.requests), 1)
+                    self.assertEqual(len(fallback.requests), 1)
+                finally:
+                    await session.retire()
+                    await session.join()
+            finally:
+                await primary.close()
+                await fallback.close()
 
-    async def test_protocol_repair_then_fallback_starts_fresh(self):
-        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
-            with self.subTest(lane=lane.offering.implementation_ref):
-                async with self.route(lane, "protocol") as (run, expected, requests, failures):
-                    result = await run()
-                    self.assertEqual(result.admitted, expected)
-                    self.assertEqual(result.attempted_configuration_ids, ("primary", "fallback"))
-                    self.assertEqual([len(body["messages"]) for _, body in requests], [3, 6, 9, 3])
-                    self.assertEqual(requests[-1][1]["messages"], requests[0][1]["messages"])
-                    self.assertEqual(len(failures), 1)
-
-    async def test_report_and_transport_failure_allow_later_admission(self):
-        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
-            for behavior in ("reported", "unavailable"):
-                with self.subTest(lane=lane.offering.implementation_ref, behavior=behavior):
-                    async with self.route(lane, behavior) as (run, expected, requests, failures):
-                        result = await run()
-                        self.assertEqual(result.admitted, expected)
-                        self.assertEqual(result.attempted_configuration_ids, ("primary", "fallback"))
-                        self.assertEqual(len(failures), 1)
-                        self.assertEqual(len(requests[-1][1]["messages"]), 3)
-
-    async def test_busy_and_timeout_retry_then_fallback(self):
-        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
-            for behavior in ("busy", "timeout"):
-                with self.subTest(lane=lane.offering.implementation_ref, behavior=behavior):
-                    async with self.route(lane, behavior) as (run, expected, requests, failures):
-                        result = await run()
-                        self.assertEqual(result.admitted, expected)
-                        self.assertEqual(result.attempted_configuration_ids, ("primary", "fallback"))
-                        self.assertEqual(self.send_attempts, ['primary-model', 'primary-model', 'fallback-model'])
-                        observed = [host for host, _ in requests]
-                        if behavior == 'busy':
-                            self.assertEqual(observed, ['primary.example.test']*2 + ['fallback.example.test'])
-                        else:
-                            # Timeout can precede the peer's observation of a send.
-                            self.assertLessEqual(observed.count('primary.example.test'), 2)
-                            self.assertEqual(observed[-1], 'fallback.example.test')
-                            self.assertEqual(observed.count('fallback.example.test'), 1)
-                        self.assertEqual(len(failures), 1)
-                        self.assertEqual(requests[-1][1]["messages"], requests[0][1]["messages"])
-
-    async def test_all_unavailable_does_not_become_input_rejection(self):
-        for lane in (HF_LIFECYCLE_LANE, CHF_LIFECYCLE_LANE):
-            with self.subTest(lane=lane.offering.implementation_ref):
-                async with self.route(lane, "all_unavailable") as (run, _expected, requests, failures):
-                    with self.assertRaises(InterpreterUnavailable) as raised:
-                        await run()
-                    self.assertIs(raised.exception.reason, InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED)
-                    self.assertEqual(raised.exception.attempted_configuration_ids, ("primary", "fallback"))
-                    self.assertEqual(
-                        [host for host, _ in requests],
-                        ["primary.example.test"] * 2 + ["fallback.example.test"] * 2,
-                    )
-                    self.assertEqual(len(failures), 2)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    async def test_all_unavailable_stays_operational_failure(self):
+        source, _ = _ethanol_source_and_value("hf")
+        primary = await LoopbackHTTP([Reply(disconnect=True)] * 2).start()
+        try:
+            spec = OpenAIChatEndpointSpec(configuration_id="primary", url=primary.base_url + "/chat/completions",
+                                          api_key="fixture-only", model="primary", trust=primary.trust)
+            session = InputInterpreter((spec,), InterpreterPolicy(interpretation_timeout_seconds=5)).new_session()
+            validate = AsyncMock()
+            try:
+                with self.assertRaises(InterpreterUnavailable) as caught:
+                    await session.validate_freeform_input_async(source=source.encode(), lane=HF_LIFECYCLE_LANE,
+                                                               validate_input=validate, execution_attempt_ref="attempt")
+                self.assertIs(caught.exception.reason, InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED)
+                validate.assert_not_awaited()
+                self.assertEqual(len(primary.requests), 2)
+            finally:
+                await session.retire()
+                await session.join()
+        finally:
+            await primary.close()

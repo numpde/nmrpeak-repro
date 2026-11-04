@@ -37,6 +37,7 @@ from deployment.provider_volumes import (
 )
 from nmrpeak_provider.diagnostic_text import diagnostic_text, exception_diagnostic
 from nmrpeak_provider.local_input import LocalInputSnapshotError, read_bounded_regular_file
+from nmrpeak_provider.interpreter_settings import parse_endpoint_settings
 from nmrpeak_provider.provider_config import (
     CONFIG_PATH, api_input_target, captured_api_fields, decode_provider_template,
     render_provider_runtime_config, runtime_config_id,
@@ -643,25 +644,43 @@ def _contained_shared_projection(
 
 
 def _capture_interpreter_inputs(state_root):
-    """Snapshot the existing bounded endpoint inventory without parsing its format."""
+    """Capture endpoint definitions and only their referenced private inputs."""
     root = state_root / "openai-chat-completions.d"
+    descriptor = None
     try:
-        metadata = root.stat(follow_symlinks=False)
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        metadata = os.fstat(descriptor)
         if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
             raise DeploymentOperationRejected("Interpreter endpoint directory must be a regular operator-owned directory")
+        root = Path(f"/proc/{os.getpid()}/fd/{descriptor}")
+        entries = list(root.iterdir())
+        selected = sorted((entry for entry in entries if entry.suffix == ".toml"), key=lambda entry: entry.name)
+        if not selected or len(selected) > MAX_INTERPRETER_ENDPOINTS or len(entries) > 32:
+            raise DeploymentOperationRejected("Interpreter endpoint inventory is empty or exceeds its limit")
         files = {}
-        for entry in root.iterdir():
-            if len(files) == MAX_INTERPRETER_ENDPOINTS or entry.suffix != ".toml":
-                raise DeploymentOperationRejected("Interpreter endpoint inventory exceeds its limit or contains a non-TOML entry")
+        references = {}
+        for entry in selected:
             raw = _read_capture_source(entry, secret=True)
             if len(raw) > MAX_INTERPRETER_CONFIG_BYTES:
                 raise DeploymentOperationRejected("Interpreter endpoint input exceeds its configured byte limit")
+            try:
+                settings = parse_endpoint_settings(raw)
+            except ValueError as cause:
+                raise DeploymentOperationRejected("Interpreter endpoint configuration is invalid") from cause
             files["interpreter/" + entry.name] = raw
-        if not files:
-            raise DeploymentOperationRejected("Interpreter endpoint inventory must contain at least one TOML input")
+            references[settings["key_file"]] = True
+            if "ca_file" in settings:
+                references.setdefault(settings["ca_file"], False)
+        if {entry.name for entry in entries} != {entry.name for entry in selected} | set(references):
+            raise DeploymentOperationRejected("Interpreter endpoint inventory contains missing or unreferenced files")
+        for name, secret in references.items():
+            files["interpreter/" + name] = _read_capture_source(root / name, secret=secret)
         return files
     except OSError as cause:
         raise DeploymentOperationRejected("Cannot capture the interpreter endpoint directory") from cause
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _validate_captured_runtime(

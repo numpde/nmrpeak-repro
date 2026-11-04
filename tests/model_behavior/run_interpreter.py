@@ -10,57 +10,48 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Iterator
-from contextlib import AsyncExitStack
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 from pathlib import Path, PurePosixPath
 import sys
 from time import monotonic
+from types import SimpleNamespace
+from unittest.mock import patch
 
-import httpx
+from provider_core.chat_errors import ChatFailed
+from provider_core.interpreter import ModelReportedInterpretationProblem
 
 from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.input_interpreter import (
-    _InterpretationCapability,
+    InputInterpreter, _InterpretationCapability,
     _REPORT_DESCRIPTION,
     _SUBMIT_DESCRIPTION,
     _value_schema_for,
 )
 from nmrpeak_provider.interpreter import (
-    CandidateConstructionExhausted,
-    InterpreterEndpoint,
-    InterpreterCandidateConstructionRejected,
-    InterpreterProtocolError,
-    InterpreterTransportError,
-    InterpreterUnavailable,
-    MAX_TURNS_PER_ENDPOINT,
-    ReportedInputProblem,
-    interpret,
+    InterpreterCandidateConstructionRejected, InterpreterProtocolError,
+    InterpreterUnavailable, ReportedInputProblem,
 )
-from nmrpeak_provider.interpreter_policy import OpenAIChatCallPolicy
+from nmrpeak_provider.interpreter_policy import InterpreterPolicy
 from nmrpeak_provider.lifecycle_lane import (
     CHF_LIFECYCLE_LANE,
     HF_LIFECYCLE_LANE,
     LifecycleLane,
 )
-from nmrpeak_provider.openai_chat_interpreter import (
-    bind_openai_chat_endpoints,
-    load_openai_chat_endpoint_specs,
-)
-from nmrpeak_provider.text_provenance import UserProvidedText
+from nmrpeak_provider.openai_chat_interpreter import endpoint_factories, load_openai_chat_endpoint_specs
 
 
 _FIXTURE_ROOT = Path(__file__).with_name("fixtures")
 _FIXTURE_PATH = _FIXTURE_ROOT / "interpreter_cases.json"
 _SOURCE_DIRECTORY = "nmrpeak_cases"
-_REQUEST_TIMEOUT_SECONDS = 25
+_MAX_FIXTURE_PROPOSALS = 3
 _INTERPRETATION_TIMEOUT_SECONDS = 240
 _MAX_REPEATS = 10
 _MIN_REQUEST_START_INTERVAL_SECONDS = 5.0
 _LANES = {"hf": HF_LIFECYCLE_LANE, "chf": CHF_LIFECYCLE_LANE}
 _ACTIONS = {
-    "submit_interpretation", "report_input_problem", "candidate_construction_exhausted",
+    "submit_interpretation", "report_interpretation_problem", "candidate_construction_exhausted",
     "unsupported_source",
 }
 _CATEGORIES = {"normative", "insufficient", "adversarial", "unsupported"}
@@ -105,41 +96,56 @@ class _Observation:
 
 
 class _ObservedCall:
-    """Watch the production endpoint without routine content disclosure."""
+    """Observe one SDK carrier without routine disclosure of model content."""
 
-    def __init__(
-        self, endpoint: InterpreterEndpoint, forbidden: tuple[str, ...], *,
-        capture_model_output: bool,
-    ) -> None:
-        self._endpoint = endpoint.carrier
-        self._capture_model_output = capture_model_output
+    def __init__(self, endpoint, forbidden, *, capture_model_output):
+        self._endpoint = endpoint
+        self._carrier = None
         self._forbidden = forbidden
+        self._capture_model_output = capture_model_output
         self.forbidden_seen = False
-        self.model_outputs: list[str] = []
+        self.model_outputs = []
         self.ordinary_content_seen = False
-        self.transport_failure: str | None = None
+        self.transport_failure = None
         self.turns = 0
+        self.proposal_turns = 0
+        self.context_bytes = endpoint.factory.context_bytes
+
+    def __call__(self, **grant):
+        self._carrier = self._endpoint.factory(**grant)
+        return self
 
     @property
     def identity(self):
-        return self._endpoint.identity
+        return self._carrier.identity
 
     @property
     def retirement_confirmed(self):
-        return self._endpoint.retirement_confirmed
+        return self._carrier is None or self._carrier.retirement_confirmed
 
     async def retire(self):
-        await self._endpoint.retire()
+        if self._carrier is not None:
+            await self._carrier.retire()
 
-    async def complete(self, prompt, tools):
-        self.turns += 1
+    async def complete(self, prompt, tools, *, not_after):
         try:
-            turn = await self._endpoint.complete(prompt, tools)
-        except InterpreterTransportError as error:
+            if self._endpoint.pace is not None:
+                await self._endpoint.pace(not_after)
+            turn = await self._carrier.complete(prompt, tools, not_after=not_after)
+        except ChatFailed as error:
             self.transport_failure = error.reason
             raise
-        content = turn.get("content")
-        if content not in (None, ""):
+        self.transport_failure = None
+        self.turns += 1
+        calls = turn.get("tool_calls")
+        if type(calls) is not list:
+            calls = []
+        if any(type(call) is not dict or type(call.get("function")) is not dict or
+               call["function"].get("name") not in {
+            "describe_input_constraints", "read_interpretation_records",
+        } for call in calls):
+            self.proposal_turns += 1
+        if turn.get("content") not in (None, ""):
             self.ordinary_content_seen = True
         rendered = json.dumps(turn, ensure_ascii=False)
         if any(marker in rendered for marker in self._forbidden):
@@ -158,6 +164,7 @@ class _ObservedCapability:
         self.constructor_attempts = 0
         self.constructor_rejections = 0
         self.first_constructed: object | None = None
+        self.last_constructed: object | None = None
         self.injected_rejections = 0
         self.candidate_documents: list[bytes | None] = []
 
@@ -180,6 +187,7 @@ class _ObservedCapability:
             self.first_constructed = constructed
             self.injected_rejections += 1
             raise InterpreterProtocolError("model_behavior_forced_repair")
+        self.last_constructed = constructed
         return constructed
 
 
@@ -250,7 +258,7 @@ def _load_variant(
         raise ValueError("invalid expectation")
     action = expect["action"]
     max_turns = expect["max_turns"]
-    if action not in _ACTIONS or type(max_turns) is not int or not 1 <= max_turns <= MAX_TURNS_PER_ENDPOINT:
+    if action not in _ACTIONS or type(max_turns) is not int or not 1 <= max_turns <= _MAX_FIXTURE_PROPOSALS:
         raise ValueError("invalid action or turn bound")
     forbidden = _text_list(expect["forbidden_substrings"], name="forbidden substrings")
     message_terms = _text_list(expect["message_must_mention_any"], name="message terms")
@@ -262,7 +270,7 @@ def _load_variant(
             raise ValueError("invalid submission expectation")
         expected = _expected_value(lane_name, value["expected_interpretation"])
         expected_candidate = expected_issue_reason = None
-    elif action == "report_input_problem":
+    elif action == "report_interpretation_problem":
         if has_expected or has_candidate or has_issue or not message_terms or value["forced_repair"]:
             raise ValueError("invalid reported-problem expectation")
         expected = expected_candidate = expected_issue_reason = None
@@ -353,51 +361,67 @@ def _select_evaluations(
 
 
 async def _observe(
-    *, endpoint: InterpreterEndpoint, evaluation: _Evaluation,
+    *, endpoint, evaluation: _Evaluation,
     show_model_output: bool, interpretation_timeout_seconds: float,
 ) -> _Observation:
     variant = evaluation.variant
-    observed_call = _ObservedCall(
-        endpoint, variant.forbidden, capture_model_output=show_model_output,
-    )
-    observed_endpoint = InterpreterEndpoint(
-        endpoint.configuration_id, observed_call, endpoint.tools, endpoint.secrets,
-    )
+    observed_call = _ObservedCall(endpoint, variant.forbidden, capture_model_output=show_model_output)
     observed_capability = _ObservedCapability(
         _LANES[variant.lane_name], inject_rejection=evaluation.mode == "forced_repair",
     )
+    configured = InputInterpreter((endpoint,), InterpreterPolicy(
+        interpretation_timeout_seconds=interpretation_timeout_seconds))
+    session = configured.new_session()
 
-    async def admit_interpretation(candidate: object) -> object:
+    async def admit_interpretation(candidate):
         return candidate
 
     action = "unavailable"
-    value: object | None = None
-    message: str | None = None
-    issue_reason: str | None = None
+    value = message = issue_reason = None
+    unexpected_failure = None
     started = monotonic()
     try:
-        result = await interpret(
-            source_text=UserProvidedText(variant.source_text),
-            capability=observed_capability,
-            endpoints=(observed_endpoint,),
-            interpretation_timeout_seconds=interpretation_timeout_seconds,
-            report_endpoint_failure=lambda _event: None,
-            admit_interpretation=admit_interpretation,
-            retain_conversation=lambda conversation: None,
-        )
-        action, value = "submit_interpretation", result.admitted
-    except ReportedInputProblem as problem:
-        action, message = "report_input_problem", problem.message
-    except CandidateConstructionExhausted as exhausted:
-        action = "candidate_construction_exhausted"
-        issue_reason = exhausted.issue.reason.value
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(observed_call,)), \
+             patch("nmrpeak_provider.input_interpreter._InterpretationCapability", return_value=observed_capability):
+            await session.validate_freeform_input_async(
+                source=variant.source_text.encode(), lane=_LANES[variant.lane_name],
+                validate_input=admit_interpretation, execution_attempt_ref="model-behavior")
+        action, value = "submit_interpretation", observed_capability.last_constructed
     except InterpreterUnavailable:
-        pass
+        if session._shared is not None:
+            for _, failure in session._shared.failures:
+                if isinstance(failure, ModelReportedInterpretationProblem) and isinstance(failure.__cause__, ReportedInputProblem):
+                    action, message = "report_interpretation_problem", failure.__cause__.message
+            if action == "unavailable" and session._shared.correction_failures:
+                original = getattr(session._shared.correction_failures[-1][2], "original", None)
+                if isinstance(original, InterpreterCandidateConstructionRejected):
+                    action, issue_reason = "candidate_construction_exhausted", original.issue.reason.value
     except Exception as error:
+        unexpected_failure = error
         action = "error"
         reason = f"unexpected_{type(error).__name__}"
     else:
         reason = "ok"
+    finally:
+        primary = sys.exception() or unexpected_failure
+        failures = []
+        try:
+            await session.retire()
+        except BaseException as failure:
+            failures.append(failure)
+        if failures and session._run_task is not None and not session._run_task.done():
+            held = RuntimeError("Original interpretation remains active after model cleanup failed.")
+            held.session = session
+            failures.append(held)
+        else:
+            try:
+                await session.join()
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            if primary is not None:
+                failures.insert(0, primary)
+            raise BaseExceptionGroup("Model behavior cleanup did not settle.", failures)
     if action != "error":
         reason = _failure_reason(
             action=action, value=value, message=message,
@@ -431,7 +455,7 @@ def _failure_reason(
     if observed_call.transport_failure is not None:
         return f"transport_{observed_call.transport_failure}"
     if variant.action == "unsupported_source":
-        if action not in {"report_input_problem", "candidate_construction_exhausted"}:
+        if action not in {"report_interpretation_problem", "candidate_construction_exhausted"}:
             return "wrong_terminal_action"
     elif action != variant.action:
         return "wrong_terminal_action"
@@ -444,7 +468,7 @@ def _failure_reason(
     if action == "submit_interpretation":
         if type(value) is not type(variant.expected) or value != variant.expected:
             return "wrong_interpretation"
-    elif action == "report_input_problem":
+    elif action == "report_interpretation_problem":
         if message is None or not any(
             term.casefold() in message.casefold() for term in variant.message_terms
         ):
@@ -463,8 +487,8 @@ def _failure_reason(
             return "unsupported_report_requires_review"
     elif (
         issue_reason != variant.expected_issue_reason
-        or observed_capability.constructor_rejections != MAX_TURNS_PER_ENDPOINT
-        or observed_call.turns != MAX_TURNS_PER_ENDPOINT
+        or observed_capability.constructor_rejections != _MAX_FIXTURE_PROPOSALS
+        or observed_call.proposal_turns != _MAX_FIXTURE_PROPOSALS
         or not observed_capability.candidate_documents
         or any(
             candidate != variant.expected_candidate
@@ -477,9 +501,9 @@ def _failure_reason(
             return "wrong_first_repair_value"
         if observed_capability.injected_rejections != 1:
             return "wrong_injected_rejection_count"
-        if observed_call.turns != 2:
+        if observed_call.proposal_turns != 2:
             return "forced_repair_not_two_turns"
-    elif observed_call.turns > variant.max_turns:
+    elif observed_call.proposal_turns > variant.max_turns:
         return "case_turn_limit_exceeded"
     return None
 
@@ -492,122 +516,64 @@ def _evaluation_runs(
             yield repetition, evaluation
 
 
-async def _check_endpoint(endpoint: InterpreterEndpoint) -> str | None:
-    try:
-        await endpoint.carrier.complete([
-            {"role": "system", "content": "Use exactly one available tool."},
-            {"role": "user", "content": "Report that no interpretation input was provided."},
-        ], endpoint.tools)
-    except InterpreterTransportError as error:
-        return error.reason
-    finally:
-        await endpoint.carrier.retire()
-    return None
-
-
 async def _run(
-    *, lane_name: str, config_dir: Path,
-    evaluations: tuple[_Evaluation, ...], repeats: int,
-    show_model_output: bool,
-    request_timeout_seconds: int = _REQUEST_TIMEOUT_SECONDS,
+    *, lane_name: str, config_dir: Path, evaluations: tuple[_Evaluation, ...],
+    repeats: int, show_model_output: bool,
     interpretation_timeout_seconds: int = _INTERPRETATION_TIMEOUT_SECONDS,
 ) -> int:
-    turn_timeout_seconds = 2 * request_timeout_seconds + 10
-    print("POLICY", f"request_timeout_seconds={request_timeout_seconds}",
-          f"turn_timeout_seconds={turn_timeout_seconds}",
-          f"interpretation_timeout_seconds={interpretation_timeout_seconds}", flush=True)
+    print("POLICY", f"interpretation_timeout_seconds={interpretation_timeout_seconds}", flush=True)
     next_request_start = 0.0
 
-    async def pace_request(_request: httpx.Request) -> None:
+    async def pace_request(not_after):
         nonlocal next_request_start
-        delay = next_request_start - monotonic()
-        if delay > 0:
+        delay = max(0.0, next_request_start - monotonic())
+        if monotonic() + delay >= not_after:
+            raise ChatFailed("timeout", "Request pacing exceeded the model window.")
+        if delay:
             await asyncio.sleep(delay)
         next_request_start = monotonic() + _MIN_REQUEST_START_INTERVAL_SECONDS
 
-    checks = failures = executed = behavior_failures = reviews = unexecuted = 0
-    runs = tuple(_evaluation_runs(evaluations, repeats))
+    executed = behavior_failures = reviews = unexecuted = 0
     specs = load_openai_chat_endpoint_specs(config_dir)
-    async with AsyncExitStack() as stack:
-        def bind_fresh():
-            return bind_openai_chat_endpoints(
-                specs,
-                OpenAIChatCallPolicy(
-                    request_timeout_seconds=request_timeout_seconds,
-                    turn_timeout_seconds=turn_timeout_seconds,
-                ),
-                before_send=pace_request,
-                submit_interpretation_description=_SUBMIT_DESCRIPTION,
-                submit_interpretation_value_schema=_value_schema_for(_LANES[lane_name]),
-                report_input_problem_description=_REPORT_DESCRIPTION,
-            )
-        endpoints = bind_fresh()
-        stack.push_async_callback(endpoints.retire)
-        for endpoint in endpoints.endpoints:
-            checks += 1
-            check_reason = await _check_endpoint(endpoint)
-            if check_reason is not None:
-                failures += 1
-                unexecuted += len(runs)
-            print("PASS" if check_reason is None else "FAIL",
-                  "class=endpoint_check", f"lane={lane_name}",
-                  f"configuration={endpoint.configuration_id}",
-                  f"reason={check_reason or 'ok'}", flush=True)
-            if check_reason is not None:
-                continue
-            for index, (repetition, evaluation) in enumerate(runs):
-                owned = bind_fresh()
-                stack.push_async_callback(owned.retire)
-                fresh_endpoint = next(
-                    item for item in owned.endpoints
-                    if item.configuration_id == endpoint.configuration_id
-                )
-                observed = await _observe(
-                    endpoint=fresh_endpoint, evaluation=evaluation,
-                    show_model_output=show_model_output,
-                    interpretation_timeout_seconds=interpretation_timeout_seconds,
-                )
-                executed += 1
-                requires_review = observed.reason == "unsupported_report_requires_review"
-                reviews += requires_review
-                behavior_failures += not observed.passed and not requires_review
-                print("PASS" if observed.passed else ("REVIEW" if requires_review else "FAIL"),
-                      f"lane={lane_name}",
-                      f"configuration={endpoint.configuration_id}",
-                      f"repetition={repetition}",
-                      f"scenario={evaluation.variant.scenario_id}",
-                      f"class={evaluation.variant.category}",
-                      f"mode={evaluation.mode}",
-                      f"action={observed.action}",
-                      f"turns={observed.turns}",
-                      f"constructor_attempts={observed.constructor_attempts}",
-                      f"constructor_rejections={observed.constructor_rejections}",
-                      f"issue_reason={observed.issue_reason or 'none'}",
-                      f"injected_rejections={observed.injected_rejections}",
-                      f"duration_ms={observed.duration_ms}",
-                      f"reason={observed.reason}", flush=True)
-                if show_model_output:
-                    for turn, output in enumerate(observed.model_outputs, start=1):
-                        print("MODEL_OUTPUT", f"lane={lane_name}",
-                              f"configuration={endpoint.configuration_id}",
-                              f"scenario={evaluation.variant.scenario_id}",
-                              f"turn={turn}", f"assistant_message={output}", flush=True)
-                    if requires_review and observed.reported_message is not None:
-                        print("REVIEW_MESSAGE", f"lane={lane_name}",
-                              f"configuration={endpoint.configuration_id}",
-                              f"scenario={evaluation.variant.scenario_id}",
-                              f"repetition={repetition}",
-                              "message=" + json.dumps(observed.reported_message, ensure_ascii=False),
-                              flush=True)
-                if observed.transport_failure is not None:
-                    unexecuted += len(runs) - index - 1
-                    break
-    print("SUMMARY", f"lane={lane_name}", f"endpoint_checks={checks}",
-          f"endpoint_check_failures={failures}", f"executed={executed}",
-          f"behavior_failures={behavior_failures}", f"review_required={reviews}",
-          f"unexecuted={unexecuted}",
+    factories = endpoint_factories(specs)
+    runs = tuple(_evaluation_runs(evaluations, repeats))
+    for spec, factory in zip(specs, factories, strict=True):
+        endpoint = SimpleNamespace(configuration_id=spec.configuration_id, api_key=spec.api_key,
+                                   factory=factory, pace=pace_request)
+        for index, (repetition, evaluation) in enumerate(runs):
+            observed = await _observe(endpoint=endpoint, evaluation=evaluation,
+                                      show_model_output=show_model_output,
+                                      interpretation_timeout_seconds=interpretation_timeout_seconds)
+            executed += 1
+            requires_review = observed.reason == "unsupported_report_requires_review"
+            reviews += requires_review
+            behavior_failures += not observed.passed and not requires_review
+            print("PASS" if observed.passed else ("REVIEW" if requires_review else "FAIL"),
+                  f"lane={lane_name}", f"configuration={endpoint.configuration_id}",
+                  f"repetition={repetition}", f"scenario={evaluation.variant.scenario_id}",
+                  f"class={evaluation.variant.category}", f"mode={evaluation.mode}",
+                  f"action={observed.action}", f"turns={observed.turns}",
+                  f"constructor_attempts={observed.constructor_attempts}",
+                  f"constructor_rejections={observed.constructor_rejections}",
+                  f"issue_reason={observed.issue_reason or 'none'}",
+                  f"injected_rejections={observed.injected_rejections}",
+                  f"duration_ms={observed.duration_ms}", f"reason={observed.reason}", flush=True)
+            if show_model_output:
+                for turn, output in enumerate(observed.model_outputs, start=1):
+                    print("MODEL_OUTPUT", f"lane={lane_name}", f"configuration={endpoint.configuration_id}",
+                          f"scenario={evaluation.variant.scenario_id}", f"turn={turn}",
+                          f"assistant_message={output}", flush=True)
+                if requires_review and observed.reported_message is not None:
+                    print("REVIEW_MESSAGE", f"lane={lane_name}", f"configuration={endpoint.configuration_id}",
+                          f"scenario={evaluation.variant.scenario_id}", f"repetition={repetition}",
+                          "message=" + json.dumps(observed.reported_message, ensure_ascii=False), flush=True)
+            if observed.transport_failure is not None:
+                unexecuted += len(runs) - index - 1
+                break
+    print("SUMMARY", f"lane={lane_name}", f"executed={executed}",
+          f"behavior_failures={behavior_failures}", f"review_required={reviews}", f"unexecuted={unexecuted}",
           flush=True)
-    return 1 if failures or behavior_failures else (2 if reviews else 0)
+    return 1 if behavior_failures else (2 if reviews else 0)
 
 
 def _arguments() -> argparse.Namespace:
@@ -617,17 +583,12 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--case")
     parser.add_argument("--mode", choices=("all", "normal", "forced_repair"), default="all")
     parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--request-timeout-seconds", type=int, default=_REQUEST_TIMEOUT_SECONDS)
     parser.add_argument("--interpretation-timeout-seconds", type=int, default=_INTERPRETATION_TIMEOUT_SECONDS)
     parser.add_argument("--show-model-output", action="store_true")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
-    if not 1 <= args.request_timeout_seconds <= 300:
-        parser.error("--request-timeout-seconds must be between 1 and 300")
     if not 1 <= args.interpretation_timeout_seconds <= 3600:
         parser.error("--interpretation-timeout-seconds must be between 1 and 3600")
-    if args.interpretation_timeout_seconds < 2 * args.request_timeout_seconds + 10:
-        parser.error("interpretation timeout must cover two requests plus 10 seconds")
     if not 1 <= args.repeats <= _MAX_REPEATS:
         parser.error(f"--repeats must be between 1 and {_MAX_REPEATS}")
     if args.case is not None:
@@ -658,7 +619,6 @@ def main() -> int:
             lane_name=args.lane, config_dir=args.config_dir,
             evaluations=evaluations, repeats=args.repeats,
             show_model_output=args.show_model_output,
-            request_timeout_seconds=args.request_timeout_seconds,
             interpretation_timeout_seconds=args.interpretation_timeout_seconds,
         ))
     except KeyboardInterrupt:

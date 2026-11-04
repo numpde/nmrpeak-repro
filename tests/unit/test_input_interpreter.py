@@ -1,597 +1,114 @@
-"""Prove prose translation cannot bypass product or runner admission."""
+"""Verify Peak's product and runner boundaries through the shared interpreter."""
 
-from __future__ import annotations
-
-from collections.abc import Callable
-import asyncio
 import unittest
-from unittest.mock import patch
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
-from tests.fake_interpreter import InterpreterCall, fake_endpoint, turn
-
-from nmrpeak_provider.diagnostic_text import exception_diagnostic
-from nmrpeak_provider.chf_binding import ChfRunnerInput
-from nmrpeak_provider.input_interpreter import (
-    InputInterpreter,
-    _value_schema_for,
-)
-from nmrpeak_provider.interpreter_policy import (
-    InterpreterPolicy,
-    OpenAIChatCallPolicy,
-)
-from nmrpeak_provider.interpreter import (
-    CandidateConstructionExhausted,
-    InterpreterEndpoint,
-    InterpreterPrompt,
-    InterpretationRejected,
-    InterpreterTool,
-    InterpreterTransportError,
-    InterpreterUnavailable,
-    ReportedInputProblem,
-)
-from nmrpeak_provider.lifecycle_lane import (
-    CHF_LIFECYCLE_LANE,
-    HF_LIFECYCLE_LANE,
-    LifecycleLane,
-)
-from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
-from nmrpeak_provider.product_input import InputRejected, InputRejectionReason
+from nmrpeak_provider.input_interpreter import InputInterpreter, _value_schema_for
+from nmrpeak_provider.interpreter import InterpreterUnavailable, InterpreterUnavailableReason
+from nmrpeak_provider.interpreter_policy import InterpreterPolicy
+from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE, HF_LIFECYCLE_LANE
 from nmrpeak_provider.runner_session import RunnerInputRejected, ValidatedRunnerRequest
-from nmrpeak_provider.runner_protocol import (
-    RunnerRejectionReason,
-    runner_rejection_diagnostic,
-)
+from nmrpeak_provider.runner_protocol import RunnerRejectionReason, runner_rejection_diagnostic
+from tests.fakes.interpreter_values import HF_VALUE, VALUE
+from tests.unit.test_shared_interpreter_adapter import Factory, reply
 
 
-SOURCE = b"Formula C2H6O. 1H: 1.25 (t, 3H, J 7.1 Hz). 13C: 58.1."
-VALUE = {
-    "schema_id": "nmrpeak.structure_generation.request.v1",
-    "model_input": {
-        "formula": "C2H6O",
-        "spectra": {
-            "1H": {
-                "peaks": [
-                    {
-                        "shift_lo": "1.25",
-                        "shift_hi": "1.25",
-                        "integral": "3",
-                        "multiplicity": "t",
-                        "j_hz": ["7.1"],
-                    }
-                ]
-            },
-            "13C": {"peaks": [{"shift": "58.1"}]},
-        },
-    },
-}
-HF_VALUE = {
-    "schema_id": "nmrpeak.structure_generation.request.v1",
-    "model_input": {
-        "formula": "C2H6O",
-        "spectra": {"1H": VALUE["model_input"]["spectra"]["1H"]},
-    },
-}
+class ScriptedFactory(Factory):
+    def __init__(self, name, *answers):
+        super().__init__(name, None)
+        self.answers = iter(answers)
+
+    async def complete(self, messages, tools, **kwargs):
+        self.answer = next(self.answers)
+        return await super().complete(messages, tools, **kwargs)
 
 
-class CapturingSession:
-    def __init__(self, *, reject_count: int = 0) -> None:
-        self.model_inputs: list[object] = []
-        self.reject_count = reject_count
-
-    def validate(
-        self,
-        *,
-        execution_attempt_ref: str,
-        provider_attempt_key: str,
-        model_input: object,
-    ) -> RunnerInputRejected | ValidatedRunnerRequest:
-        self.model_inputs.append(model_input)
-        if self.reject_count:
-            self.reject_count -= 1
-            return RunnerInputRejected(
-                runner_rejection_diagnostic(
-                    RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512
-                ),
-                512,
-            )
-        return ValidatedRunnerRequest(self, object())
-
-
-class BoundEndpoints:
-    def __init__(self, endpoints: tuple[InterpreterEndpoint, ...]) -> None:
-        self.endpoints = endpoints
-
-    async def retire(self) -> None:
-        for endpoint in self.endpoints:
-            await endpoint.carrier.retire()
-
-
-class InputInterpreterTests(unittest.TestCase):
-    def test_source_containing_configured_key_is_not_published_or_called(self) -> None:
-        called = []
-
-        async def call(_prompt):
-            called.append(True)
-            return turn(InterpreterTool.REPORT_INPUT_PROBLEM, {"message": "incomplete"})
-
-        with self.assertLogs("nmrpeak_provider.input_interpreter", level="WARNING") as logged, \
-             self.assertRaises(InterpreterUnavailable):
-            run_with_endpoint(call, source=b"source includes test-key")
-        self.assertEqual(called, [])
-        self.assertIn("conversation_failed", "\n".join(logged.output))
-        self.assertIn("repair_unavailable", "\n".join(logged.output))
-        self.assertNotIn("test-key", "\n".join(logged.output))
-
-    def test_model_report_with_configured_key_is_not_published(self) -> None:
-        async def call(_prompt):
-            return turn(InterpreterTool.REPORT_INPUT_PROBLEM,
-                        {"message": "The source is incomplete. test-key"})
-
-        with self.assertLogs("nmrpeak_provider.input_interpreter", level="WARNING") as logged, \
-             self.assertRaises(InterpreterUnavailable) as raised:
-            run_with_endpoint(call)
-        self.assertNotIn("test-key", exception_diagnostic(raised.exception))
-        self.assertIn("conversation_failed", "\n".join(logged.output))
-        self.assertIn("repair_unavailable", "\n".join(logged.output))
-        self.assertNotIn("test-key", "\n".join(logged.output))
-
-    def test_unavailable_round_retires_before_fresh_successful_round(self) -> None:
-        async def unavailable(_prompt):
-            raise InterpreterTransportError("connect_failed")
-
-        async def success(_prompt):
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        first = fake_endpoint("first", unavailable, lane=CHF_LIFECYCLE_LANE)
-        second = fake_endpoint("second", success, lane=CHF_LIFECYCLE_LANE)
-        configured = InputInterpreter(
-            (OpenAIChatEndpointSpec(configuration_id="configured", base_url="https://interpreter.invalid/v1",
-                                    api_key="test-key", model="model", reasoning_effort=None),),
-            InterpreterPolicy(call_policy=OpenAIChatCallPolicy(request_timeout_seconds=1, turn_timeout_seconds=3),
-                              interpretation_timeout_seconds=1),
-        )
-
-        async def run():
-            session = configured.new_session()
-
-            async def validate(_input):
-                return ValidatedRunnerRequest(CapturingSession(), object())
-
-            arguments = dict(source=SOURCE, lane=CHF_LIFECYCLE_LANE, validate_input=validate,
-                             execution_attempt_ref="execution_attempt:sha256:" + "a" * 64)
+class InputInterpreterTests(unittest.IsolatedAsyncioTestCase):
+    async def run_interpreter(self, lane, factories, *, source=b"Molecular formula C2H6O and reported NMR peaks.",
+                              reject_once=False, validate=None, record_diagnostic=None):
+        specs = tuple(SimpleNamespace(configuration_id=f"model-{i}", api_key=f"credential-{i}")
+                      for i in range(len(factories)))
+        session = InputInterpreter(specs, InterpreterPolicy(interpretation_timeout_seconds=30)).new_session()
+        admitted = ValidatedRunnerRequest(object(), object())
+        rejection = RunnerInputRejected(runner_rejection_diagnostic(
+            RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512), 512)
+        if validate is None:
+            validate = AsyncMock(side_effect=[rejection, admitted] if reject_once else None,
+                                 return_value=admitted)
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=factories):
             try:
-                with patch("nmrpeak_provider.input_interpreter.bind_openai_chat_endpoints",
-                           side_effect=(BoundEndpoints((first,)), BoundEndpoints((second,)))):
-                    with self.assertRaises(InterpreterUnavailable):
-                        await session.validate_freeform_input_async(**arguments)
-                    self.assertTrue(first.carrier._closed)
-                    result = await session.validate_freeform_input_async(**arguments)
-                    self.assertIs(type(result), ValidatedRunnerRequest)
-                    self.assertTrue(second.carrier._closed)
+                result = await session.validate_freeform_input_async(
+                    source=source, lane=lane, validate_input=validate, execution_attempt_ref="attempt",
+                    record_diagnostic=record_diagnostic)
             finally:
                 await session.retire()
-
-        asyncio.run(run())
-
-    def test_model_report_redacts_unconfigured_credential_pattern(self) -> None:
-        async def call(_prompt):
-            return turn(InterpreterTool.REPORT_INPUT_PROBLEM,
-                        {"message": "The source is incomplete. Bearer other-token"})
-
-        with self.assertRaises(ReportedInputProblem) as raised:
-            run_with_endpoint(call)
-        self.assertNotIn("other-token", raised.exception.message)
-        self.assertIn("source is incomplete", raised.exception.message)
-
-    def test_unknown_tool_repair_preserves_provider_correction(self) -> None:
-        prompts = []
-
-        async def call(prompt):
-            prompts.append(prompt)
-            if len(prompts) == 1:
-                return turn("unknown_tool", {})
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        run_with_endpoint(call)
-        repair = prompts[1][3:]
-        self.assertEqual([message["role"] for message in repair], ["assistant", "tool", "user"])
-        self.assertEqual(repair[1]["content"], "unexpected_tool_invocation")
-        self.assertIn("The rejection is not evidence", repair[2]["content"])
-
-    def test_invalid_carrier_is_preserved_as_unavailable_cause(self) -> None:
-        async def call(_prompt):
-            return {"role": "assistant", "content": None, "tool_calls": []}
-
-        with self.assertLogs("nmrpeak_provider.input_interpreter", level="WARNING") as logged, \
-             self.assertRaises(InterpreterUnavailable) as raised:
-            run_with_endpoint(call)
-        self.assertIn("no identifiable tool call", exception_diagnostic(raised.exception))
-        self.assertIn("invalid_tool_carrier", "\n".join(logged.output))
-
-    def test_endpoint_explanations_survive_fallback_and_mixed_routes(self) -> None:
-        evidence: list[str] = []
-
-        async def report(_prompt: object) -> dict[str, object]:
-            return turn(InterpreterTool.REPORT_INPUT_PROBLEM, {"message": "Missing formula " + "x" * 5000})
-
-        async def failed(_prompt: object) -> dict[str, object]:
-            raise InterpreterTransportError("http_503", explanation="Model loading failed; Bearer hidden")
-
-        async def success(_prompt: object) -> dict[str, object]:
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        result = run_with_endpoints((failed, success), record_diagnostic=evidence.append)
-        self.assertIs(type(result), ValidatedRunnerRequest)
-        self.assertIn("Model loading failed", evidence[0])
-        evidence.clear()
-        with self.assertRaises(InterpreterUnavailable):
-            run_with_endpoints((report, failed), record_diagnostic=evidence.append)
-        self.assertEqual(len(evidence), 2)
-        self.assertIn("Missing formula", evidence[0])
-        self.assertIn("Model loading failed", evidence[1])
-        self.assertNotIn("hidden", " ".join(evidence))
-
-    def test_hf_and_chf_tool_schemas_match_the_product_shapes(self) -> None:
-        for lane, expected_nuclei in (
-            (HF_LIFECYCLE_LANE, {"1H"}),
-            (CHF_LIFECYCLE_LANE, {"1H", "13C"}),
-        ):
-            with self.subTest(lane=lane.offering.implementation_ref):
-                schema = _value_schema_for(lane)
-                self.assertEqual(
-                    schema["properties"]["schema_id"]["const"],
-                    "nmrpeak.structure_generation.request.v1",
-                )
-                spectra = schema["properties"]["model_input"]["properties"]["spectra"]
-                self.assertEqual(set(spectra["required"]), expected_nuclei)
-                self.assertEqual(set(spectra["properties"]), expected_nuclei)
-                peak = spectra["properties"]["1H"]["properties"]["peaks"]["items"]
-                self.assertEqual(
-                    set(peak["required"]),
-                    {"shift_lo", "shift_hi", "integral", "multiplicity", "j_hz"},
-                )
-                self.assertEqual(peak["properties"]["integral"]["type"], "string")
-                self.assertEqual(peak["properties"]["multiplicity"], {"type": "string"})
-                self.assertEqual(
-                    peak["properties"]["j_hz"]["items"]["type"], "string"
-                )
-
-    def test_each_lane_delivers_its_prompt_and_source_separately(self) -> None:
-        for lane, value, required_text, excluded_text in (
-            (
-                HF_LIFECYCLE_LANE,
-                HF_VALUE,
-                "At least one proton peak is required",
-                "Both spectra are required",
-            ),
-            (
-                CHF_LIFECYCLE_LANE,
-                VALUE,
-                "Both spectra are required",
-                "At least one proton peak is required",
-            ),
-        ):
-            prompts: list[InterpreterPrompt] = []
-
-            async def call(prompt: InterpreterPrompt) -> dict[str, object]:
-                prompts.append(prompt)
-                return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": value})
-
-            with self.subTest(lane=lane.offering.implementation_ref):
-                run_with_endpoint(call, lane=lane)
-                self.assertEqual(len(prompts), 1)
-                messages = prompts[0]
-                self.assertEqual(
-                    [message["role"] for message in messages],
-                    ["system", "user", "user"],
-                )
-                self.assertIn(required_text, messages[1]["content"])
-                self.assertNotIn(excluded_text, messages[1]["content"])
-                self.assertEqual(messages[2]["content"], SOURCE.decode())
-
-    def test_typed_candidate_crosses_existing_parser_and_runner_validation(self) -> None:
-        async def call(_prompt: object) -> dict[str, object]:
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        session = CapturingSession()
-        validated = run_with_endpoint(call, session=session)
-
-        self.assertIs(type(validated), ValidatedRunnerRequest)
-        self.assertEqual(len(session.model_inputs), 1)
-        self.assertIs(type(session.model_inputs[0]), ChfRunnerInput)
-
-    def test_product_rejection_repairs_then_exposes_typed_candidate_issue(self) -> None:
-        invalid_value = VALUE | {
-            "model_input": VALUE["model_input"] | {"formula": ""}
-        }
-        prompts: list[InterpreterPrompt] = []
-
-        async def call(prompt: InterpreterPrompt) -> dict[str, object]:
-            prompts.append(prompt)
-            return turn(
-                InterpreterTool.SUBMIT_INTERPRETATION,
-                {"value": invalid_value},
-            )
-
-        with self.assertRaises(CandidateConstructionExhausted) as raised:
-            run_with_endpoint(call)
-
-        self.assertIs(
-            raised.exception.issue.reason,
-            InputRejectionReason.INVALID_FORMULA,
-        )
-        self.assertEqual(
-            raised.exception.issue.pointer,
-            "/model_input/formula",
-        )
-        self.assertEqual(len(prompts), 3)
-        self.assertIn("/model_input/formula", prompts[1][-2]["content"])
-        self.assertNotIn("invalid_formula", str(raised.exception))
-
-    def test_non_json_candidate_preserves_the_encoder_failure(self) -> None:
-        invalid_value = VALUE | {"unexpected_number": 1.5}
-
-        async def call(_prompt: object) -> dict[str, object]:
-            return turn(
-                InterpreterTool.SUBMIT_INTERPRETATION,
-                {"value": invalid_value},
-            )
-
-        with self.assertRaises(InterpreterUnavailable) as raised:
-            run_with_endpoint(call)
-
-        detail = exception_diagnostic(raised.exception)
-        self.assertIn("unsupported canonical JSON type: float", detail)
-        self.assertIn("TypeError", detail)
-        self.assertIsNone(raised.exception.__cause__)
-
-    def test_invalid_freeform_utf8_retains_the_decoder_failure(self) -> None:
-        async def call(_prompt: object) -> dict[str, object]:
-            raise AssertionError("Invalid source text must not reach an endpoint")
-
-        with self.assertRaises(InputRejected) as raised:
-            run_with_endpoint(call, source=b"\xff")
-
-        self.assertIs(raised.exception.reason, InputRejectionReason.INVALID_UTF8)
-        self.assertIsInstance(raised.exception.__cause__, UnicodeDecodeError)
-
-    def test_empty_or_controlled_freeform_source_stops_before_endpoint(self) -> None:
-        async def call(_prompt: object) -> dict[str, object]:
-            raise AssertionError("Invalid source text must not reach an endpoint")
-
-        for source, reason in (
-            (b"", InputRejectionReason.EMPTY_INPUT),
-            (b"Formula C2H6O\x00", InputRejectionReason.DISALLOWED_CONTROL),
-            (b"Formula C2H6O\xe2\x80\x8b", InputRejectionReason.DISALLOWED_CONTROL),
-        ):
-            with self.subTest(source=source), self.assertRaises(InputRejected) as raised:
-                run_with_endpoint(call, source=source)
-            self.assertIs(raised.exception.reason, reason)
-
-    def test_runner_rejection_repairs_on_the_same_endpoint(self) -> None:
-        prompts: list[InterpreterPrompt] = []
-
-        async def call(prompt: InterpreterPrompt) -> dict[str, object]:
-            prompts.append(prompt)
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        session = CapturingSession(reject_count=1)
-        validated = run_with_endpoint(call, session=session)
-        self.assertIs(type(validated), ValidatedRunnerRequest)
-        self.assertEqual(len(session.model_inputs), 2)
-        self.assertEqual(
-            [[message["role"] for message in prompt] for prompt in prompts],
-            [["system", "user", "user"],
-             ["system", "user", "user", "assistant", "tool", "user"]],
-        )
-        self.assertEqual(
-            prompts[1][-2]["content"],
-            "The tokenizer produced 512 input tokens; this model accepts at most 511.",
-        )
-
-    def test_runner_rejection_falls_back_with_a_fresh_prompt(self) -> None:
-        prompts: list[InterpreterPrompt] = []
-
-        async def call(prompt: InterpreterPrompt) -> dict[str, object]:
-            prompts.append(prompt)
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        session = CapturingSession(reject_count=3)
-        validated = run_with_endpoints((call, call), session=session)
-
-        self.assertIs(type(validated), ValidatedRunnerRequest)
-        self.assertEqual(len(session.model_inputs), 4)
-        self.assertEqual(
-            [[message["role"] for message in prompt] for prompt in prompts],
-            [
-                ["system", "user", "user"],
-                ["system", "user", "user", "assistant", "tool", "user"],
-                ["system", "user", "user", "assistant", "tool", "user",
-                 "assistant", "tool", "user"],
-                ["system", "user", "user"],
-            ],
-        )
-
-    def test_runner_rejection_requires_complete_repair_route(self) -> None:
-        async def call(_prompt: InterpreterPrompt) -> dict[str, object]:
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        with self.assertRaises(InterpretationRejected) as raised:
-            run_with_endpoints(
-                (call, call),
-                session=CapturingSession(reject_count=6),
-            )
-        self.assertEqual(
-            raised.exception.message,
-            "The tokenizer produced 512 input tokens; this model accepts at most 511.",
-        )
-        self.assertEqual(raised.exception.token_count, 512)
-
-    def test_single_endpoint_report_remains_unverified_model_evidence(self) -> None:
-        async def call(_prompt: object) -> dict[str, object]:
-            return turn(
-                InterpreterTool.REPORT_INPUT_PROBLEM,
-                {
-                    "message": (
-                        "The carbon-13 peak list is missing. Submit a new Job with both "
-                        "proton and carbon-13 peak lists."
-                    )
-                },
-            )
-
-        with self.assertRaises(ReportedInputProblem) as raised:
-            run_with_endpoint(call)
-        self.assertEqual(
-            raised.exception.message,
-            "The carbon-13 peak list is missing. Submit a new Job with both proton and "
-            "carbon-13 peak lists.",
-        )
-
-    def test_model_report_falls_back_to_a_validated_candidate(self) -> None:
-        prompts: list[InterpreterPrompt] = []
-
-        async def report(prompt: InterpreterPrompt) -> dict[str, object]:
-            prompts.append(prompt)
-            return turn(
-                InterpreterTool.REPORT_INPUT_PROBLEM,
-                {"message": "The integral is missing."},
-            )
-
-        async def submit(prompt: InterpreterPrompt) -> dict[str, object]:
-            prompts.append(prompt)
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        validated = run_with_endpoints((report, submit))
-        self.assertIs(type(validated), ValidatedRunnerRequest)
-        self.assertEqual(
-            [[item["role"] for item in prompt] for prompt in prompts],
-            [["system", "user", "user"], ["system", "user", "user"]],
-        )
-
-    def test_all_endpoint_reports_remain_model_evidence(self) -> None:
-        async def report(_prompt: InterpreterPrompt) -> dict[str, object]:
-            return turn(
-                InterpreterTool.REPORT_INPUT_PROBLEM,
-                {"message": "Model claim about source; unverified."},
-            )
-
-        with self.assertRaises(ReportedInputProblem) as raised:
-            run_with_endpoints((report, report))
-        self.assertEqual(str(raised.exception), "reported_input_problem")
-
-    def test_report_mixed_with_transport_or_runner_rejection_is_unavailable(self) -> None:
-        async def report(_prompt: InterpreterPrompt) -> dict[str, object]:
-            return turn(
-                InterpreterTool.REPORT_INPUT_PROBLEM,
-                {"message": "Model claim about source; unverified."},
-            )
-
-        async def transport(_prompt: InterpreterPrompt) -> dict[str, object]:
-            raise InterpreterTransportError("connect_failed")
-
-        async def candidate(_prompt: InterpreterPrompt) -> dict[str, object]:
-            return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": VALUE})
-
-        with self.assertRaises(InterpreterUnavailable):
-            run_with_endpoints((report, transport))
-        with self.assertRaises(InterpreterUnavailable):
-            run_with_endpoints(
-                (report, candidate),
-                session=CapturingSession(reject_count=3),
-            )
-
-    def test_constructor_rejection_mixed_with_transport_is_unavailable(self) -> None:
-        invalid_value = VALUE | {
-            "model_input": VALUE["model_input"] | {"formula": ""}
-        }
-
-        async def invalid(_prompt: InterpreterPrompt) -> dict[str, object]:
-            return turn(
-                InterpreterTool.SUBMIT_INTERPRETATION,
-                {"value": invalid_value},
-            )
-
-        async def transport(_prompt: InterpreterPrompt) -> dict[str, object]:
-            raise InterpreterTransportError("connect_failed")
-
-        with self.assertRaises(InterpreterUnavailable):
-            run_with_endpoints((invalid, transport))
-
-    def test_endpoint_failure_is_retryable_and_does_not_log_source_text(self) -> None:
-        async def call(_prompt: object) -> dict[str, object]:
-            raise InterpreterTransportError("connect_failed")
-
-        with self.assertLogs(
-            "nmrpeak_provider.input_interpreter", level="WARNING"
-        ) as logged, self.assertRaises(InterpreterUnavailable) as raised:
-            run_with_endpoint(call)
-        rendered = "\n".join(logged.output)
-        self.assertIn("interpreter_event='endpoint_failed'", rendered)
-        self.assertIn("configuration_id='fake-1'", rendered)
-        self.assertIn("execution_attempt_ref='execution_attempt:sha256:", rendered)
-        self.assertIn("failure_kind='transport'", rendered)
-        self.assertIn("failure_reason='connect_failed'", rendered)
-        self.assertIn("disposition='endpoints_exhausted'", rendered)
-        self.assertIn("configuration_id=None", rendered)
-        self.assertIn("attempted_configuration_ids=('fake-1',)", rendered)
-        self.assertNotIn(SOURCE.decode(), rendered)
-        self.assertIn("InterpreterTransportError", exception_diagnostic(raised.exception))
-
-
-def run_with_endpoint(
-    call: InterpreterCall,
-    *,
-    source: bytes = SOURCE,
-    lane: LifecycleLane = CHF_LIFECYCLE_LANE,
-    session: CapturingSession | None = None,
-) -> ValidatedRunnerRequest:
-    return run_with_endpoints((call,), source=source, lane=lane, session=session)
-
-
-def run_with_endpoints(
-    calls: tuple[InterpreterCall, ...],
-    *,
-    source: bytes = SOURCE,
-    lane: LifecycleLane = CHF_LIFECYCLE_LANE,
-    session: CapturingSession | None = None,
-    record_diagnostic: Callable[[str], None] | None = None,
-) -> ValidatedRunnerRequest:
-    endpoints = tuple(
-        fake_endpoint(f"fake-{index}", call, lane=lane, secrets=("test-key",))
-        for index, call in enumerate(calls, start=1)
-    )
-    interpreter = InputInterpreter(
-        (
-            OpenAIChatEndpointSpec(
-                configuration_id="configured",
-                base_url="https://interpreter.invalid/v1",
-                api_key="test-key",
-                model="configured-model",
-                reasoning_effort=None,
-            ),
-        ),
-        InterpreterPolicy(
-            call_policy=OpenAIChatCallPolicy(
-                request_timeout_seconds=1,
-                turn_timeout_seconds=3,
-            ),
-            interpretation_timeout_seconds=1,
-        ),
-    )
-    with patch(
-        "nmrpeak_provider.input_interpreter.bind_openai_chat_endpoints",
-        return_value=BoundEndpoints(endpoints),
-    ):
-        return interpreter.validate_freeform_input(
-            source=source,
-            lane=lane,
-            session=session if session is not None else CapturingSession(),
-            execution_attempt_ref="execution_attempt:sha256:" + "a" * 64,
-            provider_attempt_key="provider-attempt:test",
-            record_diagnostic=record_diagnostic,
-        )
-
-
-
-if __name__ == "__main__":
-    unittest.main()
+                await session.join()
+        return result, admitted, validate
+
+    async def test_hf_and_chf_candidates_pass_product_and_runner_admission(self):
+        for lane, value in ((HF_LIFECYCLE_LANE, HF_VALUE), (CHF_LIFECYCLE_LANE, VALUE)):
+            with self.subTest(lane=lane.offering):
+                factory = ScriptedFactory("model", reply("submit_interpretation", {"value": value}))
+                result, admitted, validate = await self.run_interpreter(lane, (factory,))
+                self.assertIs(result, admitted)
+                validate.assert_awaited_once()
+                self.assertEqual(validate.await_args.args[0].wire_document()["molecular_formula"], "C2H6O")
+
+    async def test_invalid_candidate_can_be_repaired_without_skipping_product_parser(self):
+        invalid = {**HF_VALUE, "model_input": {**HF_VALUE["model_input"], "formula": ""}}
+        factory = ScriptedFactory("model", reply("submit_interpretation", {"value": invalid}),
+                                  reply("submit_interpretation", {"value": HF_VALUE}))
+        events = []
+        result, admitted, validate = await self.run_interpreter(
+            HF_LIFECYCLE_LANE, (factory,), record_diagnostic=events.append)
+        self.assertIs(result, admitted)
+        self.assertEqual(len(factory.requests), 2)
+        validate.assert_awaited_once()
+        self.assertTrue(any("failure_kind='correction'" in event for event in events))
+
+    async def test_runner_rejection_is_corrected_before_admission(self):
+        factory = ScriptedFactory("model", reply("submit_interpretation", {"value": HF_VALUE}),
+                                  reply("submit_interpretation", {"value": HF_VALUE}))
+        result, admitted, validate = await self.run_interpreter(HF_LIFECYCLE_LANE, (factory,), reject_once=True)
+        self.assertIs(result, admitted)
+        self.assertEqual(validate.await_count, 2)
+
+    async def test_unsupported_multiplicity_does_not_reach_runner(self):
+        invalid = deepcopy(HF_VALUE)
+        invalid["model_input"]["spectra"]["1H"]["peaks"][0]["multiplicity"] = "br s"
+        factory = ScriptedFactory("model", *(reply("submit_interpretation", {"value": invalid}) for _ in range(3)))
+        validate = AsyncMock()
+        with self.assertRaises(InterpreterUnavailable) as caught:
+            await self.run_interpreter(HF_LIFECYCLE_LANE, (factory,), validate=validate)
+        self.assertIs(caught.exception.reason, InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED)
+        validate.assert_not_awaited()
+        self.assertEqual(len(factory.requests), 3)
+
+    async def test_report_hands_off_to_next_model(self):
+        first = ScriptedFactory("first", reply("report_interpretation_problem", {"message": "Private claim."}))
+        second = ScriptedFactory("second", reply("submit_interpretation", {"value": HF_VALUE}))
+        result, admitted, validate = await self.run_interpreter(HF_LIFECYCLE_LANE, (first, second))
+        self.assertIs(result, admitted)
+        self.assertNotIn("Private claim.", str(second.requests))
+        validate.assert_awaited_once()
+
+    async def test_all_reports_are_unavailable_not_verified_input_failure(self):
+        first = ScriptedFactory("first", reply("report_interpretation_problem", {"message": "Cannot interpret."}))
+        with self.assertRaises(InterpreterUnavailable) as caught:
+            await self.run_interpreter(HF_LIFECYCLE_LANE, (first,))
+        self.assertIs(caught.exception.reason, InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED)
+
+    async def test_credential_in_source_never_reaches_model(self):
+        factory = ScriptedFactory("first", reply("submit_interpretation", {"value": HF_VALUE}))
+        with self.assertRaises(InterpreterUnavailable) as caught:
+            await self.run_interpreter(HF_LIFECYCLE_LANE, (factory,), source=b"credential-0")
+        self.assertIs(caught.exception.reason, InterpreterUnavailableReason.INPUT_REJECTED)
+        self.assertEqual(factory.requests, [])
+
+    def test_multiplicity_schema_does_not_force_source_substitution(self):
+        schema = _value_schema_for(HF_LIFECYCLE_LANE)
+        peak = schema["properties"]["model_input"]["properties"]["spectra"]["properties"]["1H"]
+        multiplicity = peak["properties"]["peaks"]["items"]["properties"]["multiplicity"]
+        self.assertEqual(multiplicity, {"type": "string"})

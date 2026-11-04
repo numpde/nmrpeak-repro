@@ -34,8 +34,6 @@ validate_seconds = 30
 generate_seconds = 600
 retire_seconds = 20
 [interpreter]
-request_timeout_seconds = 25
-turn_timeout_seconds = 60
 interpretation_timeout_seconds = 240
 '''
 FROZEN_ID = "sha256:" + "1" * 64

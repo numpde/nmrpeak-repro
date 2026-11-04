@@ -54,6 +54,23 @@ provider journal, checkpoints, and frozen generations, then reports the image
 IDs verified on the running provider and runners. Plain `provider/deployment/up`
 does not build and still requires the reviewed plan hash.
 
+Interpreter endpoints are read in filename order from
+`secrets/deployments/<name>/openai-chat-completions.d`. Each `.toml` file names
+the complete chat-completions URL, model, and a private sibling key file:
+
+```toml
+url = "https://model.example/v1/chat/completions"
+model = "model-name"
+key_file = "model.key"
+```
+
+An endpoint may also specify `ca_file` and `reasoning_effort`. Key and CA
+references must be sibling filenames. The deployment captures only endpoint
+files and the files they reference. Migrate older endpoint files containing
+`id`, `base_url`, or an inline `api_key` to this format before updating the
+deployment. The `[interpreter]` section in `provider.toml` now sets the single
+`interpretation_timeout_seconds`; remove the old request and turn timeouts.
+
 `make packages/images/retire DOCKER_CONTEXT=<name>` removes obsolete owned
 images from the selected local engine. It retains current inputs, image IDs
 recorded by retained generations and build captures, images used by running or

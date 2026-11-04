@@ -21,7 +21,7 @@ from nmrpeak_provider.provider_config import ObservationPolicy, ProviderProcessP
 from nmrpeak_provider.provider_process import ProviderAnnouncement, ProviderProcess
 from tests.fakes.shared_api import SharedApi
 from tests.unit.test_analysis_session import interpreter, scientific_lane
-from tests.unit.test_input_interpreter import HF_VALUE
+from tests.fakes.interpreter_values import HF_VALUE
 
 
 async def fatal_science_probe():

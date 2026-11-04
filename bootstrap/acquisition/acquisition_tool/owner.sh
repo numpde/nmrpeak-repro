@@ -197,6 +197,8 @@ _acq_start_route() {
     [[ -z ${_acq_cids[relay]:-} ]] || return 0
     [[ -n $_acq_route ]] || { _acq_fail 'Select an explicit acquisition route before online work.'; return 2; }
     _acq_scope_identity || { _acq_failed=true; return 2; }
+    _acq_native 'acquisition resolver capture' 10 stdio python3 -I -S -B "$_acq_bundle/acquisition_tool/dns.py" \
+        --interface "$_acq_route" --output "$_acq_scratch/resolv.conf" || { _acq_failed=true; return 2; }
     mkdir -m 700 -- "$_acq_scratch/gateway-socket" "$_acq_scratch/gateway-ready" "$_acq_scratch/relay-ready" || return 2
     local -a _acq_base_options=(--pull never --read-only --user "$_acq_scope_uid:$_acq_scope_gid"
         --cap-drop ALL --security-opt no-new-privileges:true --cpus 1 --memory 128m --memory-swap 128m --pids-limit 64
@@ -206,10 +208,9 @@ _acq_start_route() {
     local -a _acq_gateway_options=("${_acq_base_options[@]}" --network host
         --mount "type=bind,src=$_acq_scratch/gateway-socket,dst=/gateway"
         --mount "type=bind,src=$_acq_scratch/gateway-ready,dst=/ready")
-    if [[ -f /run/systemd/resolve/resolv.conf && ! -L /run/systemd/resolve/resolv.conf ]]; then
-        _acq_gateway_options+=(--mount type=bind,src=/run/systemd/resolve/resolv.conf,dst=/run/systemd/resolve/resolv.conf,readonly)
-    fi
+    _acq_gateway_options+=(--mount "type=bind,src=$_acq_scratch/resolv.conf,dst=/gateway-resolv.conf,readonly")
     local -a _acq_gateway_args=(-P -B -m provider_core.bound_http_proxy --interface "$_acq_route"
+        --resolver-file /gateway-resolv.conf
         --unix-socket /gateway/proxy.sock --ready-file /ready/socket)
     _acq_create gateway "$_acq_bootstrap_image" _acq_gateway_options _acq_gateway_args || return "$?"
     _acq_ready gateway "$_acq_scratch/gateway-ready/socket" || return "$?"

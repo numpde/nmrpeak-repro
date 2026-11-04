@@ -78,7 +78,7 @@
           "class": "insufficient",
           "forced_repair": false,
           "expect": {
-            "action": "report_input_problem",
+            "action": "report_interpretation_problem",
             "max_turns": 1,
             "forbidden_substrings": [],
             "message_must_mention_any": ["13C", "carbon"]

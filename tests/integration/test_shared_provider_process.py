@@ -19,7 +19,7 @@ from provider_core.api_config import api_settings_with_material
 from provider_core.shared_delivery_client import SharedDeliveryClient
 from provider_core.shared_delivery_ipc import SharedDeliveryInbox, SharedDeliverySocket
 from provider_core.delivery_store import DeliveryFull, DeliveryOutcome, DeliveryQueue, QueueLimits
-from provider_core.analysis import AnalysisOutcomeUnresolved, ObservedWorkerCrash
+from provider_core.analysis import AnalysisOutcomeUnresolved, ObservedWorkerCrash, PreparedAnalysis
 from provider_core.attempt_record import TerminalOperation
 from provider_core.attempt_request import fail_body, start_body
 from provider_core.controller import ControllerFailed
@@ -31,10 +31,9 @@ from provider_core.ownership import AttemptClaims, LiveAttemptLimits
 from nmrpeak_provider.analysis_session import NmrpeakAnalysisSession
 from nmrpeak_provider.input_interpreter import InputInterpreter
 from nmrpeak_provider.interpreter import InterpreterTool, InterpreterUnavailable, InterpreterUnavailableReason
-from nmrpeak_provider.interpreter_policy import InterpreterPolicy, OpenAIChatCallPolicy
-from nmrpeak_provider.openai_chat_interpreter import (
-    OpenAIChatEndpointSpec, OpenAIChatEndpoints, bind_openai_chat_endpoints,
-)
+from nmrpeak_provider.interpreter_policy import InterpreterPolicy
+from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
+from provider_core.interpreter import Interpreter
 from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.generation_runtime import GenerationRuntime
 from nmrpeak_provider.product_result import canonical_result_bytes
@@ -42,7 +41,7 @@ from nmrpeak_provider.provider_config import ObservationPolicy, ProviderProcessP
 from nmrpeak_provider.provider_process import ProviderAnnouncement, ProviderProcess
 from nmrpeak_provider.runner_protocol import GenerateFrame, ValidateFrame
 from nmrpeak_provider.runner_session import open_runner_session, RunnerDeadlines
-from tests.fakes.model_http import LoopbackHTTP, reply
+from tests.fakes.model_http import LoopbackHTTP, Reply, reply
 from tests.integration.test_native_runner_session import native_runner
 from tests.fakes.shared_api import ApiTransport, SharedApi
 from tests.fakes.native_runner import lane_contract
@@ -50,15 +49,38 @@ from provider_core.network import NetworkIOObservation
 from provider_core.transport import ExchangeFailed
 from tests.fakes.runner import FakeRunnerFault
 from tests.unit.test_analysis_session import scientific_lane
-from tests.unit.test_input_interpreter import BoundEndpoints, HF_VALUE, VALUE
-from tests.fake_interpreter import fake_endpoint, turn
+from tests.fakes.interpreter_values import HF_VALUE, VALUE
 from tests.unit.test_analysis_session import interpreter
 from tests.unit.test_provider_startup_inputs import credential_bytes
 
 
 class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_diagnostic_sink_failure_does_not_block_next_selected_job(self):
+        service = await self._idle_process()
+        lane = service.lanes[0]
+        diagnostic = RuntimeError("private diagnostic failure")
+        first = SimpleNamespace(diagnostic_failure=diagnostic)
+        second = SimpleNamespace(diagnostic_failure=None)
+        runs = 0
+
+        async def run(_pending):
+            nonlocal runs
+            runs += 1
+            if runs == 2:
+                service._stop.set()
+            return None
+
+        controller = SimpleNamespace(run=run)
+        with patch("nmrpeak_provider.provider_process.NmrpeakAnalysisSession", side_effect=[first, second]), \
+             patch.object(service, "_select", AsyncMock(return_value=(object(), object()))), \
+             patch.object(service, "_controller", return_value=controller), \
+             patch("nmrpeak_provider.provider_process._LOG.warning", side_effect=RuntimeError("logging unavailable")):
+            await service._lane_loop(lane)
+        self.assertEqual(runs, 2)
+        self.assertIsInstance(service.diagnostic_failure, RuntimeError)
+
     @asynccontextmanager
-    async def _interpreter_executor_fixture(self, *, script, before_send=None, runner=None):
+    async def _interpreter_executor_fixture(self, *, script, runner=None):
         # Reuse the maintained service/controller composition rather than model
         # executor ownership in a second fixture.
         service = await self._idle_process(with_job=True)
@@ -72,22 +94,10 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                                     b"Interpret these proton peaks.")
         server = await LoopbackHTTP(script).start()
         configured = InputInterpreter((OpenAIChatEndpointSpec(
-            configuration_id="fixture", base_url=server.base_url,
-            api_key="fixture-key", model="fixture-model", reasoning_effort=None,
-        ),), InterpreterPolicy(
-            call_policy=OpenAIChatCallPolicy(request_timeout_seconds=5, turn_timeout_seconds=12),
-            interpretation_timeout_seconds=20,
-        ))
+            configuration_id="fixture", url=server.base_url + "/chat/completions",
+            api_key="fixture-key", model="fixture-model", trust=server.trust,
+        ),), InterpreterPolicy(interpretation_timeout_seconds=20))
         service.interpreter = configured
-        owners = []
-
-        def bind(*args, **kwargs):
-            owner = bind_openai_chat_endpoints(*args, before_send=before_send, **kwargs)
-            # The existing loopback fixture's CA is the HTTP trust grant.
-            for endpoint_owner in owner._owners:
-                endpoint_owner._trust = server.trust
-            owners.append(owner)
-            return owner
 
         endpoint = service.delivery.endpoint
         state = endpoint.socket_path.parent / "interpreter-state"
@@ -103,8 +113,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
         controller = service._controller(lane, session, pending, instructions)
         lane.controller = controller
         try:
-            with patch("nmrpeak_provider.input_interpreter.bind_openai_chat_endpoints", bind):
-                yield service, controller, pending, owners, server, queue, accepted
+            yield service, controller, pending, session, server, queue, accepted
         finally:
             # Each witness releases its held operation before leaving this scope.
             await service._drain()
@@ -112,20 +121,11 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
             queue.close()
             await server.close()
 
-    async def test_executor_keeps_original_prepare_after_endpoint_retirement(self):
-        entered, release, endpoint_retired = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def test_executor_retires_inflight_interpreter_http(self):
+        release, endpoint_retired = asyncio.Event(), asyncio.Event()
         original_prepare_tasks = []
         prepare = NmrpeakAnalysisSession.prepare
-        retire = OpenAIChatEndpoints.retire
-
-        async def before_send(_request):
-            entered.set()
-            try:
-                await release.wait()
-            except asyncio.CancelledError:
-                # Model a callback that still owns work after cancellation.
-                # Endpoint retirement must fence its eventual dispatch.
-                await release.wait()
+        retire = Interpreter.retire
 
         async def watched_prepare(session, *args, **kwargs):
             original_prepare_tasks.append(asyncio.current_task())
@@ -136,12 +136,12 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
             endpoint_retired.set()
 
         async with self._interpreter_executor_fixture(
-                script=[], before_send=before_send) as (_, controller, pending, owners, server, queue, _):
+                script=[Reply(wait_for=release)]) as (_, controller, pending, session, server, queue, _):
             with patch.object(NmrpeakAnalysisSession, "prepare", watched_prepare), \
-                 patch.object(OpenAIChatEndpoints, "retire", watched_retire):
+                 patch.object(Interpreter, "retire", watched_retire):
                 original = asyncio.create_task(controller.run(pending))
                 try:
-                    await asyncio.wait_for(entered.wait(), 2)
+                    await asyncio.wait_for(server.request_seen.wait(), 2)
                     controller.request_stop()
                     await asyncio.wait_for(endpoint_retired.wait(), 2)
                     with self.assertRaises(ControllerFailed):
@@ -149,25 +149,17 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                     executor = controller.operation
                     self.assertIs(type(executor), AttemptExecutor)
                     self.assertTrue(executor.retirement_confirmed)
-                    self.assertTrue(owners[0].endpoints[0].carrier.retirement_confirmed)
+                    self.assertTrue(session._interpretation._shared.retirement_confirmed)
                     self.assertEqual(len(original_prepare_tasks), 1)
                     prepare_task = original_prepare_tasks[0]
-                    self.assertFalse(prepare_task.done())
-                    self.assertFalse(executor.work_settled)
-                    self.assertFalse(executor.shutdown_ready)
-                    self.assertEqual(server.requests, [])
+                    self.assertEqual(len(server.requests), 1)
 
                     release.set()
                     done, _ = await asyncio.wait((prepare_task,), timeout=2)
                     self.assertIn(prepare_task, done)
-                    # External completion is insufficient until the SDK joins
-                    # its original task and accounts for that task's failure.
-                    self.assertFalse(executor.work_settled)
-                    with self.assertRaises(ExecutionFailed):
-                        await executor.settle()
                     self.assertTrue(executor.work_settled)
                     self.assertTrue(executor.shutdown_ready)
-                    self.assertEqual(server.requests, [])
+                    self.assertEqual(len(server.requests), 1)
                     self.assertFalse(queue.inventory(controller.scope.api_origin,
                                                      controller.scope.provider_ref))
                 finally:
@@ -178,7 +170,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_observed_validation_crash_handoff_precedes_held_interpreter_cleanup(self):
         cleanup_entered, cleanup_release = asyncio.Event(), asyncio.Event()
         captured_crashes = []
-        retire = OpenAIChatEndpoints.retire
+        retire = Interpreter.retire
         call_science = NmrpeakAnalysisSession._call_science
 
         async def held_retire(owner):
@@ -207,7 +199,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                 async with self._interpreter_executor_fixture(
                         script=[reply(completion)], runner=runner) as (
                             _, controller, pending, _, server, queue, accepted):
-                    with patch.object(OpenAIChatEndpoints, "retire", held_retire), \
+                    with patch.object(Interpreter, "retire", held_retire), \
                          patch.object(NmrpeakAnalysisSession, "_call_science", watched_science):
                         original = asyncio.create_task(controller.run(pending))
                         try:
@@ -427,82 +419,40 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
             claim.release(owner=owner)
             await service.api.retire(owner=service)
 
-    async def test_interpreter_deadline_during_validation_keeps_attempt_without_terminal_report(self):
-        hf, hf_runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
-        chf, chf_runner, _, _ = await self.enterAsyncContext(scientific_lane("chf"))
-        api = SharedApi({"job:hf": (hf.generation.analysis_kind_ref, b"Interpret these peaks.")})
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        (root / "state").mkdir(mode=0o700)
-        (root / "ipc").mkdir(mode=0o700)
-        endpoint = DeliveryEndpoint(api.origin, api.provider_ref, root / "ipc/report.sock")
-        queue = DeliveryQueue(root / "state", limits=QueueLimits(4, 1048576, 4, 1048576))
-        inbox = DeliveryInbox(queue, (endpoint,), request_seconds=2, on_accepted=Mock(),
-                              on_failure=Mock(), binding_status=lambda _endpoint: {"state": "inbox_only"})
-        await inbox.start()
-        calls = []
-        async def interpret_call(_messages):
-            calls.append(None)
-            if len(calls) == 1:
-                return turn(InterpreterTool.SUBMIT_INTERPRETATION, {"value": HF_VALUE})
-            return turn(InterpreterTool.REPORT_INPUT_PROBLEM, {"message": "The source is incomplete."})
+    async def test_started_validation_can_finish_after_model_window(self):
+        from tests.unit.test_analysis_session import admission, phase_reporter
+        from tests.unit.test_shared_interpreter_adapter import Factory, reply as model_reply
 
-        configured = InputInterpreter((OpenAIChatEndpointSpec(
-            configuration_id="fixture", base_url="https://interpreter.invalid/v1",
-            api_key="fixture-only", model="fixture", reasoning_effort=None),),
-            InterpreterPolicy(call_policy=OpenAIChatCallPolicy(request_timeout_seconds=1, turn_timeout_seconds=3),
-                              interpretation_timeout_seconds=0.1))
-        service = ProviderProcess(
-            runtime=GenerationRuntime("sha256:" + "1" * 64, hf, chf),
-            hf_session=hf_runner, chf_session=chf_runner, interpreter=configured,
-            new_api=api.new_api,
-            new_delivery=lambda: DeliveryClient(endpoint, exchange_seconds=2, retirement_seconds=0.2),
-            policy=ProviderProcessPolicy(0.01, 60, 2, 0.2, 20, ObservationPolicy(0.01, 1, 30)),
-            announcement=ProviderAnnouncement("NMRPeak", "Deadline fixture", tuple(
-                AnalysisOffering(lane.generation.analysis_kind_ref, "Fixture offering") for lane in (hf, chf))),
-        )
+        hf, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf", validate_seconds=2))
+        model = Factory("fixture", model_reply("submit_interpretation", {"value": HF_VALUE}))
+        configured = InputInterpreter((SimpleNamespace(configuration_id="fixture", api_key="fixture-only"),),
+                                      InterpreterPolicy(interpretation_timeout_seconds=0.1))
+        session = NmrpeakAnalysisSession(hf, runner, configured)
+        acknowledged, instructions = admission(hf, b"Interpret these peaks.")
         entered, release = Event(), Event()
-        task = None
         original_validate = channel._accept_validate
+
         def delayed_validation(frame):
             entered.set()
             if not release.wait(2):
                 raise TimeoutError("Fixture validation was not released")
             original_validate(frame)
 
-        try:
-            with patch("nmrpeak_provider.input_interpreter.bind_openai_chat_endpoints",
-                       return_value=BoundEndpoints((fake_endpoint("fixture", interpret_call, lane=hf.lane),))), \
-                 patch.object(channel, "_accept_validate", delayed_validation):
-                task = asyncio.create_task(service.run(on_ready=Mock()))
-                try:
-                    self.assertTrue(await asyncio.to_thread(entered.wait, 1))
-                    await asyncio.sleep(0.25)
-                finally:
-                    release.set()
-                with self.assertRaises(BaseExceptionGroup) as caught:
-                    await asyncio.wait_for(task, 10)
-            self.assertFalse(queue.inventory(api.origin, api.provider_ref))
-            controller = service.lanes[0].controller
-            self.assertIsNotNone(caught.exception.subgroup(lambda error: error is controller.last_failure))
-            unresolved = controller.last_failure.cause.cause
-            self.assertIsInstance(unresolved, AnalysisOutcomeUnresolved)
-            self.assertIsInstance(unresolved.__cause__, InterpreterUnavailable)
-            self.assertIs(unresolved.__cause__.reason, InterpreterUnavailableReason.DEADLINE_EXCEEDED)
-            self.assertIn(controller, service._claims.live_owners())
-            self.assertTrue(hf_runner.retirement_confirmed)
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(sum(type(frame) is ValidateFrame for frame in channel.received_frames), 1)
-            self.assertFalse(any(type(frame) is GenerateFrame for frame in channel.received_frames))
-            self.assertFalse(any(path.endswith(("/complete", "/fail")) for _, path, _ in api.calls))
-            self.assertFalse(any(body.get("condition_code") == "interpreter_deadline_exceeded"
-                                 for _, _, body in api.calls))
-        finally:
-            release.set()
-            if task is not None and not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            await inbox.close()
-            queue.close()
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)), \
+             patch.object(channel, "_accept_validate", delayed_validation):
+            task = asyncio.create_task(session.prepare(acknowledged, instructions, report_condition=phase_reporter()))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                await asyncio.sleep(0.2)
+                self.assertFalse(task.done())
+                self.assertFalse(any(type(frame) is GenerateFrame for frame in channel.received_frames))
+            finally:
+                release.set()
+            prepared = await asyncio.wait_for(task, 2)
+        self.assertIs(type(prepared), PreparedAnalysis)
+        self.assertEqual(sum(type(frame) is ValidateFrame for frame in channel.received_frames), 1)
+        self.assertFalse(any(type(frame) is GenerateFrame for frame in channel.received_frames))
+        await session.retire()
 
     async def test_stop_after_controller_check_prevents_first_generation_submission(self):
         hf, hf_runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))

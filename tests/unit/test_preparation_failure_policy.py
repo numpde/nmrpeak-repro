@@ -38,18 +38,6 @@ class PreparationFailurePolicyTests(unittest.TestCase):
                     "input_rejected",
                     "Input rejected at /model_input/formula: invalid syntax.",
                 ))
-                candidate = policy.resolve(ClassifiedPreparationFailure(
-                    FailureKind.CANDIDATE_ISSUE.value,
-                    ProviderDiagnosticText("Interpreted candidate rejected at /model_input/formula."),
-                ))
-                self.assertEqual(candidate.failure_code, "interpretation_failed")
-                self.assertIn("candidate", candidate.failure_message)
-                report = policy.resolve(ClassifiedPreparationFailure(
-                    FailureKind.MODEL_REPORTED_PROBLEM.value,
-                    ProviderDiagnosticText("The interpreter reported (not independently verified): missing formula."),
-                ))
-                self.assertEqual(report.failure_code, "interpretation_failed")
-                self.assertIn("not independently verified", report.failure_message)
                 runner = policy.resolve(ClassifiedPreparationFailure(
                     FailureKind.DIRECT_RUNNER_REJECTED.value,
                     ProviderDiagnosticText("The model accepts at most 511 input tokens."),
@@ -58,17 +46,6 @@ class PreparationFailurePolicyTests(unittest.TestCase):
                     runner.failure_message,
                     "The model accepts at most 511 input tokens.",
                 )
-                candidate_runner = policy.resolve(ClassifiedPreparationFailure(
-                    FailureKind.CANDIDATE_RUNNER_REJECTED.value,
-                    ProviderDiagnosticText(
-                        "The last interpreted candidate produced 640 tokenizer tokens."
-                    ),
-                ))
-                self.assertEqual(candidate_runner, PublishedPreparationFailure(
-                    "interpretation_failed",
-                    "The last interpreted candidate produced 640 tokenizer tokens.",
-                ))
-
     def test_exhaustive_parse_rejects_missing_and_extra_kinds(self) -> None:
         from pathlib import Path
 
@@ -76,10 +53,10 @@ class PreparationFailurePolicyTests(unittest.TestCase):
                "hf_preparation_failures.toml").read_bytes()
         with self.assertRaisesRegex(ValueError, "cover every failure kind"):
             parse_preparation_failure_policy(
-                raw.replace(b"[failures.candidate_issue]", b"[failures.unreviewed_issue]")
+                raw.replace(b"[failures.interpreter_unavailable]", b"[failures.unreviewed_issue]")
             )
         with self.assertRaisesRegex(ValueError, "cover every failure kind"):
-            parse_preparation_failure_policy(raw.split(b"[failures.candidate_issue]")[0])
+            parse_preparation_failure_policy(raw.split(b"[failures.interpreter_unavailable]")[0])
 
     def test_unreviewed_forwarding_and_ambiguous_fields_are_rejected(self) -> None:
         from pathlib import Path
@@ -111,7 +88,7 @@ class PreparationFailurePolicyTests(unittest.TestCase):
             policy.resolve(ClassifiedPreparationFailure("unknown_failure"))
         with self.assertRaisesRegex(FailureContractError, "invalid_classified_failure_message"):
             ClassifiedPreparationFailure(
-                FailureKind.CANDIDATE_ISSUE.value,
+                FailureKind.DIRECT_SOURCE_ISSUE.value,
                 ProviderDiagnosticText("contains NUL\x00"),
             )
 
