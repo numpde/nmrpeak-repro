@@ -44,13 +44,19 @@ Image preparation reuses an existing matching image.
 software behavior using fixtures; live provider and model qualification are
 separate opt-in operations. `make help` lists preparation and deployment commands.
 
-`make test/integration DOCKER_CONTEXT=<name>` includes NMRPeak's normal stop
-while its prose interpreter is waiting for an HTTPS response. To qualify a
-candidate `provider-core` wheel that starts `provider_core.chat_worker`, run
-`python -m unittest -v tests.sdk_candidate.prose_http_helper_shutdown` from the
-checkout in a test environment with that wheel installed. This also stops
-NMRPeak during helper startup and holds the helper's exit notification to
-check that NMRPeak waits for it before reporting shutdown complete.
+`make test/integration DOCKER_CONTEXT=<name>` checks NMRPeak's operator
+stop while an admitted Job awaits a prose-interpretation HTTPS reply. It
+requires the provider to stop admitting Jobs, retain the admitted Job until
+its report is accepted by local delivery, and cleanly close the connection.
+These consumer tests deliberately do not inspect the SDK's HTTP helper.
+The SDK tests cover subprocess startup, exit confirmation and cleanup:
+[HTTP-helper shutdown tests](https://github.com/numpde/nmr-provider-tools/blob/fix/release-settled-cancelled-attempts/packages/provider-core/tests/integration/chat/adversarial/test_fuzz_provider_http_shutdown.py).
+
+`shutdown_drain_seconds` is currently parsed and validated but not enforced.
+NMRPeak waits for accepted Jobs to finish their existing work and local
+report handoff; requesting an operator stop is not a cancellation confirmed
+by the central NMR Jobs API. A hard shutdown cutoff requires a way to
+durably recover the original started Attempt after a provider restart.
 
 To build and update one named deployment, run
 `make provider/deployment/update DEPLOYMENT=<name> WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>`.
