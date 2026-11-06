@@ -225,7 +225,10 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(entry["model"] == "local-prose-test-model"
                             for entry in self.prose_server.received), msg=self.evidence())
         self.assertNotIn(self.typed_job, [entry["job_ref"] for entry in self.prose_server.received])
+        self.assert_reports_match_original_science()
 
+    def assert_reports_match_original_science(self):
+        """Every admitted Job settles once through the same scientific sessions."""
         starts = [body["job_ref"] for _, path, body in self.jobs_api.calls
                   if path.endswith("/execution-attempts/start")]
         self.assertEqual(Counter(starts), Counter(self.jobs_api.started.keys()), msg=self.evidence())

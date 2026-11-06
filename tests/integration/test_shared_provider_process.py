@@ -450,8 +450,9 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
 
         hf, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf", validate_seconds=2))
         model = Factory("fixture", model_reply("submit_interpretation", {"value": HF_VALUE}))
-        configured = InputInterpreter((SimpleNamespace(configuration_id="fixture", api_key="fixture-only"),),
-                                      InterpreterPolicy(interpretation_timeout_seconds=0.1))
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)):
+            configured = InputInterpreter((SimpleNamespace(configuration_id="fixture", api_key="fixture-only"),),
+                                          InterpreterPolicy(interpretation_timeout_seconds=0.1))
         session = NmrpeakAnalysisSession(hf, runner, configured)
         acknowledged, instructions = admission(hf, b"Interpret these peaks.")
         entered, release = Event(), Event()
@@ -463,8 +464,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                 raise TimeoutError("Fixture validation was not released")
             original_validate(frame)
 
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)), \
-             patch.object(channel, "_accept_validate", delayed_validation):
+        with patch.object(channel, "_accept_validate", delayed_validation):
             task = asyncio.create_task(session.prepare(acknowledged, instructions, report_condition=phase_reporter()))
             try:
                 self.assertTrue(await asyncio.to_thread(entered.wait, 1))

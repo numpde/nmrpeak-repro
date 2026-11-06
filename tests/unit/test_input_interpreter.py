@@ -30,7 +30,6 @@ class InputInterpreterTests(unittest.IsolatedAsyncioTestCase):
                               reject_once=False, validate=None, record_diagnostic=None):
         specs = tuple(SimpleNamespace(configuration_id=f"model-{i}", api_key=f"credential-{i}")
                       for i in range(len(factories)))
-        session = InputInterpreter(specs, InterpreterPolicy(interpretation_timeout_seconds=30)).new_session()
         admitted = ValidatedRunnerRequest(object(), object())
         rejection = RunnerInputRejected(runner_rejection_diagnostic(
             RunnerRejectionReason.TOKEN_LIMIT_EXCEEDED, 512), 512)
@@ -38,6 +37,7 @@ class InputInterpreterTests(unittest.IsolatedAsyncioTestCase):
             validate = AsyncMock(side_effect=[rejection, admitted] if reject_once else None,
                                  return_value=admitted)
         with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=factories):
+            session = InputInterpreter(specs, InterpreterPolicy(interpretation_timeout_seconds=30)).new_session()
             try:
                 result = await session.validate_freeform_input_async(
                     source=source, lane=lane, validate_input=validate, execution_attempt_ref="attempt",
