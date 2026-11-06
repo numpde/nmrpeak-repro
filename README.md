@@ -44,6 +44,14 @@ Image preparation reuses an existing matching image.
 software behavior using fixtures; live provider and model qualification are
 separate opt-in operations. `make help` lists preparation and deployment commands.
 
+`make test/integration DOCKER_CONTEXT=<name>` includes NMRPeak's normal stop
+while its prose interpreter is waiting for an HTTPS response. To qualify a
+candidate `provider-core` wheel that starts `provider_core.chat_worker`, run
+`python -m unittest -v tests.sdk_candidate.prose_http_helper_shutdown` from the
+checkout in a test environment with that wheel installed. This also stops
+NMRPeak during helper startup and holds the helper's exit notification to
+check that NMRPeak waits for it before reporting shutdown complete.
+
 To build and update one named deployment, run
 `make provider/deployment/update DEPLOYMENT=<name> WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>`.
 The command builds from the clean checkout on the selected local Docker engine,
