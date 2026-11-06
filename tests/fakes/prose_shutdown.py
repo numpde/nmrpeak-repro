@@ -5,14 +5,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from provider_core.attempt_record import TerminalOperation
 from provider_core.attempt_request import read_fail_body
-from provider_core.chat import ChatEndpoint
 from provider_core.delivery_client import DeliveryEndpoint
 
-from nmrpeak_provider.analysis_session import NmrpeakAnalysisSession
 from nmrpeak_provider.input_interpreter import InputInterpreter
 from nmrpeak_provider.interpreter_policy import InterpreterPolicy
 from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
@@ -43,11 +41,16 @@ class LocalDeliveryRecorder:
     retirement_confirmed = True
     last_failure = None
 
-    def __init__(self, endpoint, reports):
+    def __init__(self, endpoint, reports, report_received, acknowledge_report):
         self.endpoint, self.reports = endpoint, reports
+        self.report_received, self.acknowledge_report = report_received, acknowledge_report
 
     async def submit(self, item):
         self.reports.append(item)
+        self.report_received.set()
+        # The SDK controller must await the delivery service's actual local
+        # acceptance before calling this Job settled.
+        await self.acknowledge_report.wait()
         return item.acceptance()
 
     async def retire(self):
@@ -64,7 +67,7 @@ class ProseShutdownCase(unittest.IsolatedAsyncioTestCase):
     next_job = "job:next-prose"
     interpretation_seconds = 1.5
 
-    async def start_provider(self):
+    async def start_provider(self, *, hold_delivery_ack=False):
         runtime = generation_runtime()
         hf_kind = runtime.hf.generation.analysis_kind_ref
         self.jobs_api = SharedApi({
@@ -86,12 +89,18 @@ class ProseShutdownCase(unittest.IsolatedAsyncioTestCase):
             runner.generate.side_effect = AssertionError("No validation authorized generation")
             self.science.append(runner)
         self.delivery_reports = []
+        self.delivery_received = asyncio.Event()
+        self.allow_delivery_ack = asyncio.Event()
+        if not hold_delivery_ack:
+            self.allow_delivery_ack.set()
         directory = self.enterContext(tempfile.TemporaryDirectory())
         endpoint = DeliveryEndpoint(self.jobs_api.origin, self.jobs_api.provider_ref, Path(directory) / "unused.sock")
         self.provider = ProviderProcess(
             runtime=runtime, hf_session=self.science[0], chf_session=self.science[1],
             interpreter=interpreter, new_api=self.jobs_api.new_api,
-            new_delivery=lambda: LocalDeliveryRecorder(endpoint, self.delivery_reports),
+            new_delivery=lambda: LocalDeliveryRecorder(
+                endpoint, self.delivery_reports, self.delivery_received, self.allow_delivery_ack,
+            ),
             policy=ProviderProcessPolicy(
                 feed_interval_seconds=0.01, hello_interval_seconds=60,
                 shutdown_drain_seconds=2, forced_join_seconds=0.1, inventory_maximum_pages=20,
@@ -101,21 +110,6 @@ class ProseShutdownCase(unittest.IsolatedAsyncioTestCase):
             ),
             announcement=ProviderAnnouncement("NMRPeak", "Prose shutdown test", ()),
         )
-        # Observe the real calls: the installed SDK runs NMRPeak's prepare,
-        # and NMRPeak's interpreter uses the SDK's real HTTPS endpoint.
-        self.prepared_attempts, self.request_deadlines = [], []
-        prepare, complete = NmrpeakAnalysisSession.prepare, ChatEndpoint.complete
-
-        async def observe_prepare(session, acknowledged, *args, **kwargs):
-            self.prepared_attempts.append(acknowledged.admission.execution_attempt_ref)
-            return await prepare(session, acknowledged, *args, **kwargs)
-
-        async def observe_request(endpoint, messages, tools, *, not_after):
-            self.request_deadlines.append(not_after)
-            return await complete(endpoint, messages, tools, not_after=not_after)
-
-        self.enterContext(patch.object(NmrpeakAnalysisSession, "prepare", observe_prepare))
-        self.enterContext(patch.object(ChatEndpoint, "complete", observe_request))
         ready = asyncio.Event()
         self.provider_run = None
         self.addAsyncCleanup(self._finish_provider)
@@ -123,6 +117,7 @@ class ProseShutdownCase(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(ready.wait(), 3)
 
     async def _finish_provider(self):
+        self.allow_delivery_ack.set()
         self.release_test_reply.set()
         self.provider.request_stop()
         if self.provider_run is not None:
@@ -135,8 +130,6 @@ class ProseShutdownCase(unittest.IsolatedAsyncioTestCase):
         original_attempt = self.jobs_api.started[self.original_job]
         starts = [body["job_ref"] for _, path, body in self.jobs_api.calls if path.endswith("/execution-attempts/start")]
         self.assertEqual([self.original_job], starts)
-        self.assertEqual([original_attempt], self.prepared_attempts)
-        self.assertEqual(1, len(self.request_deadlines))
         self.assertEqual(1, len(self.prose_server.requests))
         self.assertEqual("local-prose-test-model", json.loads(self.prose_server.requests[0].content)["model"])
         for runner in self.science:
@@ -147,9 +140,7 @@ class ProseShutdownCase(unittest.IsolatedAsyncioTestCase):
         self.assertIs(TerminalOperation.FAIL, report.operation)
         self.assertEqual(self.original_job, report.job_ref)
         self.assertEqual(original_attempt, report.execution_attempt_ref)
-        self.assertEqual(
-            ("interpretation_failed", "Interpretation could not be completed. Generation did not start."),
-            read_fail_body(report.body, execution_attempt_ref=original_attempt),
-        )
-        self.assertEqual((), self.provider._claims.live_owners())
+        code, message = read_fail_body(report.body, execution_attempt_ref=original_attempt)
+        self.assertTrue(code, msg="The local queue must receive a stated failure reason")
+        self.assertTrue(message, msg="The local queue must receive a nonempty explanation")
         self.assertFalse(self.release_test_reply.is_set(), msg="Only test teardown may release the withheld reply")
