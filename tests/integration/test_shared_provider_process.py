@@ -136,7 +136,7 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
             endpoint_retired.set()
 
         async with self._interpreter_executor_fixture(
-                script=[Reply(wait_for=release)]) as (_, controller, pending, session, server, queue, _):
+                script=[Reply(wait_for=release)]) as (service, controller, pending, session, server, queue, _):
             with patch.object(NmrpeakAnalysisSession, "prepare", watched_prepare), \
                  patch.object(Interpreter, "retire", watched_retire):
                 original = asyncio.create_task(controller.run(pending))
@@ -148,7 +148,6 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.wait_for(asyncio.shield(original), 2)
                     executor = controller.operation
                     self.assertIs(type(executor), AttemptExecutor)
-                    self.assertTrue(executor.retirement_confirmed)
                     self.assertTrue(session._interpretation._shared.retirement_confirmed)
                     self.assertEqual(len(original_prepare_tasks), 1)
                     prepare_task = original_prepare_tasks[0]
@@ -157,8 +156,11 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
                     release.set()
                     done, _ = await asyncio.wait((prepare_task,), timeout=2)
                     self.assertIn(prepare_task, done)
+                    await executor.settle()
+                    self.assertTrue(executor.retirement_confirmed)
                     self.assertTrue(executor.work_settled)
                     self.assertTrue(executor.shutdown_ready)
+                    self.assertIn(controller, service._claims.live_owners())
                     self.assertEqual(len(server.requests), 1)
                     self.assertFalse(queue.inventory(controller.scope.api_origin,
                                                      controller.scope.provider_ref))
