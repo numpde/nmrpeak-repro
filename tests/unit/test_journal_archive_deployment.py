@@ -33,7 +33,7 @@ class ArchiveDeploymentTests(unittest.TestCase):
         self.uid_map = patch.object(
             deployment,
             '_container_uid_map',
-            return_value=((0, 0, 0x1_0000_0000),),
+            return_value=SimpleNamespace(translate=lambda value: value),
         )
         self.uid_map.start()
         self.addCleanup(self.uid_map.stop)

@@ -121,3 +121,19 @@ and other known sensitive material removed. Unverified model claims remain
 attributed to the model.
 
 [Safely archive a held report after API-confirmed closure](notes/002_closed_attempt_archival.txt).
+
+### Shared deployment identity probe (candidate)
+
+This branch replaces NMRPeak's local Docker UID-map owner with the maintained
+`linux-idmap` probe from `numpde/container-tools`, including exact 32 MiB
+memory/swap, 4-PID and 0.25-CPU ceilings. Host deployment commands require the
+**unreleased 0.3.2.dev0 candidate** installed into the deployment Python
+interpreter. The existing pinned acquisition bootstrap remains independent.
+
+The selected Docker endpoint, already-local provider image and host Docker CLI
+are passed unchanged; successful mapping is consumed only after the library
+confirms probe retirement. ACL policy and provider state remain NMRPeak's.
+
+Qualify this adapter using `PYTHONPATH=. python3 -B -m unittest discover -s tests/host -v`
+with the candidate wheel installed. Rootful/rootless Docker and deployment
+end-to-end qualification are still required before using it in production.

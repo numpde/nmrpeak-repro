@@ -8,11 +8,10 @@ from deployment.provider_deployment import DeploymentOperationRejected, _contain
 
 
 def container_uid(host_uid, mappings):
-    matches = [inside + host_uid - outside for inside, outside, count in mappings
-               if outside <= host_uid < outside + count]
-    if len(matches) != 1:
-        raise DeploymentOperationRejected("Selected Docker engine did not map the operator UID exactly once")
-    return matches[0]
+    try:
+        return int(mappings.translate_inverse(host_uid))
+    except ValueError as error:
+        raise DeploymentOperationRejected("Selected Docker engine did not map the operator UID exactly once") from error
 
 
 def main():

@@ -8,6 +8,7 @@ from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import stat
 import subprocess
 from tempfile import TemporaryDirectory
@@ -65,198 +66,6 @@ IMAGES = {
 }
 
 
-class HostNamespacePreconditionTests(unittest.TestCase):
-    def test_requires_initial_user_and_pid_namespaces_on_nsfs(self):
-        valid = ((b"6e736673\n", 4026531837), (b"6e736673\n", 4026531836))
-        for observations, accepted in (
-            (valid, True),
-            (((b"6e736673\n", 4026533000), valid[1]), False),
-            ((valid[0], (b"6e736673\n", 4026533001)), False),
-            (((b"1234\n", 4026531837), valid[1]), False),
-        ):
-            with self.subTest(observations=observations), \
-                 patch.object(provider_deployment.subprocess, "run", side_effect=[
-                     subprocess.CompletedProcess((), 0, item[0], b"") for item in observations
-                 ]), \
-                 patch.object(provider_deployment.os, "stat", side_effect=[
-                     type("NamespaceStat", (), {"st_ino": item[1]})() for item in observations
-                 ]):
-                if accepted:
-                    provider_deployment._require_initial_host_namespaces()
-                else:
-                    with self.assertRaisesRegex(DeploymentOperationRejected, "initial user and PID"):
-                        provider_deployment._require_initial_host_namespaces()
-
-    def test_namespace_refusal_happens_before_probe_creation(self):
-        with patch.object(provider_deployment, "_require_initial_host_namespaces", side_effect=DeploymentOperationRejected("nested")), \
-             patch.object(provider_deployment, "_docker_command") as docker:
-            with self.assertRaisesRegex(DeploymentOperationRejected, "nested"):
-                provider_deployment._container_uid_map(Path("/usr/bin/docker"), IMAGES["provider"].image_id)
-            docker.assert_not_called()
-
-    def test_unavailable_namespace_evidence_is_rejected(self):
-        for error in (FileNotFoundError("stat unavailable"),
-                      subprocess.TimeoutExpired("stat", 5),
-                      subprocess.CalledProcessError(1, "stat")):
-            with self.subTest(error=error), \
-                 patch.object(provider_deployment.subprocess, "run", side_effect=error):
-                with self.assertRaisesRegex(DeploymentOperationRejected, "host /proc access"):
-                    provider_deployment._require_initial_host_namespaces()
-
-
-class SelectedEngineUidMapProbeTests(unittest.TestCase):
-    def setUp(self) -> None:
-        guard = patch.object(provider_deployment, "_require_initial_host_namespaces")
-        guard.start()
-        self.addCleanup(guard.stop)
-
-    def test_host_uid_map_is_read_for_the_exact_probe_pid_and_probe_is_retired(self) -> None:
-        identifier = "a" * 64
-        record = {"State": {"Pid": 4321}}
-        image = IMAGES["provider"].image_id
-        with (
-            patch.object(
-                provider_deployment,
-                "_docker_command",
-                return_value=subprocess.CompletedProcess((), 0, (identifier + "\n").encode(), b""),
-            ) as command,
-            patch.object(provider_deployment, "_require_uid_map_probe", return_value=record) as inspect,
-            patch.object(provider_deployment, "_uid_map_process_start_time", side_effect=(10, 10)),
-            patch.object(
-                provider_deployment,
-                "_read_host_uid_map",
-                return_value=((0, 1000, 1), (1, 100000, 65536)),
-            ) as read_map,
-            patch.object(provider_deployment, "_remove_uid_map_probe") as remove,
-        ):
-            mapping = provider_deployment._container_uid_map(Path("/usr/bin/docker"), image)
-
-        self.assertEqual(mapping, ((0, 1000, 1), (1, 100000, 65536)))
-        self.assertEqual(read_map.call_args.args, (4321,))
-        self.assertEqual(inspect.call_count, 3)
-        self.assertIn("--rm", command.call_args_list[0].args[1])
-        self.assertEqual(command.call_args_list[1].args[1][:2], ("start", identifier))
-        self.assertEqual(remove.call_args.args[3:], (identifier, image))
-
-    def test_uid_map_probe_failure_still_requires_owned_cleanup(self) -> None:
-        identifier = "c" * 64
-        image = IMAGES["provider"].image_id
-        with (
-            patch.object(
-                provider_deployment,
-                "_docker_command",
-                return_value=subprocess.CompletedProcess((), 0, (identifier + "\n").encode(), b""),
-            ),
-            patch.object(provider_deployment, "_require_uid_map_probe", side_effect=DeploymentOperationRejected("bad probe")),
-            patch.object(provider_deployment, "_remove_uid_map_probe") as remove,
-        ):
-            with self.assertRaisesRegex(DeploymentOperationRejected, "bad probe"):
-                provider_deployment._container_uid_map(Path("/usr/bin/docker"), image)
-        self.assertEqual(remove.call_args.args[3:], (identifier, image))
-
-    def test_create_timeout_without_an_observed_probe_remains_unsettled(self) -> None:
-        error = DeploymentOperationRejected("probe creation timed out")
-        error.__cause__ = subprocess.TimeoutExpired("docker create", 30)
-        with (
-            patch.object(provider_deployment, "_docker_command", side_effect=error),
-            patch.object(provider_deployment, "_remove_uid_map_probe", return_value=False) as remove,
-        ):
-            with self.assertRaisesRegex(provider_deployment.MaintenanceInvocationUnsettled, "creation is unconfirmed"):
-                provider_deployment._container_uid_map(Path("/usr/bin/docker"), IMAGES["provider"].image_id)
-        self.assertIsNone(remove.call_args.args[3])
-
-    def test_non_timeout_create_error_without_an_observed_probe_is_unsettled(self) -> None:
-        with (
-            patch.object(
-                provider_deployment,
-                "_docker_command",
-                side_effect=DeploymentOperationRejected("Docker client disconnected after dispatch"),
-            ),
-            patch.object(provider_deployment, "_remove_uid_map_probe", return_value=False),
-        ):
-            with self.assertRaisesRegex(
-                provider_deployment.MaintenanceInvocationUnsettled,
-                "creation is unconfirmed",
-            ):
-                provider_deployment._container_uid_map(
-                    Path("/usr/bin/docker"), IMAGES["provider"].image_id,
-                )
-
-    def test_cleanup_checks_running_pid_retirement(self) -> None:
-        identifier = "e" * 64
-        image = IMAGES["provider"].image_id
-        record = {"State": {"Running": True, "Pid": 4321}}
-        inventory = {"labelled": [identifier], "named": [identifier]}
-        with (
-            patch.object(provider_deployment, "_uid_map_probe_inventory", side_effect=(inventory, {"labelled": [], "named": []})),
-            patch.object(provider_deployment, "_require_uid_map_probe", return_value=record) as verify,
-            patch.object(provider_deployment, "_docker_command", return_value=subprocess.CompletedProcess((), 0, b"", b"")) as command,
-            patch.object(provider_deployment, "_uid_map_probe_exists", return_value=False),
-            patch.object(provider_deployment, "_require_uid_map_process_retired") as retired,
-        ):
-            removed = provider_deployment._remove_uid_map_probe(
-                Path("/usr/bin/docker"),
-                "nmrpeak-uid-map-token",
-                "token",
-                identifier,
-                image,
-                process_identity=(4321, 99),
-            )
-        self.assertTrue(removed)
-        self.assertEqual(verify.call_args.kwargs, {"running": None})
-        self.assertEqual(command.call_args.args[1], ("rm", "--force", identifier))
-        retired.assert_called_once_with(4321, 99)
-
-    def test_cleanup_removes_an_exact_owned_exited_probe(self) -> None:
-        identifier = "1" * 64
-        inventory = {"labelled": [identifier], "named": [identifier]}
-        with (
-            patch.object(provider_deployment, "_uid_map_probe_inventory", side_effect=(inventory, {"labelled": [], "named": []})),
-            patch.object(
-                provider_deployment,
-                "_require_uid_map_probe",
-                return_value={"State": {"Running": False, "Pid": 0}},
-            ) as verify,
-            patch.object(provider_deployment, "_docker_command", return_value=subprocess.CompletedProcess((), 0, b"", b"")) as command,
-            patch.object(provider_deployment, "_uid_map_probe_exists", return_value=False),
-            patch.object(provider_deployment, "_require_uid_map_process_retired") as retired,
-        ):
-            removed = provider_deployment._remove_uid_map_probe(
-                Path("/usr/bin/docker"),
-                "nmrpeak-uid-map-token",
-                "token",
-                identifier,
-                IMAGES["provider"].image_id,
-            )
-        self.assertTrue(removed)
-        self.assertEqual(verify.call_args.kwargs, {"running": None})
-        self.assertEqual(command.call_args.args[1], ("rm", "--force", identifier))
-        retired.assert_not_called()
-
-    def test_cleanup_rejects_a_changed_pid_before_removal(self) -> None:
-        identifier = "f" * 64
-        inventory = {"labelled": [identifier], "named": [identifier]}
-        with (
-            patch.object(provider_deployment, "_uid_map_probe_inventory", return_value=inventory),
-            patch.object(
-                provider_deployment,
-                "_require_uid_map_probe",
-                return_value={"State": {"Running": True, "Pid": 4322}},
-            ),
-            patch.object(provider_deployment, "_docker_command") as command,
-        ):
-            with self.assertRaisesRegex(DeploymentOperationRejected, "PID changed"):
-                provider_deployment._remove_uid_map_probe(
-                    Path("/usr/bin/docker"),
-                    "nmrpeak-uid-map-token",
-                    "token",
-                    identifier,
-                    IMAGES["provider"].image_id,
-                    process_identity=(4321, 99),
-                )
-        command.assert_not_called()
-
-
 class ProviderDeploymentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.docker_host = patch.dict("os.environ", {"NMRPEAK_DOCKER_HOST": "unix:///tmp/nmrpeak-test.sock"})
@@ -265,7 +74,7 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.uid_map = patch.object(
             provider_deployment,
             "_container_uid_map",
-            return_value=((0, 0, 0x1_0000_0000),),
+            return_value=SimpleNamespace(translate=lambda value: value),
         )
         self.uid_map.start()
         self.addCleanup(self.uid_map.stop)
@@ -350,13 +159,6 @@ class ProviderDeploymentTests(unittest.TestCase):
                         root,
                         {"input": b"private"},
                     )
-
-    def test_selected_engine_uid_map_maps_operator_and_provider_ids(self) -> None:
-        uid_map = provider_deployment._parse_container_uid_map(
-            b"0 1000 1\n1 100000 65536\n"
-        )
-        self.assertEqual(provider_deployment._mapped_host_uid(1000, uid_map), 100999)
-        self.assertEqual(provider_deployment._mapped_host_uid(65532, uid_map), 165531)
 
     def test_unconfirmed_reader_creation_never_dispatches_start(self) -> None:
         with patch.object(provider_deployment, "_docker_command", side_effect=TimeoutError("creation unknown")) as command, \
