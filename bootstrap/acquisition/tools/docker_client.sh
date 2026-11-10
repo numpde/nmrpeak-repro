@@ -64,7 +64,7 @@ docker_client_prepare() {
                 preparation_status=$?
                 printf -v docker_client_diagnostic 'Cannot prepare Docker client configuration: private config creation failed (status %s); private state was allocated at %q, with capped diagnostic receipt attempted at %q (up to 4096 bytes; it may be absent or incomplete).\n' \
                     "$preparation_status" "$docker_client_directory" "$receipt"
-                # No engine was dispatched. As in tools/inference_native.sh,
+                # No engine was dispatched. As in host/tools/inference_native.sh,
                 # retain the failed operation's private cause; caller runtime
                 # cleanup must not erase this evidence directory.
                 docker_client_directory=

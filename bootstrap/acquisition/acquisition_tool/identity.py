@@ -68,8 +68,11 @@ def main(argv=None):
         for problem in failure.retirement.problems:
             print(f"Probe cleanup: {problem.message}", file=sys.stderr)
         if failure.handle is not None:
+            container_id = failure.handle.container_id
+            if not container_id:
+                container_id = "not confirmed"
             print(f"Probe operation {failure.handle.operation_token}; "
-                  f"container {failure.handle.container_id or 'not confirmed'}; "
+                  f"container {container_id}; "
                   f"retirement {failure.retirement.state}.", file=sys.stderr)
         status = 2
     except (ValueError, StepError) as failure:

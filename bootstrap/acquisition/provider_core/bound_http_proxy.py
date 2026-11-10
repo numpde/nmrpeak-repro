@@ -222,8 +222,10 @@ def _read_dns_name(message: bytes, offset: int, depth: int = 0) -> tuple[str, in
 def _dns_servers(resolver_file: Path | None = None) -> tuple[str, ...]:
     """Read explicit captured resolvers, or existing service resolver configuration."""
 
-    paths = ((resolver_file,) if resolver_file is not None else
-             (Path("/run/systemd/resolve/resolv.conf"), Path("/etc/resolv.conf")))
+    if resolver_file is not None:
+        paths = (resolver_file,)
+    else:
+        paths = (Path("/run/systemd/resolve/resolv.conf"), Path("/etc/resolv.conf"))
     for path in paths:
         try:
             lines = path.read_text(encoding="ascii").splitlines()
@@ -578,6 +580,7 @@ class UnixRelayHandler(socketserver.BaseRequestHandler):
                 try:
                     self.request.settimeout(1)
                     self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                # silent-defaults: allow-contract -- The relay is already failing; writing a synthetic 502 is best effort and the primary error is still logged.
                 except OSError:
                     pass
             sys.stderr.write(f"proxy relay {phase} failed: {type(error).__name__}\n")
@@ -674,7 +677,9 @@ def main() -> None:
     try:
         if args.interface != "system":
             require_interface(args.interface)
-        dns_servers = None if args.resolver_file is None else _dns_servers(args.resolver_file)
+        dns_servers = None
+        if args.resolver_file is not None:
+            dns_servers = _dns_servers(args.resolver_file)
     except (ValueError, OSError) as error:
         raise SystemExit(str(error)) from None
 

@@ -37,6 +37,7 @@ def _parser():
     parser.add_argument("--userns", choices=("default", "host"))
     parser.add_argument("--uid", action="append", type=Identifier.of)
     parser.add_argument("--gid", action="append", type=Identifier.of)
+    parser.add_argument("--inverse", action="store_true", help="interpret --uid and --gid in host coordinates and return their container IDs")
     parser.add_argument("--values", action="store_true", help="print only projected decimal IDs for shell callers")
     parser.add_argument("--timeout", type=float, help="override the measurement time bound in seconds")
     return parser
@@ -77,8 +78,10 @@ def main(argv: list[str] | None = None) -> int:
             handlers[number] = signal.signal(number, cancellation.request)
         result = probe_identity(request, cancel=cancellation)
         try:
-            projected_uids = [result.uid_map.translate(uid) for uid in options.uid]
-            projected_gids = [result.gid_map.translate(gid) for gid in options.gid]
+            project_uid = result.uid_map.translate_inverse if options.inverse else result.uid_map.translate
+            project_gid = result.gid_map.translate_inverse if options.inverse else result.gid_map.translate
+            projected_uids = [project_uid(uid) for uid in options.uid]
+            projected_gids = [project_gid(gid) for gid in options.gid]
         except ValueError as error:
             raise ProbeFailure(Problem("unmapped-id", str(error)),
                 Retirement(ResourceState.RETIRED, result.container_id)) from error

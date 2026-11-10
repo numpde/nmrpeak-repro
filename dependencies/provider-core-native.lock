@@ -1,2 +1,2 @@
-provider-core==0.6.6 \
-    --hash=sha256:22b5a391aa3748340b969f47c935d62a4f9b08b9fe8c98f808fec47e6546b0c7
+provider-core==0.6.9 \
+    --hash=sha256:59ff3a063502bcd629c5fe37512625bd75bcb18c2e714feec83274bcb6f0b673

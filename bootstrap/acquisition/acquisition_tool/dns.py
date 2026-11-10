@@ -34,7 +34,9 @@ def _manager_output(command):
         raise ResolverCaptureFailed("Cannot capture acquisition DNS: the host network manager did not answer within three seconds.") from cause
     # An absent service or unmanaged link supplies no configuration. Consult
     # the other configured source, never an invented public resolver.
-    return result.stdout if result.returncode == 0 else ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout
 
 
 def capture_dns_servers(interface):
