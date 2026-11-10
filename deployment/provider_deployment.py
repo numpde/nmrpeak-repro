@@ -90,7 +90,6 @@ _DOCKER = Path("/usr/bin/docker")
 _SETFACL = Path("/usr/bin/setfacl")
 _GETFACL = Path("/usr/bin/getfacl")
 _MAX_FILE_BYTES = 1_048_576
-_MAX_UID_MAP_BYTES = 65_536
 _PROVIDER_UID_RECEIPT = ".provider-uids.json"
 _MAX_AUTHORIZED_PROVIDER_UIDS = 16
 _SESSION_VOLUME_OPTIONS = {
@@ -245,292 +244,41 @@ def _read_capture_source(path: Path, *, secret: bool) -> bytes:
         raise DeploymentOperationRejected(f"Cannot capture startup input {path}: its bounded regular-file read failed; preserve the source and inspect its permissions") from cause
 
 
-def _require_initial_host_namespaces() -> None:
-    """Require host-relative UID maps and host-visible Docker process IDs."""
+def _container_uid_map(docker: Path, image: str):
+    """Use the shared, retired identity probe; ACL policy remains local."""
     try:
-        for name, initial_inode in (("user", 4026531837), ("pid", 4026531836)):
-            path = f"/proc/self/ns/{name}"
-            filesystem = subprocess.run(
-                ("/usr/bin/stat", "--file-system", "--format=%t", path),
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, timeout=5,
-            ).stdout.strip()
-            if filesystem != b"6e736673" or os.stat(path).st_ino != initial_inode:
-                raise ValueError(f"{name} namespace is not the initial namespace")
-    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        from linux_idmap.probe import (
+            ProbeFailure, ProbeRequest, ProbeResources, ResourceState,
+            StepError, probe_identity,
+        )
+    except ImportError as error:
         raise DeploymentOperationRejected(
-            "Cannot map the selected engine's container users: run deployment on the host "
-            "in its initial user and PID namespaces with host /proc access"
+            "Install the qualified host linux-idmap wheel before deployment."
         ) from error
 
-
-def _container_uid_map(docker: Path, image: str) -> tuple[tuple[int, int, int], ...]:
-    """Read this engine's host-visible UID map from one owned probe process."""
-    _require_initial_host_namespaces()
-    token = secrets.token_hex(16)
-    name = "nmrpeak-uid-map-" + token
-    label = "io.nmrpeak.uid-map"
-    identifier = None
-    create_unsettled = False
-    process_identity = None
     try:
-        try:
-            created = _docker_command(docker, (
-                "create", "--name", name, "--label", f"{label}={token}",
-                "--rm", "--network", "none", "--read-only", "--user", "65532:65532",
-                "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-                "--pids-limit", "4", "--cpus", "0.25", "--memory", "32m",
-                "--memory-swap", "32m", "--entrypoint", "/usr/local/bin/python3.12",
-                image, "-I", "-B", "-c", "import time; time.sleep(30)",
-            ), timeout=30)
-        except BaseException:
-            # Once `docker create` was dispatched, a client error does not prove
-            # the daemon rejected it. An empty immediate inventory is not proof
-            # against a delayed create.
-            create_unsettled = True
-            raise
-        identifier = created.stdout.decode("ascii").strip()
-        if re.fullmatch(r"[0-9a-f]{64}", identifier) is None:
-            create_unsettled = True
-            raise ValueError("Docker did not return one exact UID-map probe identity")
-        _require_uid_map_probe(docker, name, token, identifier, image, running=False)
-        _docker_command(docker, ("start", identifier), timeout=30)
-        record = _require_uid_map_probe(docker, name, token, identifier, image, running=True)
-        pid = record["State"]["Pid"]
-        before = _uid_map_process_start_time(pid)
-        process_identity = (pid, before)
-        mappings = _read_host_uid_map(pid)
-        after = _uid_map_process_start_time(pid)
-        if before != after:
-            raise DeploymentOperationRejected("Selected-engine UID-map probe process changed while its host map was read")
-        current = _require_uid_map_probe(docker, name, token, identifier, image, running=True)
-        if current["State"]["Pid"] != pid:
-            raise DeploymentOperationRejected("Selected-engine UID-map probe process changed while its host map was read")
-    except BaseException as error:
-        failure = error
-    else:
-        failure = None
-    try:
-        probe_found = _remove_uid_map_probe(
-            docker,
-            name,
-            token,
-            identifier,
-            image,
-            process_identity=process_identity,
+        result = probe_identity(
+            ProbeRequest(
+                endpoint=docker_host(), image=image,
+                interpreter="/usr/local/bin/python3.12", user_uid=65532, user_gid=65532,
+                resources=ProbeResources(memory_bytes=32 * 1024**2, pids_limit=4, nano_cpus=250_000_000),
+            ),
+            executable=str(docker),
         )
-    except BaseException as cleanup:
-        cause = cleanup if failure is None else BaseExceptionGroup(
-            "UID-map probe and retirement failed", [failure, cleanup],
-        )
-        process = (
-            f"; host_pid={process_identity[0]} start_time={process_identity[1]}"
-            if process_identity is not None
-            else ""
-        )
-        raise MaintenanceInvocationUnsettled(
-            f"UID-map probe retirement is unconfirmed; inspect name={name}, "
-            f"label={label}={token}{process}"
-        ) from cause
-    if create_unsettled and not probe_found:
-        raise MaintenanceInvocationUnsettled(
-            f"UID-map probe creation is unconfirmed; inspect name={name}, label={label}={token}"
-        ) from failure
-    if failure is not None:
-        if not isinstance(failure, Exception):
-            raise failure
-        if isinstance(failure, DeploymentOperationRejected):
-            raise failure
-        raise DeploymentOperationRejected("Selected-engine UID-map probe failed; no input ACLs were changed") from failure
-    return mappings
+    except StepError as error:
+        raise DeploymentOperationRejected(f"Identity probe policy rejected {error.category}: {error}") from error
+    except ProbeFailure as error:
+        outcome = (MaintenanceInvocationUnsettled if error.retirement.state == ResourceState.UNRESOLVED
+                   else DeploymentOperationRejected)
+        raise outcome("Shared identity probe failed: " + json.dumps(error.as_dict(), sort_keys=True)) from error
+    return result.uid_map
 
 
-def _require_uid_map_probe(docker, name, token, identifier, image, *, running):
-    records = _json_output(
-        _docker_command(docker, ("inspect", identifier), timeout=30).stdout,
-        "UID-map probe inspection",
-    )
-    if type(records) is not list or len(records) != 1 or type(records[0]) is not dict:
-        raise DeploymentOperationRejected("Selected-engine UID-map probe inspection has an invalid shape")
-    record = records[0]
-    config = record.get("Config")
-    labels = config.get("Labels") if type(config) is dict else None
-    state = record.get("State")
-    host_config = record.get("HostConfig")
-    if (
-        record.get("Id") != identifier
-        or record.get("Name") != "/" + name
-        or record.get("Image") != image
-        or type(config) is not dict
-        or config.get("User") != "65532:65532"
-        or type(labels) is not dict
-        or labels.get("io.nmrpeak.uid-map") != token
-        or type(state) is not dict
-        or type(state.get("Running")) is not bool
-        or (running is not None and state["Running"] is not running)
-        or (state["Running"] and (type(state.get("Pid")) is not int or state["Pid"] <= 0))
-        or (not state["Running"] and state.get("Status") not in {"created", "exited"})
-        or (not state["Running"] and state.get("Pid") not in {0, None})
-        or type(host_config) is not dict
-        or host_config.get("NetworkMode") != "none"
-        or host_config.get("ReadonlyRootfs") is not True
-        or host_config.get("PidMode") not in {None, ""}
-        or host_config.get("Privileged") is not False
-        or host_config.get("CapDrop") != ["ALL"]
-        or host_config.get("PidsLimit") != 4
-        or host_config.get("Memory") != 33_554_432
-        or host_config.get("MemorySwap") != 33_554_432
-        or host_config.get("NanoCpus") != 250_000_000
-        or host_config.get("SecurityOpt") != ["no-new-privileges:true"]
-        or host_config.get("CapAdd") not in (None, [])
-        or host_config.get("Devices") not in (None, [])
-        or host_config.get("DeviceRequests") not in (None, [])
-        or type(host_config.get("RestartPolicy")) is not dict
-        or host_config["RestartPolicy"].get("Name") not in {"", "no"}
-        or host_config.get("AutoRemove") is not True
-        or config.get("Entrypoint") != ["/usr/local/bin/python3.12"]
-        or config.get("Cmd") != ["-I", "-B", "-c", "import time; time.sleep(30)"]
-        or record.get("Mounts") != []
-        or (state.get("Running") and state.get("Status") != "running")
-    ):
-        raise DeploymentOperationRejected("Selected-engine UID-map probe identity or isolation changed")
-    return record
-
-
-def _remove_uid_map_probe(docker, name, token, identifier, image, *, process_identity=None):
-    """Retire only this probe and prove the selected engine has no residue."""
-    label = "io.nmrpeak.uid-map"
-    inventory = _uid_map_probe_inventory(docker, name, token)
-    matches = inventory["labelled"]
-    if len(matches) > 1 or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in matches):
-        raise DeploymentOperationRejected("Selected-engine UID-map probe inventory is ambiguous")
-    if matches:
-        selected = matches[0]
-        if identifier is not None and selected != identifier:
-            raise DeploymentOperationRejected("Selected-engine UID-map probe inventory changed")
-        record = _require_uid_map_probe(docker, name, token, selected, image, running=None)
-        pid = record["State"].get("Pid")
-        if process_identity is None:
-            process_identity = (
-                (pid, _uid_map_process_start_time(pid))
-                if type(pid) is int and pid > 0 and record["State"].get("Running")
-                else None
-            )
-        elif record["State"].get("Running") and pid != process_identity[0]:
-            raise DeploymentOperationRejected("Selected-engine UID-map probe PID changed before retirement")
-        _docker_command(docker, ("rm", "--force", selected), timeout=30)
-    elif inventory["named"]:
-        raise DeploymentOperationRejected("Selected-engine UID-map probe name is occupied by a foreign container")
-    remaining = _uid_map_probe_inventory(docker, name, token)
-    if remaining["labelled"] or remaining["named"] or (identifier is not None and _uid_map_probe_exists(docker, identifier)):
-        raise DeploymentOperationRejected("Selected-engine UID-map probe remains after removal")
-    if process_identity is not None:
-        _require_uid_map_process_retired(*process_identity)
-    return bool(matches)
-
-
-def _uid_map_probe_inventory(docker, name, token):
-    def list_containers(*filters):
-        result = _docker_command(docker, (
-            "ps", "--all", "--no-trunc", "--quiet", *filters,
-        ), timeout=30)
-        identifiers = result.stdout.decode("ascii", errors="strict").splitlines()
-        if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in identifiers):
-            raise DeploymentOperationRejected("Selected-engine UID-map probe inventory is malformed")
-        return identifiers
-
-    return {
-        "labelled": list_containers("--filter", f"label=io.nmrpeak.uid-map={token}"),
-        "named": list_containers("--filter", f"name=^/{name}$"),
-    }
-
-
-def _uid_map_probe_exists(docker, identifier):
-    return bool(_docker_command(docker, (
-        "ps", "--all", "--no-trunc", "--quiet", "--filter", f"id={identifier}",
-    ), timeout=30).stdout)
-
-
-def _uid_map_process_start_time(pid):
-    if type(pid) is not int or pid <= 0:
-        raise DeploymentOperationRejected("Selected-engine UID-map probe returned an invalid host PID")
+def _mapped_host_uid(container_uid: int, uid_map) -> int:
     try:
-        raw = Path(f"/proc/{pid}/stat").read_bytes()
-        if len(raw) > 4096:
-            raise ValueError("process status exceeded its bound")
-        closing = raw.rfind(b")")
-        fields = raw[closing + 2:].split()
-        if closing < 0 or len(fields) <= 19:
-            raise ValueError("process status has invalid framing")
-        start_time = int(fields[19], 10)
-        if start_time < 0:
-            raise ValueError("process start time is negative")
-        return start_time
-    except (OSError, ValueError) as error:
-        raise DeploymentOperationRejected("Cannot prove the selected-engine UID-map probe PID is stable") from error
-
-
-def _require_uid_map_process_retired(pid, start_time):
-    if type(pid) is not int or pid <= 0 or type(start_time) is not int:
-        raise DeploymentOperationRejected("Selected-engine UID-map probe retirement identity is incomplete")
-    deadline = time.monotonic() + 5
-    while True:
-        try:
-            raw = Path(f"/proc/{pid}/stat").read_bytes()
-        except FileNotFoundError:
-            return
-        except OSError as error:
-            raise DeploymentOperationRejected("Cannot verify selected-engine UID-map probe process retirement") from error
-        if len(raw) > 4096:
-            raise DeploymentOperationRejected("Selected-engine UID-map probe process status exceeds its read bound")
-        closing = raw.rfind(b")")
-        fields = raw[closing + 2:].split()
-        if closing < 0 or len(fields) <= 19:
-            raise DeploymentOperationRejected("Selected-engine UID-map probe process status is malformed")
-        if fields[19] != str(start_time).encode("ascii") or fields[0] in {b"Z", b"X"}:
-            return
-        if time.monotonic() >= deadline:
-            raise DeploymentOperationRejected("Selected-engine UID-map probe process remains after container removal")
-        time.sleep(0.05)
-
-
-def _read_host_uid_map(pid):
-    try:
-        with Path(f"/proc/{pid}/uid_map").open("rb") as source:
-            output = source.read(_MAX_UID_MAP_BYTES + 1)
-        if len(output) > _MAX_UID_MAP_BYTES:
-            raise ValueError("mapping exceeds its read bound")
-        return _parse_container_uid_map(output)
-    except (OSError, UnicodeDecodeError, ValueError) as error:
-        raise DeploymentOperationRejected("Cannot read a valid host-visible UID map for the selected engine") from error
-
-
-def _parse_container_uid_map(output: bytes) -> tuple[tuple[int, int, int], ...]:
-    lines = output.decode("ascii").splitlines()
-    mappings = []
-    for line in lines:
-        fields = line.split()
-        if len(fields) != 3:
-            raise ValueError("invalid mapping row")
-        inside, outside, count = (int(value, 10) for value in fields)
-        if min(inside, outside) < 0 or count < 1 or max(inside + count, outside + count) > 0x1_0000_0000:
-            raise ValueError("mapping row is out of range")
-        mappings.append((inside, outside, count))
-    if not mappings:
-        raise ValueError("empty UID map")
-    for index, (inside, outside, count) in enumerate(mappings):
-        for other_inside, other_outside, other_count in mappings[index + 1:]:
-            if (inside < other_inside + other_count and other_inside < inside + count
-                    or outside < other_outside + other_count and other_outside < outside + count):
-                raise ValueError("overlapping UID map ranges")
-    return tuple(mappings)
-
-
-def _mapped_host_uid(container_uid: int, uid_map: tuple[tuple[int, int, int], ...]) -> int:
-    matches = [outside + container_uid - inside for inside, outside, count in uid_map
-               if inside <= container_uid < inside + count]
-    if len(matches) == 1:
-        return matches[0]
-    raise DeploymentOperationRejected("Selected Docker engine did not map the required container UID exactly once")
+        return int(uid_map.translate(container_uid))
+    except ValueError as error:
+        raise DeploymentOperationRejected("Selected Docker engine did not map the required container UID exactly once") from error
 
 
 def _provider_directory_acl(provider_uids: tuple[int, ...]) -> tuple[str, ...]:
