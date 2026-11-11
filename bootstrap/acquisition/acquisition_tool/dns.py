@@ -3,9 +3,9 @@
 import argparse
 import ipaddress
 import os
-from pathlib import Path
 import socket
 import subprocess
+from pathlib import Path
 
 
 class ResolverCaptureFailed(OSError):
@@ -26,12 +26,15 @@ def _addresses(values):
 
 def _manager_output(command):
     try:
-        result = subprocess.run(command, capture_output=True, text=True,
-                                env={**os.environ, "LC_ALL": "C"}, timeout=3, check=False)
+        result = subprocess.run(
+            command, capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"}, timeout=3, check=False
+        )
     except FileNotFoundError:
         return ""
     except subprocess.TimeoutExpired as cause:
-        raise ResolverCaptureFailed("Cannot capture acquisition DNS: the host network manager did not answer within three seconds.") from cause
+        raise ResolverCaptureFailed(
+            "Cannot capture acquisition DNS: the host network manager did not answer within three seconds."
+        ) from cause
     # An absent service or unmanaged link supplies no configuration. Consult
     # the other configured source, never an invented public resolver.
     if result.returncode != 0:
@@ -61,8 +64,7 @@ def capture_dns_servers(interface):
             lines = path.read_text(encoding="ascii").splitlines()
         except OSError:
             continue
-        values = [fields[1] for line in lines
-                  if len(fields := line.split()) == 2 and fields[0] == "nameserver"]
+        values = [fields[1] for line in lines if len(fields := line.split()) == 2 and fields[0] == "nameserver"]
         servers = _addresses(values)
         if servers:
             return servers
@@ -82,7 +84,10 @@ def main():
     except ResolverCaptureFailed as error:
         parser.exit(2, f"{error}\n")
     except (OSError, UnicodeError) as error:
-        parser.exit(2, f"Cannot prepare acquisition resolver capture ({type(error).__name__}); check the selected interface's configured DNS and the private output path.\n")
+        parser.exit(
+            2,
+            f"Cannot prepare acquisition resolver capture ({type(error).__name__}); check the selected interface's configured DNS and the private output path.\n",
+        )
 
 
 if __name__ == "__main__":

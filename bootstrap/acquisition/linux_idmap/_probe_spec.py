@@ -1,10 +1,10 @@
 """One definition of what we create and what we are allowed to remove."""
 
 from dataclasses import dataclass
+from decimal import Decimal
 
-from ._probe_model import ProbeRequest, StepError
 from . import _confinement
-
+from ._probe_model import ProbeRequest, StepError
 
 # Shared owned-probe label wire name; creation and verification must agree.
 # repo-check: allow-module-constant
@@ -20,8 +20,23 @@ OWNER = "identity-v3"
 PROBE_SCRIPT = "import sys,time; time.sleep(int(sys.argv[1]))"
 # Probe lifecycle and confinement evidence.
 # repo-check: allow-module-constant
-ISOLATION_FIELDS = ("AutoRemove", "RestartPolicy", "NetworkMode", "ReadonlyRootfs", "CapDrop",
-                    "SecurityOpt", "Privileged", "PidMode", "CapAdd", "Devices", "DeviceRequests")
+ISOLATION_FIELDS = (
+    "AutoRemove",
+    "RestartPolicy",
+    "NetworkMode",
+    "ReadonlyRootfs",
+    "CapDrop",
+    "SecurityOpt",
+    "Privileged",
+    "PidMode",
+    "CapAdd",
+    "Devices",
+    "DeviceRequests",
+    "Memory",
+    "MemorySwap",
+    "PidsLimit",
+    "NanoCpus",
+)
 
 
 @dataclass(frozen=True)
@@ -42,29 +57,72 @@ class ProbeSpec:
         request = self.request
         # silent-defaults: allow-contract -- Default namespace mode adds no Docker option.
         namespace = ["--userns=host"] if request.userns_mode == "host" else []
-        return ["container", "create", "--pull=never", "--name", self.name,
-                "--label", OWNER_LABEL + "=" + OWNER, "--label", TOKEN_LABEL + "=" + self.token,
-                "--user", f"{request.user_uid}:{request.user_gid}",
-                "--rm", "--restart", "no", "--no-healthcheck",
-                "--network", "none", "--read-only", "--cap-drop", "ALL",
-                "--security-opt", "no-new-privileges:true", *namespace,
-                "--entrypoint", request.interpreter, self.image_id, *self.command]
+        resources = request.resources
+        limits = []
+        if resources is not None:
+            limits = [
+                "--memory",
+                str(resources.memory_bytes),
+                "--memory-swap",
+                str(resources.memory_bytes),
+                "--pids-limit",
+                str(resources.pids_limit),
+                "--cpus",
+                str(Decimal(resources.nano_cpus) / Decimal(1_000_000_000)),
+            ]
+        return [
+            "container",
+            "create",
+            "--pull=never",
+            "--name",
+            self.name,
+            "--label",
+            OWNER_LABEL + "=" + OWNER,
+            "--label",
+            TOKEN_LABEL + "=" + self.token,
+            "--user",
+            f"{request.user_uid}:{request.user_gid}",
+            "--rm",
+            "--restart",
+            "no",
+            "--no-healthcheck",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            *limits,
+            *namespace,
+            "--entrypoint",
+            request.interpreter,
+            self.image_id,
+            *self.command,
+        ]
 
     def verify(self, container, cid: str) -> None:
         request = self.request
         # silent-defaults: allow-contract -- Docker inspect encodes the explicitly selected default namespace as empty text, and host selection as host; this is wire encoding, not policy fallback.
         expected_userns_mode = "" if request.userns_mode == "default" else "host"
-        if (container.cid != cid or container.name != self.name or container.token != self.token
-                or container.owner != OWNER or container.image_id != self.image_id
-                or container.user != f"{request.user_uid}:{request.user_gid}"
-                or container.userns_mode != expected_userns_mode
-                or tuple(container.entrypoint) != (request.interpreter,)
-                or tuple(container.command) != self.command):
+        if (
+            container.cid != cid
+            or container.name != self.name
+            or container.token != self.token
+            or container.owner != OWNER
+            or container.image_id != self.image_id
+            or container.user != f"{request.user_uid}:{request.user_gid}"
+            or container.userns_mode != expected_userns_mode
+            or tuple(container.entrypoint) != (request.interpreter,)
+            or tuple(container.command) != self.command
+        ):
             raise StepError("ownership", "probe ownership or configuration does not match its specification")
 
         isolation = container.isolation
-        if (isolation["AutoRemove"] is not True
-                or not isinstance(isolation["RestartPolicy"], dict)
-                or isolation["RestartPolicy"].get("Name") not in ("", "no")):
+        if (
+            isolation["AutoRemove"] is not True
+            or not isinstance(isolation["RestartPolicy"], dict)
+            or isolation["RestartPolicy"].get("Name") not in ("", "no")
+        ):
             raise StepError("ownership", "probe cleanup or restart policy changed")
-        _confinement.verify(container)
+        _confinement.verify(container, resources=request.resources)

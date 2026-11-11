@@ -1,13 +1,13 @@
 """Run a probe and print its maps or requested UID/GID translations."""
 
 import argparse
-from dataclasses import replace
 import json
 import signal
 import sys
+from dataclasses import replace
 
 from .core import Identifier
-from .probe import Problem, ProbeFailure, ProbeRequest, ResourceState, Retirement, StepError, probe_identity
+from .probe import ProbeFailure, ProbeRequest, ProbeResources, Problem, ResourceState, Retirement, StepError, probe_identity
 
 
 class _SignalCancellation:
@@ -37,19 +37,23 @@ def _parser():
     parser.add_argument("--userns", choices=("default", "host"))
     parser.add_argument("--uid", action="append", type=Identifier.of)
     parser.add_argument("--gid", action="append", type=Identifier.of)
-    parser.add_argument("--inverse", action="store_true", help="interpret --uid and --gid in host coordinates and return their container IDs")
+    parser.add_argument(
+        "--inverse", action="store_true", help="interpret --uid and --gid in host coordinates and return their container IDs"
+    )
     parser.add_argument("--values", action="store_true", help="print only projected decimal IDs for shell callers")
     parser.add_argument("--timeout", type=float, help="override the measurement time bound in seconds")
+    parser.add_argument("--memory-bytes", type=int, help="probe memory and swap ceiling in bytes")
+    parser.add_argument("--pids-limit", type=int, help="probe process ceiling")
+    parser.add_argument("--nano-cpus", type=int, help="probe CPU ceiling in billionths of one CPU")
     return parser
 
 
 def _emit(payload: dict, *, values_mode: bool):
     if values_mode and payload["ok"]:
         values = payload["mapped_uids"] + payload["mapped_gids"]
-        print(" ".join(map(str, values)))
+        sys.stdout.write(" ".join(map(str, values)) + "\n")
     else:
-        print(json.dumps(payload, sort_keys=True, separators=(",", ":")),
-              file=sys.stderr if values_mode else sys.stdout)
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")), file=sys.stderr if values_mode else sys.stdout)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,12 +71,16 @@ def main(argv: list[str] | None = None) -> int:
         values_mode = options.values
         if len(options.uid) + len(options.gid) > 512:
             raise StepError("invalid-policy", "request at most 512 projected identities")
-        request = ProbeRequest(options.endpoint, options.image, options.interpreter,
-                               options.user_uid, options.user_gid)
+        request = ProbeRequest(options.endpoint, options.image, options.interpreter, options.user_uid, options.user_gid)
         if options.userns is not None:
             request = replace(request, userns_mode=options.userns)
         if options.timeout is not None:
             request = replace(request, bounds=replace(request.bounds, operation_seconds=options.timeout))
+        ceilings = (options.memory_bytes, options.pids_limit, options.nano_cpus)
+        if any(value is not None for value in ceilings):
+            if any(value is None for value in ceilings):
+                raise StepError("invalid-policy", "supply all three probe resource ceilings")
+            request = replace(request, resources=ProbeResources(*ceilings))
         cancellation = _SignalCancellation()
         for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             handlers[number] = signal.signal(number, cancellation.request)
@@ -83,13 +91,16 @@ def main(argv: list[str] | None = None) -> int:
             projected_uids = [project_uid(uid) for uid in options.uid]
             projected_gids = [project_gid(gid) for gid in options.gid]
         except ValueError as error:
-            raise ProbeFailure(Problem("unmapped-id", str(error)),
-                Retirement(ResourceState.RETIRED, result.container_id)) from error
+            raise ProbeFailure(
+                Problem("unmapped-id", str(error)), Retirement(ResourceState.RETIRED, result.container_id)
+            ) from error
         payload = result.as_dict()
         payload.update(mapped_uids=projected_uids, mapped_gids=projected_gids)
         if cancellation.is_set():
-            raise ProbeFailure(Problem("cancelled", "operation was cancelled before output"),
-                               Retirement(ResourceState.RETIRED, result.container_id))
+            raise ProbeFailure(
+                Problem("cancelled", "operation was cancelled before output"),
+                Retirement(ResourceState.RETIRED, result.container_id),
+            )
         _emit(payload, values_mode=values_mode)
         return 0
     # silent-defaults: allow-exception-outcome -- Structured operation failure always produces a positive exit status and never releases maps; tests/test_cli.py::CliTests.

@@ -1,9 +1,9 @@
 """Read Linux UID/GID maps and apply explicitly chosen affine mappings."""
 
+import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 
 class Identifier(int):
@@ -20,7 +20,7 @@ class Identifier(int):
 
     @classmethod
     def of(cls, text: str) -> "Identifier":
-        """Parse 1–10 ASCII decimal digits; invalid syntax/range raises ValueError."""
+        """Parse 1 to 10 ASCII decimal digits; invalid syntax/range raises ValueError."""
         if not isinstance(text, str) or re.fullmatch(r"[0-9]{1,10}", text) is None:
             raise ValueError("expected a decimal Linux ID")
         return cls(int(text, 10))
@@ -99,7 +99,7 @@ def read_maps(read_file: Callable[[str], bytes]) -> MapRows:
 
 def observe_process(pid: int) -> MapRows:
     """Read both map files for a PID visible in the caller's /proc."""
-    if not (type(pid) is int and 0 < pid):
+    if not (type(pid) is int and pid > 0):
         raise ValueError("pid must be a positive integer")
     directory = Path("/proc") / str(pid)
     return read_maps(lambda name: (directory / name).read_bytes())

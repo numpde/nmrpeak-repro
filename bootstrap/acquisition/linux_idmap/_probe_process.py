@@ -1,14 +1,14 @@
 """Process ownership and retirement checks for the managed probe."""
 
-from contextlib import contextmanager
 import os
 import re
+from contextlib import contextmanager
 
 from . import _procfs as _proc
-from .core import IdMap
-from ._procfs import Procfs, ProcessIdentity, ProcessStatus, require_host, _directory, _validate_pid
 from ._errors import IdentityError
 from ._files import FileIdentity
+from ._procfs import ProcessIdentity, ProcessStatus, Procfs, _directory, _validate_pid, require_host
+from .core import IdMap
 from .process import ProcessObservation
 
 

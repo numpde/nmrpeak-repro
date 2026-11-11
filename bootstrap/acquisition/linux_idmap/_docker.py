@@ -1,25 +1,28 @@
 """Resolve images and manage probe containers on one selected Docker engine."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
 import json
 import os
 import re
 import stat
 import tempfile
-from typing import Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
+from pathlib import Path
 
+from ._command import DockerError, _command_failure, _deadline, _remaining, _run_command
 from ._files import FileIdentity
-from ._command import DockerError, _command_failure, _run_command, _deadline, _remaining
 from ._probe_model import Cancellation
-from ._probe_spec import OWNER_LABEL, TOKEN_LABEL, ISOLATION_FIELDS
+from ._probe_spec import ISOLATION_FIELDS, OWNER_LABEL, TOKEN_LABEL
 
 
 class DockerEngine:
     """Selected socket and daemon identity retained for one complete operation."""
 
-    def __init__(self, identity: EngineIdentity, directory: tempfile.TemporaryDirectory,
-                 executable: str, environment: Mapping[str, str]):
+    def __init__(
+        self, identity: EngineIdentity, directory: tempfile.TemporaryDirectory, executable: str, environment: Mapping[str, str]
+    ):
         self.identity = identity
         self._directory = directory
         self._executable = executable
@@ -28,8 +31,9 @@ class DockerEngine:
 
     @classmethod
     # silent-defaults: allow-contract -- Use the Docker CLI transport unless the caller supplies a test executable; never choose a Docker endpoint implicitly; tests/test_docker.py::EngineTests.
-    def connect(cls, endpoint: str, *, timeout: float, cancel: Cancellation | None = None,
-                executable: str = "docker") -> DockerEngine:
+    def connect(
+        cls, endpoint: str, *, timeout: float, cancel: Cancellation | None = None, executable: str = "docker"
+    ) -> DockerEngine:
         """Connect to the selected Unix socket and record its daemon identity."""
         deadline = _deadline(timeout)
         if not _text(endpoint) or not endpoint.startswith("unix:///") or "?" in endpoint or "#" in endpoint:
@@ -60,15 +64,23 @@ class DockerEngine:
     def image_id(self, image: str, *, timeout: float, cancel: Cancellation | None = None) -> str:
         if not _text(image, 512) or not image or image.startswith("-"):
             raise DockerError("invalid_policy", "An explicit approved local image reference is required.")
-        value = _json(self._call(["image", "inspect", "--format", "[{{json .ID}},{{json .Config.Volumes}}]", image], timeout=timeout, cancel=cancel))
-        if not isinstance(value, list) or len(value) != 2 or not isinstance(value[0], str) or IMAGE_PATTERN.fullmatch(value[0]) is None:
+        value = _json(
+            self._call(
+                ["image", "inspect", "--format", "[{{json .ID}},{{json .Config.Volumes}}]", image], timeout=timeout, cancel=cancel
+            )
+        )
+        if (
+            not isinstance(value, list)
+            or len(value) != 2
+            or not isinstance(value[0], str)
+            or IMAGE_PATTERN.fullmatch(value[0]) is None
+        ):
             raise DockerError("invalid_response", "The approved local image did not resolve to an immutable image ID.")
         if value[1] not in (None, {}):
             raise DockerError("invalid_policy", "The approved probe image must not declare implicit volumes.")
         return value[0]
 
-    def create(self, arguments: list[str], *, timeout: float,
-               cancel: Cancellation | None = None) -> str:
+    def create(self, arguments: list[str], *, timeout: float, cancel: Cancellation | None = None) -> str:
         value = self._call(arguments, timeout=timeout, cancel=cancel, mutation=True).strip()
         try:
             _cid(value)
@@ -85,8 +97,9 @@ class DockerEngine:
         _cid(cid)
         deadline = _deadline(timeout)
         try:
-            result = self._call(["container", "inspect", "--format", INSPECT_FORMAT, cid],
-                                timeout=_remaining(deadline), cancel=cancel)
+            result = self._call(
+                ["container", "inspect", "--format", INSPECT_FORMAT, cid], timeout=_remaining(deadline), cancel=cancel
+            )
         except DockerError as error:
             if error.category != "docker_command":
                 raise
@@ -137,21 +150,24 @@ class DockerEngine:
     def assert_unchanged(self, *, timeout: float, cancel: Cancellation | None = None) -> None:
         deadline = _deadline(timeout)
         self._socket_check()
-        value = EngineInfo.of(_run_command(self._argv(["info", "--format", INFO_FORMAT]),
-                                         env=self._environment, timeout=_remaining(deadline), cancel=cancel))
+        value = EngineInfo.of(
+            _run_command(
+                self._argv(["info", "--format", INFO_FORMAT]), env=self._environment, timeout=_remaining(deadline), cancel=cancel
+            )
+        )
         if value != self.identity.info:
             raise DockerError("engine_changed", "The selected Docker daemon identity or namespace configuration changed.")
         self._socket_check()
 
     # silent-defaults: allow-contract -- Transport queries are nonmutating; create/start/remove explicitly identify mutation uncertainty; tests/test_docker.py::CommandTests.
-    def _call(self, args: list[str], *, timeout: float, cancel: Cancellation | None = None,
-              mutation: bool = False) -> str:
+    def _call(self, args: list[str], *, timeout: float, cancel: Cancellation | None = None, mutation: bool = False) -> str:
         deadline = _deadline(timeout)
         self.assert_unchanged(timeout=_remaining(deadline), cancel=cancel)
         completed = False
         try:
-            result = _run_command(self._argv(args), env=self._environment, timeout=_remaining(deadline),
-                                  cancel=cancel, mutation=mutation)
+            result = _run_command(
+                self._argv(args), env=self._environment, timeout=_remaining(deadline), cancel=cancel, mutation=mutation
+            )
             completed = True
             self.assert_unchanged(timeout=_remaining(deadline), cancel=cancel)
             return result
@@ -163,8 +179,9 @@ class DockerEngine:
             raise
 
     def _list(self, filter_value: str, *, timeout: float, cancel: Cancellation | None = None) -> tuple[str, ...]:
-        result = self._call(["container", "ls", "--all", "--no-trunc", "--quiet", "--filter", filter_value],
-                            timeout=timeout, cancel=cancel)
+        result = self._call(
+            ["container", "ls", "--all", "--no-trunc", "--quiet", "--filter", filter_value], timeout=timeout, cancel=cancel
+        )
         values = result.splitlines()
         if len(values) > 64 or len(set(values)) != len(values):
             raise DockerError("invalid_response", "Docker candidate listing exceeded the identity bound.")
@@ -184,8 +201,10 @@ TOKEN_PATTERN = re.compile(r"(?:[0-9a-f]{32}|[0-9a-f]{64})\Z")
 IMAGE_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Fixed minimal Docker evidence projection; raw engine output never becomes diagnostics.
 # repo-check: allow-module-constant
-INFO_FORMAT = ('{"daemon_id":{{json .ID}},"security_options":{{json .SecurityOptions}},'
-               '"root_dir":{{json .DockerRootDir}},"driver":{{json .Driver}},"os_type":{{json .OSType}}}')
+INFO_FORMAT = (
+    '{"daemon_id":{{json .ID}},"security_options":{{json .SecurityOptions}},'
+    '"root_dir":{{json .DockerRootDir}},"driver":{{json .Driver}},"os_type":{{json .OSType}}}'
+)
 # Fixed ownership/isolation evidence projection shared with ProbeSpec.verify.
 # repo-check: allow-module-constant
 INSPECT_FORMAT = (
@@ -196,15 +215,19 @@ INSPECT_FORMAT = (
     '"started_at":{{json .State.StartedAt}},'
     '"user":{{json .Config.User}},"userns_mode":{{json .HostConfig.UsernsMode}},'
     '"entrypoint":{{json .Config.Entrypoint}},"command":{{json .Config.Cmd}},'
-    '"mounts":{{json .Mounts}},"isolation":{' +
-    ",".join('"' + field + '":{{json .HostConfig.' + field + '}}' for field in ISOLATION_FIELDS) + '}}'
+    '"mounts":{{json .Mounts}},"isolation":{'
+    + ",".join('"' + field + '":{{json .HostConfig.' + field + "}}" for field in ISOLATION_FIELDS)
+    + "}}"
 )
 
 
 def _clean_environment(source: Mapping[str, str]) -> dict[str, str]:
-    return {key: value for key, value in source.items()
-            if not key.startswith(("DOCKER_", "COMPOSE_", "BUILDX_"))
-            and key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}}
+    return {
+        key: value
+        for key, value in source.items()
+        if not key.startswith(("DOCKER_", "COMPOSE_", "BUILDX_"))
+        and key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    }
 
 
 def _json(text: str):
@@ -213,6 +236,7 @@ def _json(text: str):
         if len(value) != len(pairs):
             raise ValueError("Duplicate structured field")
         return value
+
     try:
         return json.loads(text, object_pairs_hook=object_pairs)
     except (ValueError, TypeError, RecursionError) as exc:
@@ -236,7 +260,7 @@ def _token(value: str) -> None:
 
 def _socket_identity(path: str) -> FileIdentity:
     try:
-        info = os.stat(path)
+        info = Path(path).stat()
     except OSError as exc:
         raise DockerError("engine_changed", "The selected local Docker socket is unavailable.") from exc
     if not stat.S_ISSOCK(info.st_mode):
@@ -259,13 +283,11 @@ class EngineInfo:
         value = _json(text)
         if not isinstance(value, dict) or set(value) != {field.name for field in fields(cls)}:
             raise DockerError("invalid_response", "Docker returned an invalid engine identity.")
-        if any(not _text(value[key]) or not value[key]
-               for key in ("daemon_id", "root_dir", "driver", "os_type")):
+        if any(not _text(value[key]) or not value[key] for key in ("daemon_id", "root_dir", "driver", "os_type")):
             raise DockerError("invalid_response", "Docker returned an invalid engine identity.")
         # silent-defaults: allow-contract -- Moby emits null for a nil SecurityOptions slice; null and [] both mean no entries. See test_docker.py::EngineTests.test_null_and_empty_security_options_are_equivalent_but_change_is_not.
         options = [] if value["security_options"] is None else value["security_options"]
-        if (not isinstance(options, list) or len(options) > 32
-                or not all(_text(option, 512) for option in options)):
+        if not isinstance(options, list) or len(options) > 32 or not all(_text(option, 512) for option in options):
             raise DockerError("invalid_response", "Docker returned an invalid engine identity.")
         if value["os_type"] != "linux":
             raise DockerError("unsupported_engine", "Only local Linux Docker engines are supported.")
@@ -304,8 +326,11 @@ class Container:
         keys = {field.name for field in fields(cls)}
         if not isinstance(value, dict) or set(value) != keys:
             raise DockerError("invalid_response", "Docker returned invalid container evidence.")
-        if (not isinstance(value["mounts"], list) or not isinstance(value["isolation"], dict)
-                or set(value["isolation"]) != set(ISOLATION_FIELDS)):
+        if (
+            not isinstance(value["mounts"], list)
+            or not isinstance(value["isolation"], dict)
+            or set(value["isolation"]) != set(ISOLATION_FIELDS)
+        ):
             raise DockerError("invalid_response", "Docker returned invalid isolation evidence.")
         text_fields = ("cid", "name", "image_id", "started_at", "user", "userns_mode")
         if any(not _text(value[key]) for key in text_fields):
@@ -316,8 +341,7 @@ class Container:
             raise DockerError("invalid_response", "Docker returned invalid container evidence fields.")
         for field in ("entrypoint", "command"):
             arguments = value[field]
-            if (not isinstance(arguments, list) or len(arguments) > 16
-                    or any(not _text(item) for item in arguments)):
+            if not isinstance(arguments, list) or len(arguments) > 16 or any(not _text(item) for item in arguments):
                 raise DockerError("invalid_response", "Docker returned invalid container evidence fields.")
         if value["cid"] != cid:
             raise DockerError("identity_mismatch", "Docker inspection returned another container.")

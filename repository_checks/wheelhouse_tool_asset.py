@@ -18,9 +18,9 @@ import subprocess
 import time
 
 
-TOOL_NAME = "wheelhouse-tool-0.6.9.pyz"
+TOOL_NAME = "wheelhouse-tool-0.6.12.pyz"
 TOOL_SHA256 = "e3fecec1b52b98372ce898a02ee5c9645a34782a913fd695a91d5f42f89b1e60"
-TOOL_URL = "https://github.com/numpde/nmr-provider-tools/releases/download/v0.6.9/" + TOOL_NAME
+TOOL_URL = "https://github.com/numpde/nmr-provider-tools/releases/download/v0.6.12/" + TOOL_NAME
 MAX_BYTES = 16 * 1024 * 1024
 MAX_ATTEMPTS = 3
 

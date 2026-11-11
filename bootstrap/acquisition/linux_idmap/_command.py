@@ -7,7 +7,7 @@ import selectors
 import signal
 import subprocess
 import time
-from typing import Mapping
+from collections.abc import Mapping
 
 from ._probe_model import Cancellation
 
@@ -27,8 +27,9 @@ class DockerError(Exception):
 
 
 # silent-defaults: allow-contract -- Read-only commands are the transport baseline; mutation callers explicitly opt into uncertain-dispatch reporting; tests/test_docker.py::CommandTests.
-def _run_command(argv: list[str], *, env: Mapping[str, str], timeout: float,
-                 cancel: Cancellation | None = None, mutation: bool = False) -> str:
+def _run_command(
+    argv: list[str], *, env: Mapping[str, str], timeout: float, cancel: Cancellation | None = None, mutation: bool = False
+) -> str:
     """Bound both output pipes; signal the private group and reap its leader.
 
     This operation exclusively owns waiting for its child: no SIGCHLD auto-reap
@@ -56,22 +57,24 @@ def _run_command(argv: list[str], *, env: Mapping[str, str], timeout: float,
             raise DockerError("cancelled", "Docker operation was cancelled before dispatch.")
         _remaining(deadline)
         spawn_requested = True
-        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, env=dict(env), start_new_session=True)
+        process = subprocess.Popen(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(env), start_new_session=True
+        )
     except BaseException as error:
         # Even OSError can come from a signal handler after Popen created a child.
         uncertain = mutation and spawn_requested
         operation = error
         if spawn_requested and isinstance(error, OSError):
-            operation = DockerError("docker_unavailable", "Docker client startup did not complete.",
-                                    mutation_uncertain=uncertain)
+            operation = DockerError("docker_unavailable", "Docker client startup did not complete.", mutation_uncertain=uncertain)
             operation.__cause__ = error
         cleanup = _close_error(selector)
         if cleanup is not None:
             raise _command_failure(operation, cleanup, mutation_uncertain=uncertain) from operation
         if spawn_requested and operation is error and isinstance(error, (DockerError, BaseExceptionGroup)):
             raise _command_failure(error, mutation_uncertain=uncertain) from error
-        raise operation
+        if operation is error:
+            raise
+        raise operation from error
     operation_error = retirement_error = None
     try:
         for stream in (process.stdout, process.stderr):
@@ -177,8 +180,9 @@ def _reap(process: subprocess.Popen) -> None:
     except OSError as error:
         raise DockerError("client_cleanup", "Docker child could not be reaped.") from error
     except BaseException as error:
-        raise _command_failure(error, DockerError("client_cleanup", "Docker child reaping was interrupted."),
-                             mutation_uncertain=False) from error
+        raise _command_failure(
+            error, DockerError("client_cleanup", "Docker child reaping was interrupted."), mutation_uncertain=False
+        ) from error
 
 
 def _terminate(process: subprocess.Popen) -> None:
@@ -186,11 +190,11 @@ def _terminate(process: subprocess.Popen) -> None:
     failure = None
     try:
         _peek_exit(process)
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        # silent-defaults: allow-contract -- A vanished group needs no signal; its waitable leader must still be reaped.
-        except ProcessLookupError:
-            pass
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        # A vanished group still leaves its waitable leader owned by this caller.
+        _reap(process)
+        return
     except DockerError:
         # Another waiter consumed the child: its numeric group may be reused.
         raise
@@ -198,8 +202,9 @@ def _terminate(process: subprocess.Popen) -> None:
         failure = DockerError("client_cleanup", "Docker client group termination could not be confirmed.")
         failure.__cause__ = error
     except BaseException as error:
-        failure = _command_failure(error, DockerError("client_cleanup", "Docker client retirement was interrupted."),
-                                 mutation_uncertain=False)
+        failure = _command_failure(
+            error, DockerError("client_cleanup", "Docker client retirement was interrupted."), mutation_uncertain=False
+        )
     try:
         _reap(process)  # A failed signal must not skip reaping an already-exited child.
     except BaseException as error:
