@@ -57,19 +57,19 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_diagnostic_failure_does_not_mask_scientific_failure(self):
         first = Factory("first", reply("report_interpretation_problem", {"message": "Private claim."}))
         second = Factory("second", reply("submit_interpretation", {"value": HF_VALUE}))
-        configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),
-                                       SimpleNamespace(configuration_id="second", api_key="key-two")),
-                                      InterpreterPolicy(interpretation_timeout_seconds=30))
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(first, second)):
+            configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),
+                                           SimpleNamespace(configuration_id="second", api_key="key-two")),
+                                          InterpreterPolicy(interpretation_timeout_seconds=30))
         session = configured.new_session()
         scientific = RuntimeError("scientific failure")
         diagnostic = RuntimeError("diagnostic failure")
         def fail_diagnostic(_event):
             raise diagnostic
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(first, second)):
-            with self.assertRaises(RuntimeError) as caught:
-                await session.validate_freeform_input_async(
-                    source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=AsyncMock(side_effect=scientific),
-                    execution_attempt_ref="attempt", record_diagnostic=fail_diagnostic)
+        with self.assertRaises(RuntimeError) as caught:
+            await session.validate_freeform_input_async(
+                source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=AsyncMock(side_effect=scientific),
+                execution_attempt_ref="attempt", record_diagnostic=fail_diagnostic)
         self.assertIs(caught.exception, scientific)
         self.assertIs(session.diagnostic_failure, diagnostic)
         await session.retire()
@@ -125,19 +125,19 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_diagnostic_failure_does_not_veto_accepted_result(self):
         first = Factory("first", reply("report_interpretation_problem", {"message": "Private claim."}))
         second = Factory("second", reply("submit_interpretation", {"value": HF_VALUE}))
-        configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),
-                                       SimpleNamespace(configuration_id="second", api_key="key-two")),
-                                      InterpreterPolicy(interpretation_timeout_seconds=30))
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(first, second)):
+            configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),
+                                           SimpleNamespace(configuration_id="second", api_key="key-two")),
+                                          InterpreterPolicy(interpretation_timeout_seconds=30))
         session = configured.new_session()
         accepted = ValidatedRunnerRequest(object(), object())
         validate = AsyncMock(return_value=accepted)
         failure = RuntimeError("diagnostic recipient failed")
         def fail_diagnostic(_event):
             raise failure
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(first, second)):
-            result = await session.validate_freeform_input_async(
-                source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=validate,
-                execution_attempt_ref="attempt", record_diagnostic=fail_diagnostic)
+        result = await session.validate_freeform_input_async(
+            source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=validate,
+            execution_attempt_ref="attempt", record_diagnostic=fail_diagnostic)
         self.assertIs(result, accepted)
         self.assertIs(session.diagnostic_failure, failure)
         await session.retire()
@@ -158,16 +158,16 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
                 self.retirement_confirmed = True
 
         model = HeldFactory()
-        configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),),
-                                      InterpreterPolicy(interpretation_timeout_seconds=30))
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)):
+            configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),),
+                                          InterpreterPolicy(interpretation_timeout_seconds=30))
         session = configured.new_session()
         accepted = ValidatedRunnerRequest(object(), object())
         validate = AsyncMock(return_value=accepted)
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)):
-            with self.assertRaises(ConversationRetirementFailed):
-                await session.validate_freeform_input_async(
-                    source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=validate,
-                    execution_attempt_ref="attempt")
+        with self.assertRaises(ConversationRetirementFailed):
+            await session.validate_freeform_input_async(
+                source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=validate,
+                execution_attempt_ref="attempt")
         self.assertIs(session._shared.accepted_result.value, accepted)
         validate.assert_awaited_once()
         model.fail_retirement = False
@@ -188,23 +188,23 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
             return await complete(messages, tools, **kwargs)
 
         model.complete = scripted
-        configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),),
-                                      InterpreterPolicy(interpretation_timeout_seconds=30))
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)):
+            configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),),
+                                          InterpreterPolicy(interpretation_timeout_seconds=30))
         session = configured.new_session()
         accepted = ValidatedRunnerRequest(object(), object())
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)):
-            try:
-                result = await session.validate_freeform_input_async(
-                    source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=AsyncMock(return_value=accepted),
-                    execution_attempt_ref="attempt")
-                self.assertIs(result, accepted)
-                feedback = json.loads(next(message["content"] for message in model.requests[1]
-                                           if message["role"] == "tool"))
-                self.assertEqual(set(feedback["value"]["allowed_values"]), set(SUPPORTED_MULTIPLICITIES))
-                self.assertIn("do not substitute", feedback["value"]["note"])
-            finally:
-                await session.retire()
-                await session.join()
+        try:
+            result = await session.validate_freeform_input_async(
+                source=b"A source", lane=HF_LIFECYCLE_LANE, validate_input=AsyncMock(return_value=accepted),
+                execution_attempt_ref="attempt")
+            self.assertIs(result, accepted)
+            feedback = json.loads(next(message["content"] for message in model.requests[1]
+                                       if message["role"] == "tool"))
+            self.assertEqual(set(feedback["value"]["allowed_values"]), set(SUPPORTED_MULTIPLICITIES))
+            self.assertIn("do not substitute", feedback["value"]["note"])
+        finally:
+            await session.retire()
+            await session.join()
 
     async def test_endpoint_loading_rejects_ambient_tls_keylog(self):
         from provider_core.api_config import ApiConfigurationRejected
@@ -225,14 +225,14 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
         marker = "private report marker"
         first = Factory("first", reply("report_interpretation_problem", {"message": marker}))
         second = Factory("second", reply("submit_interpretation", {"value": {}}))
-        configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),
-                                       SimpleNamespace(configuration_id="second", api_key="key-two")),
-                                      InterpreterPolicy(interpretation_timeout_seconds=30))
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(first, second)):
+            configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),
+                                           SimpleNamespace(configuration_id="second", api_key="key-two")),
+                                          InterpreterPolicy(interpretation_timeout_seconds=30))
         session = configured.new_session()
         accepted = ValidatedRunnerRequest(object(), object())
         validate = AsyncMock(return_value=accepted)
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(first, second)), \
-             patch("nmrpeak_provider.input_interpreter._InterpretationCapability.construct_interpretation") as construct, \
+        with patch("nmrpeak_provider.input_interpreter._InterpretationCapability.construct_interpretation") as construct, \
              patch.object(type(HF_LIFECYCLE_LANE), "bind_runner_input", return_value=object()):
             construct.return_value = object()
             result = await session.validate_freeform_input_async(
@@ -246,15 +246,15 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_expired_window_does_not_start_validation(self):
         model = Factory("first", reply("submit_interpretation", {"value": {}}))
-        configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),),
-                                      InterpreterPolicy(interpretation_timeout_seconds=0.05))
+        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)):
+            configured = InputInterpreter((SimpleNamespace(configuration_id="first", api_key="key-one"),),
+                                          InterpreterPolicy(interpretation_timeout_seconds=0.05))
         session = configured.new_session()
         validate = AsyncMock()
         def slow_bind(_lane, _candidate):
             time.sleep(0.1)
             return object()
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(model,)), \
-             patch("nmrpeak_provider.input_interpreter._InterpretationCapability.construct_interpretation", return_value=object()), \
+        with patch("nmrpeak_provider.input_interpreter._InterpretationCapability.construct_interpretation", return_value=object()), \
              patch.object(type(HF_LIFECYCLE_LANE), "bind_runner_input", slow_bind):
             with self.assertRaises(InterpreterUnavailable):
                 await session.validate_freeform_input_async(

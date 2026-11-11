@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
 import secrets
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
 
 from ._docker import Container, DockerEngine, DockerError
 from ._errors import IdentityError
+from ._probe_model import Cancellation, ProbeFailure, ProbeHandle, ProbeRequest, Problem, ResourceState, Retirement, StepError
+from ._probe_process import ProbeProcesses
+from ._probe_spec import ProbeSpec
 from ._procfs import ProcessIdentity
 from .process import ProcessObservation
-from ._probe_process import ProbeProcesses
-from ._probe_model import Cancellation, Problem, ProbeFailure, ProbeHandle, ProbeRequest, ResourceState, Retirement, StepError
-from ._probe_spec import ProbeSpec
 
 
 class OwnedProbe:
@@ -93,10 +93,15 @@ class OwnedProbe:
 
     def run_changed(self, container: Container | None) -> bool:
         # Normal stopped/PID0 is allowed, but a different generation is not.
-        return self.run is not None and container is not None and (
-            container.started_at != self.run.started_at
-            or container.running and container.pid != self.run.pid
-            or not container.running and container.pid != 0)
+        return (
+            self.run is not None
+            and container is not None
+            and (
+                container.started_at != self.run.started_at
+                or (container.running and container.pid != self.run.pid)
+                or (not container.running and container.pid != 0)
+            )
+        )
 
     def handle(self) -> ProbeHandle | None:
         if self.spec is None:
@@ -154,13 +159,13 @@ class OwnedProbe:
             self.state = ResourceState.RETIRED
             # Lost/nonzero remove replies are settled by the checks above.
             # Safety, cancellation, and client-cleanup failures are never erased.
-            if (isinstance(removal_error, DockerError)
-                    and removal_error.category in {"timeout", "docker_command"}):
+            if isinstance(removal_error, DockerError) and removal_error.category in {"timeout", "docker_command"}:
                 removal_error = None
         except BaseException as error:
             confirmation_error = error
-        return [error for error in (run_error, identity_error, removal_error, polling_error, confirmation_error)
-                if error is not None]
+        return [
+            error for error in (run_error, identity_error, removal_error, polling_error, confirmation_error) if error is not None
+        ]
 
 
 @dataclass(frozen=True)
@@ -172,7 +177,7 @@ class ContainerRun:
     started_at: str
 
     @classmethod
-    def of(cls, container: Container) -> "ContainerRun":
+    def of(cls, container: Container) -> ContainerRun:
         return cls(container.cid, container.pid, container.started_at)
 
 
@@ -252,8 +257,7 @@ def owned_probe(request: ProbeRequest, *, cancel: Cancellation | None, executabl
                 close_error = error
     failures = [cause for error in (operation_error, *retirement_errors, close_error) for cause in _errors(error)]
     late_cancel = None
-    if (cancel is not None and cancel.is_set()
-            and not any(_problem(error).category == "cancelled" for error in failures)):
+    if cancel is not None and cancel.is_set() and not any(_problem(error).category == "cancelled" for error in failures):
         late_cancel = StepError("cancelled", "operation was cancelled before result delivery")
     failures = [error for error in (*failures, late_cancel) if error is not None]
     problems = [_problem(error) for error in failures]

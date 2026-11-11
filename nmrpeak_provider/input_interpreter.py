@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import logging
 import json
 from pathlib import Path
@@ -18,7 +18,7 @@ from provider_core.transport import HttpResponse
 from provider_core.task_boundary import contain_task_exit
 from provider_core.interpreter import (
     Interpreter, InterpretationFailed, InterpretationInputRejected, ModelReportedInterpretationProblem,
-    ModelWindowExpired,
+    ModelWindowExpired, ProseService,
 )
 
 from .interpreter import (
@@ -48,6 +48,7 @@ from .product_input import (
     InputRejected,
     InputRejectionReason,
     SUPPORTED_MULTIPLICITIES,
+    is_structured_source,
     parse_job_input,
 )
 from .provider_events import (
@@ -155,10 +156,16 @@ def _value_schema_for(lane: LifecycleLane) -> dict[str, object]:
 
 @dataclass(frozen=True, slots=True)
 class InputInterpreter:
-    """Own immutable endpoint facts used by both lifecycle lanes."""
+    """Share captured prose services and their retry delays across both lanes."""
 
     endpoint_specs: tuple[OpenAIChatEndpointSpec, ...]
     policy: InterpreterPolicy
+    services: tuple[ProseService, ...] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "services", tuple(
+            ProseService(factory) for factory in endpoint_factories(self.endpoint_specs)
+        ))
 
     @property
     def diagnostic_secrets(self) -> tuple[str, ...]:
@@ -168,6 +175,21 @@ class InputInterpreter:
     def new_session(self):
         """Adopt a per-Attempt interpretation owner before HTTP admission."""
         return InterpretationSession(self)
+
+    def prose_retry_seconds(self, source: bytes) -> float:
+        """Defer prose only when every configured service has asked to wait."""
+        delay = min((service.retry_seconds for service in self.services), default=0.0)
+        if delay <= 0:
+            return 0.0
+        try:
+            if is_structured_source(source):
+                return 0.0
+            _admit_source_text(source)
+        except InputRejected:
+            # The original preparation path owns reporting invalid input. It
+            # needs no prose service and must remain eligible during an outage.
+            return 0.0
+        return delay
 
 
 
@@ -236,10 +258,10 @@ class InterpretationSession:
             raise InterpreterUnavailable(InterpreterUnavailableReason.PROMPT_UNAVAILABLE) from error
         tools = interpreter_tools(submit_description=_SUBMIT_DESCRIPTION, value_schema=_value_schema_for(lane),
                                   report_description=_REPORT_DESCRIPTION)
-        factories = endpoint_factories(self._configured.endpoint_specs)
-        self._shared = Interpreter(factories,
+        services = self._configured.services
+        self._shared = Interpreter(services,
                                    timeout_seconds=self._configured.policy.interpretation_timeout_seconds,
-                                   context_bytes=min(factory.context_bytes for factory in factories),
+                                   context_bytes=min(service.context_bytes for service in services),
                                    secrets=self.diagnostic_secrets)
 
         async def dispatch(name, arguments, *, not_after):

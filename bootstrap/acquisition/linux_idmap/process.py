@@ -2,11 +2,11 @@
 
 from dataclasses import dataclass
 
-from .core import IdMap
-from ._procfs import qualified_process, ProcessIdentity
 from ._errors import IdentityError
+from ._procfs import ProcessIdentity, qualified_process
+from .core import IdMap
 
-__all__ = ["observe_host_process", "ProcessObservation", "ProcessIdentity", "IdentityError"]
+__all__ = ["IdentityError", "ProcessIdentity", "ProcessObservation", "observe_host_process"]
 
 
 @dataclass(frozen=True)

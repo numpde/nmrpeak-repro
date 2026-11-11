@@ -210,6 +210,10 @@ class ProviderProcess:
                                                                 owner=self)
                         if self._stop.is_set() or self._admission_paused.is_set():
                             return None
+                        if self.interpreter.prose_retry_seconds(instructions.specification_bytes) > 0:
+                            # Keep this Job unstarted. Another Job on this page
+                            # may have typed input that needs no prose service.
+                            continue
                         # A new selection cannot replay an admission from a lost process.
                         key = "nmrpeak-provider.v1:" + secrets.token_hex(32)
                         return StartPending(scope, generation.analysis_kind_ref, job.input,

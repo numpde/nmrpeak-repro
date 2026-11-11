@@ -44,6 +44,20 @@ Image preparation reuses an existing matching image.
 software behavior using fixtures; live provider and model qualification are
 separate opt-in operations. `make help` lists preparation and deployment commands.
 
+`make test/integration DOCKER_CONTEXT=<name>` checks NMRPeak's operator
+stop while an admitted Job awaits a prose-interpretation HTTPS reply. It
+requires the provider to stop admitting Jobs, retain the admitted Job until
+its report is accepted by local delivery, and cleanly close the connection.
+These consumer tests deliberately do not inspect the SDK's HTTP helper.
+The SDK tests cover subprocess startup, exit confirmation and cleanup:
+[HTTP-helper shutdown tests](https://github.com/numpde/nmr-provider-tools/blob/fix/release-settled-cancelled-attempts/packages/provider-core/tests/integration/chat/adversarial/test_fuzz_provider_http_shutdown.py).
+
+`shutdown_drain_seconds` is currently parsed and validated but not enforced.
+NMRPeak waits for accepted Jobs to finish their existing work and local
+report handoff; requesting an operator stop is not a cancellation confirmed
+by the central NMR Jobs API. A hard shutdown cutoff requires a way to
+durably recover the original started Attempt after a provider restart.
+
 To build and update one named deployment, run
 `make provider/deployment/update DEPLOYMENT=<name> WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>`.
 The command builds from the clean checkout on the selected local Docker engine,

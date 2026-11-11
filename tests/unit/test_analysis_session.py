@@ -67,6 +67,7 @@ def admission(configured, raw):
 def interpreter():
     configured = SimpleNamespace(diagnostic_secrets=(), validate_freeform_input_async=AsyncMock(), retire=AsyncMock(), join=AsyncMock())
     configured.new_session = lambda: configured
+    configured.prose_retry_seconds = lambda _source: 0.0
     return configured
 
 

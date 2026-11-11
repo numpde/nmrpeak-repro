@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import ctypes
-from dataclasses import dataclass
 import fcntl
 import os
-from pathlib import Path
 import re
 import sys
 import threading
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
-from .core import MapRows, read_maps
 from ._errors import IdentityError
 from ._files import FileIdentity
-
+from .core import MapRows, read_maps
 
 # Linux nsfs ABI identity, checked before namespace ioctls.
 # repo-check: allow-module-constant
@@ -122,15 +121,19 @@ class ProcessStatus:
         return self.state in _DEAD_STATES
 
     @classmethod
-    def of(cls, raw: bytes, pid: int) -> "ProcessStatus":
+    def of(cls, raw: bytes, pid: int) -> ProcessStatus:
         # comm is parenthesized but may itself contain spaces and parentheses.
         closing = raw.rfind(b") ")
         if not raw.startswith(str(pid).encode("ascii") + b" (") or closing < 0:
             raise IdentityError("process-identity", "Process status identity is malformed")
-        fields = raw[closing + 2:].split()
+        fields = raw[closing + 2 :].split()
         # After comm, state is field 3 and starttime is field 22 (offset 19).
-        if (len(fields) < 20 or fields[0] not in {state.encode("ascii") for state in _LIVE_STATES | _DEAD_STATES}
-                or _DECIMAL.fullmatch(fields[19]) is None or len(fields[19]) > 20):
+        if (
+            len(fields) < 20
+            or fields[0] not in {state.encode("ascii") for state in _LIVE_STATES | _DEAD_STATES}
+            or _DECIMAL.fullmatch(fields[19]) is None
+            or len(fields[19]) > 20
+        ):
             raise IdentityError("process-identity", "Process status fields are malformed")
         starttime = int(fields[19])
         if starttime > 0xFFFFFFFFFFFFFFFF:
@@ -156,8 +159,7 @@ class Procfs:
         try:
             with _directory(self.proc_root) as root:
                 pid, tid = os.getpid(), threading.get_native_id()
-                if (os.readlink("self", dir_fd=root) != str(pid)
-                        or os.readlink("thread-self", dir_fd=root) != f"{pid}/task/{tid}"):
+                if os.readlink("self", dir_fd=root) != str(pid) or os.readlink("thread-self", dir_fd=root) != f"{pid}/task/{tid}":
                     raise IdentityError("host-precondition", "procfs does not expose the calling process")
                 user = _namespace_inode(root, "user")
                 return ReaderEvidence(user, FileIdentity.of(os.fstat(root)), pid, tid)
@@ -189,8 +191,7 @@ class Procfs:
                 yield ProcessDirectory(fd, identity, reader)
                 after_status = ProcessStatus.of(_read_at(fd, "stat", 4096), pid)
                 after = FileIdentity.of(os.stat(str(pid), dir_fd=root, follow_symlinks=False))
-                if (not after_status.live or status.starttime != after_status.starttime
-                        or after != metadata):
+                if not after_status.live or status.starttime != after_status.starttime or after != metadata:
                     raise IdentityError("process-identity", "Process was replaced or exited during observation")
         except OSError as cause:
             raise IdentityError("process-identity", "Cannot establish consistent process evidence") from cause
@@ -219,6 +220,7 @@ def consistent_maps(read_file):
         def snapshot():
             maps = read_maps(read_file)
             return MapRows(list(maps.uid_rows), list(maps.gid_rows))
+
         first = snapshot()
         second = snapshot()
     except ValueError as cause:

@@ -8,6 +8,7 @@ from pathlib import Path
 import ssl
 import tempfile
 
+from provider_core.api_config import https_trust
 from tests.fakes.tls_certificates import write_test_certificates
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ class LoopbackHTTP:
             write_test_certificates(root)
             server_ssl = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             server_ssl.load_cert_chain(root / "server.pem", root / "server-key.pem")
-            self.trust = ssl.create_default_context(cafile=str(root / "ca.pem"))
+            self.trust = https_trust((root / "ca.pem").read_bytes(), label="local model test server")
         self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0, ssl=server_ssl)
         host, port = self._server.sockets[0].getsockname()[:2]
         self.base_url = f"https://localhost:{port}/v1" if self.tls else f"http://{host}:{port}/v1"

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Route acquisition HTTP/CONNECT traffic through one explicit interface.
 
 DNS and TCP sockets bind the selected device without an unbound resolver
@@ -222,8 +221,10 @@ def _read_dns_name(message: bytes, offset: int, depth: int = 0) -> tuple[str, in
 def _dns_servers(resolver_file: Path | None = None) -> tuple[str, ...]:
     """Read explicit captured resolvers, or existing service resolver configuration."""
 
-    paths = ((resolver_file,) if resolver_file is not None else
-             (Path("/run/systemd/resolve/resolv.conf"), Path("/etc/resolv.conf")))
+    if resolver_file is not None:
+        paths = (resolver_file,)
+    else:
+        paths = (Path("/run/systemd/resolve/resolv.conf"), Path("/etc/resolv.conf"))
     for path in paths:
         try:
             lines = path.read_text(encoding="ascii").splitlines()
@@ -311,8 +312,9 @@ def _query_ipv4(
     return addresses, aliases
 
 
-def resolve_ipv4_bound(host: str, interface: str, *, deadline: float,
-                       dns_servers: tuple[str, ...] | None = None) -> tuple[str, ...]:
+def resolve_ipv4_bound(
+    host: str, interface: str, *, deadline: float, dns_servers: tuple[str, ...] | None = None
+) -> tuple[str, ...]:
     """Follow bounded IPv4 aliases without using an unbound system resolver."""
     try:
         return (str(ipaddress.IPv4Address(host)),)
@@ -355,8 +357,7 @@ def resolve_ipv4_bound(host: str, interface: str, *, deadline: float,
     raise failure
 
 
-def connect_bound(host: str, port: int, interface: str, *,
-                  dns_servers: tuple[str, ...] | None = None) -> socket.socket:
+def connect_bound(host: str, port: int, interface: str, *, dns_servers: tuple[str, ...] | None = None) -> socket.socket:
     """Return one device-bound connection within a shared DNS/address budget."""
 
     deadline = time.monotonic() + CONNECT_SECONDS
@@ -478,7 +479,7 @@ class ConnectionAdmission:
         self.set_limit(limit)
 
     def set_limit(self, limit):
-        if not (type(limit) is int and 0 < limit):
+        if not (type(limit) is int and limit > 0):
             raise ValueError("Proxy connection capacity must be a positive integer.")
         with self._lock:
             self._limit = limit
@@ -559,7 +560,7 @@ class UnixProxyServer(ProxyServer):
         # Never unlink an existing path. The launcher owns the private parent
         # and removes it only after every container borrower has retired.
         super().server_bind()
-        os.chmod(self.server_address, 0o600)
+        Path(self.server_address).chmod(0o600)
 
 
 class UnixRelayHandler(socketserver.BaseRequestHandler):
@@ -578,6 +579,7 @@ class UnixRelayHandler(socketserver.BaseRequestHandler):
                 try:
                     self.request.settimeout(1)
                     self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                # silent-defaults: allow-contract -- The relay is already failing; writing a synthetic 502 is best effort and the primary error is still logged.
                 except OSError:
                     pass
             sys.stderr.write(f"proxy relay {phase} failed: {type(error).__name__}\n")
@@ -660,7 +662,9 @@ def main() -> None:
     listener.add_argument("--port", type=int, help="Listener port; 0 asks the kernel to choose a free port.")
     listener.add_argument("--unix-socket", type=Path, help="Private Unix listener; an existing path is never replaced.")
     parser.add_argument("--ready-file", type=Path, required=True)
-    parser.add_argument("--resolver-file", type=Path, help="Captured DNS configuration; no fallback to host or container resolvers.")
+    parser.add_argument(
+        "--resolver-file", type=Path, help="Captured DNS configuration; no fallback to host or container resolvers."
+    )
     args = parser.parse_args()
 
     if args.relay_socket is not None:
@@ -674,7 +678,9 @@ def main() -> None:
     try:
         if args.interface != "system":
             require_interface(args.interface)
-        dns_servers = None if args.resolver_file is None else _dns_servers(args.resolver_file)
+        dns_servers = None
+        if args.resolver_file is not None:
+            dns_servers = _dns_servers(args.resolver_file)
     except (ValueError, OSError) as error:
         raise SystemExit(str(error)) from None
 
