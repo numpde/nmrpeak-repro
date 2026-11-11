@@ -12,10 +12,13 @@ from math import floor
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from provider_core.attempt_record import TerminalOperation
 from provider_core.delivery_client import DeliveryEndpoint
+from provider_core.diagnostics import failure_evidence
+from provider_core.interpreter import ProseService
 
 from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.generation_runtime import GenerationRuntime
@@ -29,6 +32,29 @@ from tests.fakes.interpreter_values import HF_VALUE, VALUE
 from tests.fakes.model_http import LoopbackHTTP, reply
 from tests.fakes.shared_api import SharedApi
 from tests.unit.test_analysis_session import scientific_lane
+
+
+class ObservedProseService(ProseService):
+    """Retain the actual client's refusal and retry classification."""
+
+    def __init__(self, factory):
+        super().__init__(factory)
+        self.retry_observations = []
+        self.retry_observed = asyncio.Event()
+
+    def _postpone(self, failure, delay):
+        observed_at = asyncio.get_running_loop().time()
+        super()._postpone(failure, delay)
+        response = failure.response
+        self.retry_observations.append({
+            "at": observed_at,
+            "status": response.status if response is not None else None,
+            "retry_after": [value.decode("ascii", errors="replace") for name, value in response.headers
+                            if name.lower() == b"retry-after"] if response is not None else [],
+            "delay": delay,
+            "failure": failure_evidence(failure, secrets=("fixture-key",)),
+        })
+        self.retry_observed.set()
 
 
 class OutageJobsApi(SharedApi):
@@ -120,11 +146,21 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
         })
         self.prose_server = await ProseOutageServer(source_jobs).start()
         self.addAsyncCleanup(self.prose_server.close)
-        configured = InputInterpreter((OpenAIChatEndpointSpec(
-            configuration_id="hf-prose-outage", model="local-prose-test-model",
-            url=self.prose_server.base_url + "/chat/completions", api_key="fixture-key",
-            trust=self.prose_server.trust,
-        ),), InterpreterPolicy(interpretation_timeout_seconds=self.interpretation_seconds))
+        with patch("nmrpeak_provider.input_interpreter.ProseService", ObservedProseService):
+            configured = InputInterpreter((OpenAIChatEndpointSpec(
+                configuration_id="hf-prose-outage", model="local-prose-test-model",
+                url=self.prose_server.base_url + "/chat/completions", api_key="fixture-key",
+                trust=self.prose_server.trust,
+            ),), InterpreterPolicy(interpretation_timeout_seconds=self.interpretation_seconds))
+        self.prose_services = configured.services
+        self.interpretation_failures = []
+
+        def observe_failure(failure, **policy):
+            evidence = failure_evidence(failure, **policy)
+            self.interpretation_failures.append(evidence)
+            return evidence
+
+        self.enterContext(patch("nmrpeak_provider.input_interpreter.failure_evidence", observe_failure))
         self.reports = []
         self.report_changed = asyncio.Event()
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -165,6 +201,16 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
 
         return await asyncio.wait_for(observe(), seconds)
 
+    async def wait_for_prose_refusal(self):
+        service = self.prose_services[0]
+        await asyncio.wait_for(service.retry_observed.wait(), 3)
+        refusal = service.retry_observations[0]
+        self.assertEqual(503, refusal["status"], msg=self.evidence())
+        self.assertEqual([str(self.prose_server.retry_after_seconds)], refusal["retry_after"], msg=self.evidence())
+        self.assertGreaterEqual(refusal["delay"], self.prose_server.retry_after_seconds, msg=self.evidence())
+        self.assertEqual(["job:prose-0"], [request["job_ref"] for request in self.prose_server.received],
+                         msg=self.evidence())
+
     def evidence(self):
         first = self.prose_server.received[0]["at"] if self.prose_server.received else 0
         return json.dumps({
@@ -173,6 +219,9 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
             "outage_seconds": self.outage_seconds,
             "requests": [{**entry, "at": round(entry["at"] - first, 6)}
                          for entry in self.prose_server.received],
+            "retry_observations": [{**entry, "at": round(entry["at"] - first, 6)}
+                                   for service in self.prose_services for entry in service.retry_observations],
+            "interpretation_failures": self.interpretation_failures,
             "started_jobs": list(self.jobs_api.started),
             "reports": [{"job_ref": item.job_ref, "operation": item.operation.value}
                         for item in self.reports],
@@ -180,10 +229,10 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
 
     async def check_outage(self, *, backlog):
         await self.start_provider(backlog=backlog)
-        await asyncio.wait_for(self.prose_server.request_seen.wait(), 3)
+        await self.wait_for_prose_refusal()
         first_request_at = self.prose_server.received[0]["at"]
-        # Offer healthy work only after the unavailable service has received a
-        # request. The actual CHF loop must discover it while HF is recovering.
+        # Offer healthy work after the actual client classified Retry-After.
+        # The CHF loop must discover it while HF is recovering.
         self.jobs_api.inputs[self.typed_job] = (self.chf_kind, canonical_json_bytes(VALUE))
         await self.wait_for_report(
             lambda report: report.job_ref == self.typed_job and report.operation is TerminalOperation.COMPLETE,

@@ -19,9 +19,8 @@ class ProviderProseOutageTests(ProseOutageCase):
 
     async def test_prose_outage_does_not_defer_a_locally_rejected_input(self):
         await self.start_provider(backlog=64)
-        await asyncio.wait_for(self.prose_server.request_seen.wait(), 3)
-        # Wait for the first Job's failure report: the provider has then read
-        # the service's Retry-After, rather than merely sent an HTTP request.
+        await self.wait_for_prose_refusal()
+        # The original Job must also settle before unrelated input is offered.
         await self.wait_for_report(
             lambda item: item.job_ref == "job:prose-0" and item.operation is TerminalOperation.FAIL,
             seconds=1,
@@ -43,6 +42,7 @@ class ProviderProseOutageTests(ProseOutageCase):
             lambda item: item.job_ref == "job:prose-0" and item.operation is TerminalOperation.FAIL,
             seconds=3,
         )
+        await self.wait_for_prose_refusal()
         typed_job = "job:typed-hf-during-prose-outage"
         hf_kind = self.jobs_api.inputs["job:prose-0"][0]
         self.jobs_api.inputs[typed_job] = (hf_kind, canonical_json_bytes(HF_VALUE))
@@ -57,7 +57,7 @@ class ProviderProseOutageTests(ProseOutageCase):
 
     async def test_restoring_the_prose_service_drains_every_offered_job_without_restarting_the_provider(self):
         await self.start_provider(backlog=6)
-        await asyncio.wait_for(self.prose_server.request_seen.wait(), 3)
+        await self.wait_for_prose_refusal()
         first_request_at = self.prose_server.received[0]["at"]
         self.jobs_api.inputs[self.typed_job] = (self.chf_kind, canonical_json_bytes(VALUE))
         await self.wait_for_report(
