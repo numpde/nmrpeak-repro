@@ -5,6 +5,8 @@ unexport WHEELHOUSE
 override export NMRPEAK_WHEELHOUSE_INPUT := $(if $(filter command line,$(origin WHEELHOUSE)),$(value WHEELHOUSE))
 override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
 override export NMRPEAK_ACQUISITION_ARCHIVE_INPUT := $(if $(filter command line,$(origin ACQUISITION_ARCHIVE)),$(value ACQUISITION_ARCHIVE))
+override export NMRPEAK_ACQUISITION_ISSUER_INPUT := $(if $(filter command line,$(origin ACQUISITION_ISSUER)),$(value ACQUISITION_ISSUER))
+unexport ACQUISITION_ARCHIVE ACQUISITION_ISSUER
 unexport NMRPEAK_DOCKER_CONTEXT_INPUT NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN
 override export NMRPEAK_DOCKER_CONTEXT_INPUT := $(if $(filter command line,$(origin DOCKER_CONTEXT)),$(value DOCKER_CONTEXT))
 override export NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN := $(origin DOCKER_CONTEXT)
@@ -59,7 +61,8 @@ packages/acquisition-bootstrap/check:
 
 packages/acquisition-bootstrap/refresh:
 	@test -n "$$NMRPEAK_ACQUISITION_ARCHIVE_INPUT" || { echo 'Set ACQUISITION_ARCHIVE to the pinned release bundle on the make command line.' >&2; exit 2; }
-	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -P -B -m repository_checks.acquisition_bootstrap --archive "$$NMRPEAK_ACQUISITION_ARCHIVE_INPUT"
+	@test -n "$$NMRPEAK_ACQUISITION_ISSUER_INPUT" || { echo 'Set ACQUISITION_ISSUER to the incoming release record on the make command line.' >&2; exit 2; }
+	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -P -B -m repository_checks.acquisition_bootstrap --archive "$$NMRPEAK_ACQUISITION_ARCHIVE_INPUT" --issuer "$$NMRPEAK_ACQUISITION_ISSUER_INPUT"
 
 export BENCHMARK_DEVICES = $(or $(DEVICES),all)
 export BENCHMARK_MODELS = $(or $(MODELS),hf chf)
@@ -174,7 +177,7 @@ help:
 		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
 		'  make packages/acquisition-bootstrap/check' \
 		'      Verify the local acquisition bundle against the pinned SDK release.' \
-		'  make packages/acquisition-bootstrap/refresh ACQUISITION_ARCHIVE=<path>' \
+		'  make packages/acquisition-bootstrap/refresh ACQUISITION_ARCHIVE=<path> ACQUISITION_ISSUER=<record>' \
 		'      Refresh the acquisition bundle from the pinned release archive.' \
 		'  make packages/images/retire DOCKER_CONTEXT=<name>' \
 		'      Retire obsolete owned images while protecting retained deployments and containers.' \

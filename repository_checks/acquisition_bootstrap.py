@@ -1,4 +1,4 @@
-"""Verify the complete acquisition bootstrap against the SDK release record."""
+"""Verify or refresh the SDK bootstrap during quiescent source maintenance."""
 
 from __future__ import annotations
 
@@ -44,17 +44,21 @@ def verify(bundle: Path, record: dict) -> None:
     if not isinstance(inventory, dict) or not inventory:
         raise ValueError('Acquisition bootstrap release inventory is empty.')
     expected = set()
+    expected_directories = set()
     for name in inventory:
         path = PurePosixPath(name)
         if not isinstance(name, str) or path.is_absolute() or '..' in path.parts or path.as_posix() != name:
             raise ValueError('Acquisition bootstrap release inventory contains an invalid path.')
         expected.add(name)
+        expected_directories.update(parent.as_posix() for parent in path.parents if parent != PurePosixPath('.'))
     actual = set()
     for current, directories, files in os.walk(bundle, followlinks=False):
         parent = Path(current)
         for name in directories:
             if (parent / name).is_symlink():
                 raise ValueError('Acquisition bootstrap contains a symlink directory.')
+            if (parent / name).relative_to(bundle).as_posix() not in expected_directories:
+                raise ValueError('Acquisition bootstrap directories differ from the release inventory.')
         for name in files:
             path = parent / name
             relative = path.relative_to(bundle).as_posix()
@@ -71,7 +75,8 @@ def verify(bundle: Path, record: dict) -> None:
             raise ValueError(f'Acquisition bootstrap member differs from the release record: {name}')
 
 
-def refresh(bundle: Path, record: dict, archive_path: Path, version: str) -> None:
+def refresh(bundle: Path, record: dict, archive_path: Path, version: str,
+            record_output: Path, record_bytes: bytes) -> None:
     name = f'acquisition-owner-{version}.tar.gz'
     data = archive_path.read_bytes()
     if archive_path.name != name or hashlib.sha256(data).hexdigest() != record['files'][name]:
@@ -103,9 +108,18 @@ def refresh(bundle: Path, record: dict, archive_path: Path, version: str) -> Non
         raise ValueError('Acquisition bootstrap parent must be a directory.')
     if bundle.is_symlink() or (bundle.exists() and not bundle.is_dir()):
         raise ValueError('Acquisition bootstrap destination must be a non-symlink directory.')
+    if bundle.exists():
+        verify(bundle, json.loads(record_output.read_bytes()))
     stage = Path(tempfile.mkdtemp(prefix='.acquisition-', dir=bundle.parent))
     backup = None
+    staged_record = None
     try:
+        with tempfile.NamedTemporaryFile(dir=record_output.parent, prefix='.acquisition-record-', delete=False) as output:
+            staged_record = Path(output.name)
+            output.write(record_bytes)
+            output.flush()
+            os.fchmod(output.fileno(), 0o644)
+            os.fsync(output.fileno())
         for name, content in contents.items():
             target = stage / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -120,30 +134,46 @@ def refresh(bundle: Path, record: dict, archive_path: Path, version: str) -> Non
             bundle.rename(backup)
         try:
             stage.rename(bundle)
+            os.replace(staged_record, record_output)
         except BaseException:
+            if not stage.exists() and bundle.exists():
+                bundle.rename(stage)
             if backup is not None:
                 backup.rename(bundle)
                 backup = None
             raise
         if backup is not None:
-            shutil.rmtree(backup)
+            try:
+                shutil.rmtree(backup)
+            except OSError as error:
+                raise OSError(f'Acquisition bootstrap replacement published; cannot remove previous snapshot at {backup}.') from error
             backup = None
     finally:
         if stage.exists():
             shutil.rmtree(stage)
+        if staged_record is not None:
+            staged_record.unlink(missing_ok=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', type=Path, help='install this exact issued acquisition source bundle')
+    parser.add_argument('--issuer', type=Path, help='incoming release record for an explicit refresh')
     args = parser.parse_args()
-    record = json.loads(RECORD.read_text())
+    if args.archive is None:
+        if args.issuer is not None:
+            raise ValueError('An incoming issuer requires an acquisition archive.')
+        record = json.loads(RECORD.read_bytes())
+        pinned_wheel(record)
+        verify(BUNDLE, record)
+        return
+    if args.issuer is None:
+        raise ValueError('Refresh requires the incoming release record.')
+    record_bytes = args.issuer.read_bytes()
+    record = json.loads(record_bytes)
     wheel_name, _ = pinned_wheel(record)
     version = wheel_name.removeprefix('provider_core-').removesuffix('-py3-none-any.whl')
-    if args.archive:
-        refresh(BUNDLE, record, args.archive, version)
-    else:
-        verify(BUNDLE, record)
+    refresh(BUNDLE, record, args.archive, version, RECORD, record_bytes)
 
 
 if __name__ == '__main__':
