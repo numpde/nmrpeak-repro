@@ -297,6 +297,10 @@ _acq_scope_identity() {
 _acq_start_route() {
     if [[ -v '_acq_cids[relay]' ]]; then
         [[ -n ${_acq_cids[relay]} ]] || return 2
+        [[ -n $_acq_port ]] || {
+            _acq_fail 'Cannot reuse acquisition route: relay setup did not complete.'
+            return 2
+        }
         return 0
     fi
     [[ -n $_acq_route ]] || { _acq_fail 'Select an explicit acquisition route before online work.'; return 2; }
@@ -325,10 +329,19 @@ _acq_start_route() {
     local -a _acq_relay_args=(-P -B -m provider_core.bound_http_proxy --relay-socket /gateway/proxy.sock --port 0 --ready-file /ready/port)
     _acq_create relay "$_acq_bootstrap_image" _acq_relay_options _acq_relay_args || return "$?"
     _acq_ready relay "$_acq_scratch/relay-ready/port" || return "$?"
-    IFS= read -r _acq_port < "$_acq_scratch/relay-ready/port" || return 2
-    [[ $_acq_port =~ ^[1-9][0-9]{0,4}$ && $_acq_port -le 65535 ]]         && cmp -s "$_acq_scratch/relay-ready/port" <(printf '%s\n' "$_acq_port")         || { _acq_fail 'Relay readiness is not one port.'; return 2; }
+    local _acq_candidate_port
+    IFS= read -r _acq_candidate_port < "$_acq_scratch/relay-ready/port" || return 2
+    [[ $_acq_candidate_port =~ ^[1-9][0-9]{0,4}$ && $_acq_candidate_port -le 65535 ]] \
+        && cmp -s "$_acq_scratch/relay-ready/port" <(printf '%s\n' "$_acq_candidate_port") \
+        || { _acq_fail 'Relay readiness is not one port.'; return 2; }
     _acq_capture "$_acq_scratch/relay/mode" inspect --format '{{.HostConfig.NetworkMode}} {{.State.Running}}' "${_acq_cids[relay]}" || return "$?"
-    cmp -s "$_acq_scratch/relay/mode" <(printf 'none true\n') || return 2
+    cmp -s "$_acq_scratch/relay/mode" <(printf 'none true\n') || {
+        _acq_retain_diagnostics=true
+        _acq_fail 'Cannot start acquisition: relay network and running state could not be verified.'
+        return 2
+    }
+    # Publish the usable route only after every initial setup check succeeds.
+    _acq_port=$_acq_candidate_port
 }
 
 acquisition_worker() {
