@@ -93,6 +93,19 @@ for path in requirements.lock dependencies/provider-core-api.lock dependencies/p
     install -m 0644 -- "$context/$path" "$report_input/$path"
 done
 engine_active=1
+set +e
+docker build --platform linux/amd64 --pull=false --network none --target installer \
+    --iidfile "$scratch/installer.id" --file "$scratch/context/containers/provider/Dockerfile" "$scratch/context"
+installer_status=$?
+set -e
+[[ "$installer_status" == 0 ]] || fail 'The installer image build failed; inspect the preserved build capture.'
+installer_image="$(<"$scratch/installer.id")"
+[[ "$installer_image" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'Docker returned an invalid installer image ID.'
+[[ "$(docker image inspect "$installer_image" --format '{{.Id}} {{.Os}}/{{.Architecture}}')" == "$installer_image linux/amd64" ]] || \
+    fail 'The installer image does not match its immutable Linux amd64 receipt.'
+engine_active=0
+
+engine_active=1
 worker_cid="$scratch/report.cid"
 worker_label="${scratch##*.}"
 set +e
@@ -103,7 +116,7 @@ docker run --name "$report_container" --cidfile "$scratch/report.cid" \
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
     --mount "type=bind,src=$report_input,dst=/input,readonly" \
     --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
-    --entrypoint python "$base" -I -c "$(<"$scratch/report.py")" \
+    --entrypoint python "$installer_image" -I -c "$(<"$scratch/report.py")" \
     --source /input --pool /wheelhouse "${lock_arguments[@]}" >"$scratch/report.json"
 report_status=$?
 set -e

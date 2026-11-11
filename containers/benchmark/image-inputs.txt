@@ -1,6 +1,10 @@
 benchmark_tools/__init__.py
 benchmark_tools/cases.json
 benchmark_tools/worker.py
+bootstrap/acquisition/acquisition_tool/installer/requirements/installer-release.json
+bootstrap/acquisition/acquisition_tool/installer/tools/container_guard.py
+bootstrap/acquisition/acquisition_tool/installer/tools/installer.py
+bootstrap/acquisition/acquisition_tool/installer/wheels/pip-26.2.2-py3-none-any.whl
 containers/benchmark/Dockerfile
 containers/benchmark/Dockerfile.dockerignore
 containers/benchmark/requirements.lock

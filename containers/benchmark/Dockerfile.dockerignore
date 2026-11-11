@@ -57,3 +57,8 @@
 !unicore-upstream/LICENSE
 !unicore-upstream/unicore/
 !unicore-upstream/unicore/**
+!bootstrap/
+!bootstrap/acquisition/
+!bootstrap/acquisition/acquisition_tool/
+!bootstrap/acquisition/acquisition_tool/installer/
+!bootstrap/acquisition/acquisition_tool/installer/**

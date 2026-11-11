@@ -121,7 +121,13 @@ def _require_complete_provider_inputs(
         Path(path)
         for path in _git_tree_paths(repo_root, revision, ("nmrpeak_provider",))
     }
-    required_paths = package_paths | {
+    installer_paths = {
+        Path(path)
+        for path in _git_tree_paths(
+            repo_root, revision, ("bootstrap/acquisition/acquisition_tool/installer",)
+        )
+    }
+    required_paths = package_paths | installer_paths | {
         Path("containers/provider/Dockerfile"),
         Path("containers/provider/Dockerfile.dockerignore"),
         Path("pyproject.toml"),

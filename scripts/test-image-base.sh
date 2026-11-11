@@ -189,6 +189,8 @@ cp "$repo_root/dependencies/provider-core-source.txt" "$scratch/context/dependen
 cp "$repo_root/containers/test/os-packages.lock" "$scratch/context/containers/test/os-packages.lock"
 cp "$repo_root/containers/test/Dockerfile.base" "$scratch/context/containers/test/Dockerfile.base"
 cp "$repo_root/repository_checks/image_wheel_report.py" "$scratch/report.py"
+mkdir -p "$scratch/context/bootstrap/acquisition/acquisition_tool"
+cp -R "$repo_root/bootstrap/acquisition/acquisition_tool/installer" "$scratch/context/bootstrap/acquisition/acquisition_tool/installer"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -c '
 import sys
 from pathlib import Path, PurePosixPath
@@ -205,6 +207,20 @@ for path in requirements.lock dependencies/provider-core-api.lock dependencies/p
     lock_arguments+=(--lock-sha256 "$digest")
 done
 engine_active=1
+set +e
+docker --host "$NMRPEAK_DOCKER_HOST" build --platform linux/amd64 --pull=false --network none --target installer \
+    --build-arg "PYTHON_BASE_IMAGE=$build_base_reference" \
+    --iidfile "$scratch/installer.id" --file "$scratch/context/containers/test/Dockerfile.base" "$scratch/context"
+installer_status=$?
+set -e
+[[ "$installer_status" == 0 ]] || fail 'The installer image build failed; inspect the preserved build capture.'
+installer_image="$(<"$scratch/installer.id")"
+[[ "$installer_image" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'Docker returned an invalid installer image ID.'
+[[ "$(docker --host "$NMRPEAK_DOCKER_HOST" image inspect "$installer_image" --format '{{.Id}} {{.Os}}/{{.Architecture}}')" == "$installer_image linux/amd64" ]] || \
+    fail 'The installer image does not match its immutable Linux amd64 receipt.'
+engine_active=0
+
+engine_active=1
 worker_cid="$scratch/report.cid"
 worker_label="${scratch##*.}"
 set +e
@@ -215,7 +231,7 @@ docker --host "$NMRPEAK_DOCKER_HOST" run --name "nmrpeak-test-wheel-report-${scr
     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
     --mount "type=bind,src=$scratch/context,dst=/input,readonly" \
     --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
-    --entrypoint python "$docker_base_image" -I -c "$(<"$scratch/report.py")" \
+    --entrypoint python "$installer_image" -I -c "$(<"$scratch/report.py")" \
     --source /input --pool /wheelhouse "${lock_arguments[@]}" >"$scratch/report.json"
 report_status=$?
 set -e

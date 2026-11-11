@@ -4,7 +4,14 @@
 ARG PYTHON_BASE_IMAGE=invalid.invalid/nmrpeak-test-base:must-be-supplied
 FROM scratch AS wheel_inputs
 COPY wheels/ /
-FROM ${PYTHON_BASE_IMAGE}
+FROM ${PYTHON_BASE_IMAGE} AS installer
+WORKDIR /opt/provider-tools/installer
+COPY bootstrap/acquisition/acquisition_tool/installer/tools/ tools/
+COPY bootstrap/acquisition/acquisition_tool/installer/requirements/installer-release.json release.json
+COPY bootstrap/acquisition/acquisition_tool/installer/wheels/ wheels/
+RUN --network=none NMR_PROVIDER_TOOLS_IN_CONTAINER=1 python -B -m tools.installer --record release.json --pool wheels
+
+FROM installer
 
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
