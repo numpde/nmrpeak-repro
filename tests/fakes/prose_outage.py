@@ -127,7 +127,9 @@ class LocalOutageDelivery:
 
 
 class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
-    interpretation_seconds = 0.8
+    # Allow real HTTPS child startup while keeping this positive model window
+    # shorter than Retry-After, so the first Job cannot wait through the refusal.
+    interpretation_seconds = 1.5
     outage_seconds = 2.25
     typed_job = "job:typed-during-prose-outage"
 

@@ -38,11 +38,12 @@ class ProviderProseOutageTests(ProseOutageCase):
 
     async def test_deferred_prose_job_does_not_hide_typed_work_on_the_same_lane(self):
         await self.start_provider(backlog=2)
+        await self.wait_for_prose_refusal()
         await self.wait_for_report(
             lambda item: item.job_ref == "job:prose-0" and item.operation is TerminalOperation.FAIL,
             seconds=3,
         )
-        await self.wait_for_prose_refusal()
+        self.assertGreater(self.prose_services[0].retry_seconds, 0, msg=self.evidence())
         typed_job = "job:typed-hf-during-prose-outage"
         hf_kind = self.jobs_api.inputs["job:prose-0"][0]
         self.jobs_api.inputs[typed_job] = (hf_kind, canonical_json_bytes(HF_VALUE))
@@ -51,6 +52,7 @@ class ProviderProseOutageTests(ProseOutageCase):
             seconds=1,
         )
         self.assertEqual(self.jobs_api.started[typed_job], completed.execution_attempt_ref)
+        self.assertGreater(self.prose_services[0].retry_seconds, 0, msg=self.evidence())
         self.assertNotIn("job:prose-1", self.jobs_api.started, msg=self.evidence())
         self.assertEqual(1, len(self.prose_server.received), msg=self.evidence())
         self.assertFalse(self.provider_run.done(), msg=self.evidence())
