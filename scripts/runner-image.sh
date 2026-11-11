@@ -132,6 +132,19 @@ fi
 for path in "${paths[@]}"; do
     install -m 0644 -- "$context/$path" "$report_input/$path"
 done
+engine_active=1
+set +e
+docker build --platform linux/amd64 --pull=false --network none --target installer \
+    --iidfile "$tmp/installer.id" --file "$tmp/context/$dockerfile" "$tmp/context"
+installer_status=$?
+set -e
+[[ "$installer_status" == 0 ]] || fail 'The installer image build failed; inspect the preserved build capture.'
+installer_image="$(<"$tmp/installer.id")"
+[[ "$installer_image" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'Docker returned an invalid installer image ID.'
+[[ "$(docker image inspect "$installer_image" --format '{{.Id}} {{.Os}}/{{.Architecture}}')" == "$installer_image linux/amd64" ]] || \
+    fail 'The installer image does not match its immutable Linux amd64 receipt.'
+engine_active=0
+
 selection_files=()
 for profile in "${profiles[@]}"; do
     if [[ "$profile" == native ]]; then
@@ -157,7 +170,7 @@ for profile in "${profiles[@]}"; do
         --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
         --mount "type=bind,src=$report_input,dst=/input,readonly" \
         --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" \
-        --entrypoint python "$base" -I -c "$(<"$tmp/report.py")" \
+        --entrypoint python "$installer_image" -I -c "$(<"$tmp/report.py")" \
         --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}" >"$tmp/$profile.report.json"
     report_status=$?
     set -e

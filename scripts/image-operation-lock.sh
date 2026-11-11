@@ -39,6 +39,6 @@ retire_image_worker() {
 
 trim_streamed_image_capture() {
     find "$1" -mindepth 1 -maxdepth 1 \
-        ! -name base.id ! -name image.id ! -name proxy.port ! -name proxy.log ! -name resolv.conf \
+        ! -name base.id ! -name image.id ! -name installer.id ! -name proxy.port ! -name proxy.log ! -name resolv.conf \
         -exec rm -rf -- {} +
 }

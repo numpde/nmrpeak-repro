@@ -1,7 +1,14 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 FROM scratch AS wheel_inputs
 COPY wheels/ /
-FROM docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487
+FROM docker.io/library/python:3.12.16-slim-bookworm@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487 AS installer
+WORKDIR /opt/provider-tools/installer
+COPY bootstrap/acquisition/acquisition_tool/installer/tools/ tools/
+COPY bootstrap/acquisition/acquisition_tool/installer/requirements/installer-release.json release.json
+COPY bootstrap/acquisition/acquisition_tool/installer/wheels/ wheels/
+RUN --network=none NMR_PROVIDER_TOOLS_IN_CONTAINER=1 python -B -m tools.installer --record release.json --pool wheels
+
+FROM installer
 
 RUN groupadd --gid 65532 nmrpeak \
     && useradd --uid 65532 --gid 65532 --home-dir /nonexistent \

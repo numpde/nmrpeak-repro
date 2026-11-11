@@ -75,6 +75,39 @@ if len(urls) != 1 or len(hashes) != 1:
 print(urls[0] + "#sha256=" + hashes[0])
 ' "$scratch/native-source.txt")"
 
+# Verify SDK code before either the native build owner or transport owner runs.
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -P -m repository_checks.acquisition_bootstrap || {
+    printf '%s\n' 'Cannot verify the shared acquisition bootstrap.' >&2; exit 2;
+}
+
+# Build only the committed SDK installer closure before pip-based reports.
+mkdir -p "$scratch/installer-context"
+git -C "$repo_root" archive "$revision" \
+    containers/provider/Dockerfile containers/provider/Dockerfile.dockerignore \
+    bootstrap/acquisition/acquisition_tool/installer | tar -x -C "$scratch/installer-context"
+source "$repo_root/bootstrap/acquisition/tools/inference_native.sh"
+inference_retirement_confirmed=true
+inference_cancellation_status=0
+inference_diagnostic=
+inference_result=
+installer_status=0
+if inference_native 'installer image build' untimed stdio \
+    docker --host "$NMRPEAK_DOCKER_HOST" build \
+    --platform linux/amd64 --pull=false --network none --target installer \
+    --iidfile "$scratch/installer.id" --file "$scratch/installer-context/containers/provider/Dockerfile" \
+    "$scratch/installer-context"; then :; else installer_status=$?; fi
+[[ -z "$inference_diagnostic" ]] || printf '%s' "$inference_diagnostic" >&2
+if [[ "$installer_status" != 0 ]]; then
+    printf 'Installer image build failed (exit %s); acquisition inputs are retained for inspection.\n' "$installer_status" >&2
+    exit "$installer_status"
+fi
+[[ "$inference_retirement_confirmed" == true ]] || \
+    fail 'The installer build client could not be confirmed retired; preserve the acquisition inputs and inspect Docker.'
+installer_image="$(<"$scratch/installer.id")"
+[[ "$installer_image" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'Docker returned an invalid installer image ID.'
+[[ "$(docker image inspect "$installer_image" --format '{{.Id}} {{.Os}}/{{.Architecture}}')" == "$installer_image linux/amd64" ]] || \
+    fail 'The installer image does not match its immutable Linux amd64 receipt.'
+
 # A successful target-interpreter report proves that the complete selection is
 # already available without contacting an index. Preserve the normal acquisition
 # path on a report failure; its diagnostics do not classify every miss or error.
@@ -122,7 +155,7 @@ check_offline_selection() {
             --mount "type=bind,src=$wheelhouse,dst=/wheelhouse,readonly" --entrypoint python)
         local -a report_command=(-I -c "$(<"$scratch/report.py")"
             --source /input --pool /wheelhouse --profile "$profile" "${lock_arguments[@]}")
-        if acquisition_worker offline report_status "$base" report_grants report_command \
+        if acquisition_worker offline report_status "$installer_image" report_grants report_command \
             >"$scratch/$profile-$phase.json" 2>"$scratch/$profile-$phase.log"; then :; else
             local owner_status=$?
             cat "$scratch/$profile-$phase.log" >&2
@@ -204,9 +237,6 @@ acquisition_message="Acquired the locked NMRPeak $target wheel selection in $whe
 
 }
 # The verified shared owner owns worker and route lifecycles for this scope.
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -P -m repository_checks.acquisition_bootstrap || {
-    printf '%s\n' 'Cannot verify the shared acquisition bootstrap.' >&2; exit 2;
-}
 source "$repo_root/bootstrap/acquisition/acquisition_tool/owner.sh"
 acquisition_message=''
 acquisition_scope --endpoint "$NMRPEAK_DOCKER_HOST" --bootstrap-image "$base" \

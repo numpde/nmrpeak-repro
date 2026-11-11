@@ -1,3 +1,7 @@
+bootstrap/acquisition/acquisition_tool/installer/requirements/installer-release.json
+bootstrap/acquisition/acquisition_tool/installer/tools/container_guard.py
+bootstrap/acquisition/acquisition_tool/installer/tools/installer.py
+bootstrap/acquisition/acquisition_tool/installer/wheels/pip-26.2.2-py3-none-any.whl
 dependencies/provider-core-native.lock
 dependencies/provider-core-source.txt
 families/nmrpeak/bart-base/config.json

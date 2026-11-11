@@ -53,3 +53,8 @@
 !dependencies/
 !dependencies/provider-core-native.lock
 !dependencies/provider-core-source.txt
+!bootstrap/
+!bootstrap/acquisition/
+!bootstrap/acquisition/acquisition_tool/
+!bootstrap/acquisition/acquisition_tool/installer/
+!bootstrap/acquisition/acquisition_tool/installer/**
