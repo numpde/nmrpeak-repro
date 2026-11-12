@@ -76,7 +76,7 @@ print(urls[0] + "#sha256=" + hashes[0])
 ' "$scratch/native-source.txt")"
 
 # Verify SDK code before either the native build owner or transport owner runs.
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -P -m repository_checks.acquisition_bootstrap || {
+"$python" -I -S -B "$repo_root/bootstrap/acquisition/acquisition_tool/source_update.py" verify --source-dir "$repo_root/bootstrap/acquisition" || {
     printf '%s\n' 'Cannot verify the shared acquisition bootstrap.' >&2; exit 2;
 }
 

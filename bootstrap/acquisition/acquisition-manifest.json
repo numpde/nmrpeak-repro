@@ -1,0 +1,201 @@
+{
+  "dependency_inputs": {
+    "linux_idmap-0.3.3-py3-none-any.whl": "2f9b47529fe36acf636f3a6a8a62198bed41ee331002d95268fc8ba0c77e3dfc",
+    "pip-26.2.2-py3-none-any.whl": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
+    "wheelhouse-tool-0.6.17.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
+  },
+  "payload_files": {
+    "acquisition_tool/__init__.py": {
+      "mode": 420,
+      "sha256": "7b5133133e741c8a916b04c13c35c31943c179225c4b123439bc0ca677a673d1",
+      "size": 73
+    },
+    "acquisition_tool/compose.sh": {
+      "mode": 420,
+      "sha256": "67179758943065fd9cfc2eaface6c65209e0a6be5d050f4816bc41f540095cce",
+      "size": 6036
+    },
+    "acquisition_tool/dns.py": {
+      "mode": 420,
+      "sha256": "9f3fe4a75fb3d73d464618a2469c3a990b4af2d34088f1185118282ca57c84c3",
+      "size": 3529
+    },
+    "acquisition_tool/identity.py": {
+      "mode": 420,
+      "sha256": "3ef070380a9228485e6985004b30ce17587869733b9e31a15f475e363a4a1272",
+      "size": 397
+    },
+    "acquisition_tool/identity_main.py": {
+      "mode": 420,
+      "sha256": "784bcc9e1a2fc7a847dcc2e663f501253ef2ffe76d4f0dce3c4c77bf250fb249",
+      "size": 3166
+    },
+    "acquisition_tool/installer/requirements/installer-release.json": {
+      "mode": 420,
+      "sha256": "43345680032c2bc8b02ce495bac98b14c72a523e8133451d3d29ccc7f6866ab0",
+      "size": 290
+    },
+    "acquisition_tool/installer/tools/container_guard.py": {
+      "mode": 420,
+      "sha256": "072cabfc179b1ab0c417c43a592fd52fdebc80485b7bda926166867e78e1c6d7",
+      "size": 705
+    },
+    "acquisition_tool/installer/tools/installer.py": {
+      "mode": 420,
+      "sha256": "df82b909e009e5d207d434f5a767647892e56c801e51bb889f2314c43746cf4b",
+      "size": 5157
+    },
+    "acquisition_tool/installer/wheels/pip-26.2.2-py3-none-any.whl": {
+      "mode": 420,
+      "sha256": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
+      "size": 1819850
+    },
+    "acquisition_tool/owner.sh": {
+      "mode": 420,
+      "sha256": "7ad3c6c065bf28e049e30b7853a7274d5f1afa9f56d7cca7d8cf51260b3e1474",
+      "size": 34270
+    },
+    "acquisition_tool/source_update.py": {
+      "mode": 420,
+      "sha256": "4649409591210cb3ee0dffae186bf10ccb23991f67a237d0444eb5c65064c4e1",
+      "size": 13895
+    },
+    "compose/acquisition.yml": {
+      "mode": 420,
+      "sha256": "5f7df79602be9d636197ce9e16e724925427e0daedc9121097792e15f5916838",
+      "size": 3107
+    },
+    "linux_idmap-0.3.3.dist-info/METADATA": {
+      "mode": 420,
+      "sha256": "02cc26769597e5f3800a161227fa8c845667db058ff93e5e5b916a9b9d52cb60",
+      "size": 4743
+    },
+    "linux_idmap-0.3.3.dist-info/RECORD": {
+      "mode": 420,
+      "sha256": "d4253a7a8b9c3ca66a3607c5d42f06f03281a52cbebb76c15e89cdddb77a01fb",
+      "size": 1616
+    },
+    "linux_idmap-0.3.3.dist-info/WHEEL": {
+      "mode": 420,
+      "sha256": "d7a7dcffd469f39e122dc761683123af4bbae69d1edc5859c6284d81c9c213df",
+      "size": 91
+    },
+    "linux_idmap-0.3.3.dist-info/entry_points.txt": {
+      "mode": 420,
+      "sha256": "2e8e446dd453eb528c7c95d34f92628e353c0a80c821096e97cbaf1673c4303d",
+      "size": 60
+    },
+    "linux_idmap-0.3.3.dist-info/top_level.txt": {
+      "mode": 420,
+      "sha256": "8b8b78a28949cf75bdbef6321369638eaed53ca04cc48c26463bb58fcfc801c4",
+      "size": 12
+    },
+    "linux_idmap/__init__.py": {
+      "mode": 420,
+      "sha256": "de0cc116449ae0a371e60bfbf88c30e6a5d119f412e1c2901247d8b1b1c317c9",
+      "size": 257
+    },
+    "linux_idmap/_cli.py": {
+      "mode": 420,
+      "sha256": "db97e00d67ea39fdeadf29c3206d178ebf03b56e77b65a9b01d301d7c93a5046",
+      "size": 6577
+    },
+    "linux_idmap/_command.py": {
+      "mode": 420,
+      "sha256": "d2702fcbb0510569eba13bba3b5285c156415f4060a54b685514b0aa035ed5f2",
+      "size": 9481
+    },
+    "linux_idmap/_confinement.py": {
+      "mode": 420,
+      "sha256": "9637ea6fc97e7a36ffa4366ed9ee58c1d8ace9fe3b1c219b196ff5954864c510",
+      "size": 1431
+    },
+    "linux_idmap/_docker.py": {
+      "mode": 420,
+      "sha256": "ff323c184a61af7238cbc7f4768619c6e7083d6be5b55237ee5e21e41b86e752",
+      "size": 16609
+    },
+    "linux_idmap/_errors.py": {
+      "mode": 420,
+      "sha256": "6f866d02f1328857cab472ec2943e8f871fed2f2d2add0b20b19ebc20cb76a99",
+      "size": 212
+    },
+    "linux_idmap/_files.py": {
+      "mode": 420,
+      "sha256": "d94d7ddd549c1b9818d8a7756f0115f8a3594937a497b7e4b5aeb6298dec1424",
+      "size": 402
+    },
+    "linux_idmap/_probe_model.py": {
+      "mode": 420,
+      "sha256": "093ca48d601b68c6a104ae7321773a232cf39fa0ad7d0e8dde5a2e5d6d1b6c30",
+      "size": 5568
+    },
+    "linux_idmap/_probe_process.py": {
+      "mode": 420,
+      "sha256": "2464247f6ef02a3114d81a1931079ec6ebe1fbda68d1ebfaf11112d0d20edcc6",
+      "size": 4041
+    },
+    "linux_idmap/_probe_scope.py": {
+      "mode": 420,
+      "sha256": "433a4d4a20d25ae8c11b856a44de7fe9bd28d0edf5ce26a7a4a1a498c6f5b95f",
+      "size": 12824
+    },
+    "linux_idmap/_probe_spec.py": {
+      "mode": 420,
+      "sha256": "b53828d811d3d5b1b9d058be83adb7a857cfbeef808831efc0a20c36a0def2f4",
+      "size": 4382
+    },
+    "linux_idmap/_procfs.py": {
+      "mode": 420,
+      "sha256": "7df853be4dee50af246f99e138f307d3457a1801ee29383dae97bcbb26ce1edb",
+      "size": 9758
+    },
+    "linux_idmap/core.py": {
+      "mode": 420,
+      "sha256": "a77a8a2ad3821a568d935013fb4540a0acf1e0dda3819ee66ea2e117cd587efa",
+      "size": 3876
+    },
+    "linux_idmap/probe.py": {
+      "mode": 420,
+      "sha256": "ed83298d5e3fb5ae42fdd893905bd45c57976266205c1367b166483935b38bf2",
+      "size": 1591
+    },
+    "linux_idmap/process.py": {
+      "mode": 420,
+      "sha256": "054a5e06baea8cd9b21c56a8e89a021d30cfe70c9bb8fb1242ece83f50c3c46c",
+      "size": 1015
+    },
+    "provider_core/__init__.py": {
+      "mode": 420,
+      "sha256": "82c47bb1c50222557579ef8db095f3cb33c8ce43c8c2c0fb4b09e4e747578189",
+      "size": 83
+    },
+    "provider_core/bound_http_proxy.py": {
+      "mode": 420,
+      "sha256": "0b69dbe569b8f976b208919a9f1bffd7c3214b811d01fd812f92a953c41821b3",
+      "size": 35517
+    },
+    "provider_core/container_guard.py": {
+      "mode": 420,
+      "sha256": "5ca39b9dbd9d16c441232f524e0de685dd9e7f43c9fca7afa3e2a0667f4026f6",
+      "size": 424
+    },
+    "provider_core/diagnostic_text.py": {
+      "mode": 420,
+      "sha256": "00ac45164ffa01b9d646683d44c0cc0fcdbb610ab915af34f760bf05259ce2f0",
+      "size": 1331
+    },
+    "tools/docker_client.sh": {
+      "mode": 420,
+      "sha256": "2a20be2d68eec29c404262b87a3d39390406befb97ff8fa252b8965b219236ec",
+      "size": 5792
+    },
+    "tools/inference_native.sh": {
+      "mode": 420,
+      "sha256": "662428e243eb0d61b0c8de9d08a1e027bba01fa0384c4637fa2a39b6d93d8862",
+      "size": 23751
+    }
+  },
+  "release_version": "0.6.17",
+  "source_revision": "1546fbb3fa6b03700e4bf20f393368f0d870cafb"
+}

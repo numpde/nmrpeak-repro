@@ -416,6 +416,9 @@ _acq_finish() {
     trap '' HUP INT TERM
     if ! "$_acq_native_retired" || "$_acq_identity_unsettled"; then _acq_retired=false; fi
     if "$_acq_retired"; then
+        _acq_compose_cleanup || _acq_retired=false
+    fi
+    if "$_acq_retired"; then
         for ((_acq_index=${#_acq_roles[@]}-1; _acq_index>=0; _acq_index--)); do
             _acq_finish_role=${_acq_roles[$_acq_index]}
             if ! _acq_remove "$_acq_finish_role"; then _acq_retired=false; break; fi
@@ -606,7 +609,12 @@ acquisition_scope() {
     declare -g _acq_native_retired=true _acq_client_directory= _acq_owner_pid=$BASHPID
     declare -ga _acq_engine=() _acq_roles=()
     declare -gA _acq_cids=() _acq_attempted=() _acq_removal_state=()
+    declare -g _acq_compose_state=idle _acq_compose_project= _acq_compose_directory= _acq_compose_port=1 _acq_compose_topology=
+    declare -ga _acq_compose=()
     _acq_bundle=$(_acq_bundle_path) || return 2
+    source "$_acq_bundle/acquisition_tool/compose.sh"
+    _acq_compose_topology=$_acq_bundle/compose/acquisition.yml
+    [[ -f $_acq_compose_topology ]] || _acq_compose_topology=$_acq_bundle/../compose/acquisition.yml
     source "$_acq_bundle/tools/inference_native.sh"
     source "$_acq_bundle/tools/docker_client.sh"
     _acq_scratch=$(umask 077; mktemp -d /tmp/acquisition.XXXXXXXX) || return 2

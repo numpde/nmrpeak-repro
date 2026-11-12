@@ -105,7 +105,7 @@ trap 'exit 143' TERM
 build_network=default
 proxy_build_arguments=(--build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg http_proxy= --build-arg https_proxy= --build-arg NO_PROXY= --build-arg no_proxy= --build-arg ALL_PROXY= --build-arg all_proxy= --build-arg FTP_PROXY= --build-arg ftp_proxy=)
 if [[ "$network_interface" != system ]]; then
-    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -P -B -m repository_checks.acquisition_bootstrap
+    "$python" -I -S -B "$repo_root/bootstrap/acquisition/acquisition_tool/source_update.py" verify --source-dir "$repo_root/bootstrap/acquisition"
     "$python" -I -S -B "$repo_root/bootstrap/acquisition/acquisition_tool/dns.py" \
         --interface "$network_interface" --output "$scratch/resolv.conf"
     setsid "${PYTHON:-python3}" "$repo_root/docker/bound_http_proxy.py" \

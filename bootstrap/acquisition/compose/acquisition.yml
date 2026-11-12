@@ -1,0 +1,101 @@
+# Common acquisition topology. Package commands and mounts belong to caller overlays.
+x-helper: &helper
+  image: ${NMR_ACQ_BOOTSTRAP_IMAGE:?}
+  pull_policy: never
+  restart: "no"
+  user: ${NMR_ACQ_USER:?}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  cpus: 1
+  mem_limit: 128m
+  memswap_limit: 128m
+  pids_limit: 64
+  tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=16m"]
+  environment:
+    PROVIDER_CORE_IN_CONTAINER: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONPATH: /bootstrap
+  entrypoint: python3
+
+x-worker: &worker
+  image: ${NMR_ACQ_BOOTSTRAP_IMAGE:?}
+  pull_policy: never
+  restart: "no"
+  user: ${NMR_ACQ_USER:?}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  cpus: 1
+  mem_limit: 512m
+  memswap_limit: 512m
+  pids_limit: 128
+  tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=256m"]
+
+services:
+  gateway:
+    <<: *helper
+    network_mode: host
+    command: [-P, -B, -m, provider_core.bound_http_proxy, --interface, "${NMR_ACQ_INTERFACE:?}", --resolver-file, /gateway-resolv.conf, --unix-socket, /gateway/proxy.sock, --ready-file, /ready/socket]
+    volumes:
+      - type: bind
+        source: ${NMR_ACQ_BUNDLE:?}/provider_core
+        target: /bootstrap/provider_core
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NMR_ACQ_SCRATCH:?}/gateway-socket
+        target: /gateway
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NMR_ACQ_SCRATCH:?}/gateway-ready
+        target: /ready
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NMR_ACQ_SCRATCH:?}/resolv.conf
+        target: /gateway-resolv.conf
+        read_only: true
+        bind: {create_host_path: false}
+  relay:
+    <<: *helper
+    network_mode: none
+    command: [-P, -B, -m, provider_core.bound_http_proxy, --relay-socket, /gateway/proxy.sock, --port, "0", --ready-file, /ready/port]
+    volumes:
+      - type: bind
+        source: ${NMR_ACQ_BUNDLE:?}/provider_core
+        target: /bootstrap/provider_core
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NMR_ACQ_SCRATCH:?}/gateway-socket
+        target: /gateway
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${NMR_ACQ_SCRATCH:?}/relay-ready
+        target: /ready
+        bind: {create_host_path: false}
+  worker-online:
+    <<: *worker
+    network_mode: service:relay
+    environment:
+      HTTP_PROXY: http://127.0.0.1:${NMR_ACQ_PORT:?}
+      HTTPS_PROXY: http://127.0.0.1:${NMR_ACQ_PORT:?}
+      # Override image-level proxy choices just as the existing argv worker
+      # does; every HTTP client must use the selected relay.
+      http_proxy: http://127.0.0.1:${NMR_ACQ_PORT:?}
+      https_proxy: http://127.0.0.1:${NMR_ACQ_PORT:?}
+      NO_PROXY: ""
+      no_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+  worker-offline:
+    <<: *worker
+    network_mode: none
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""

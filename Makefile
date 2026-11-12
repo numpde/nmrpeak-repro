@@ -4,9 +4,6 @@ override export NMRPEAK_NETWORK_INTERFACE_INPUT_ORIGIN := $(origin NETWORK_INTER
 unexport WHEELHOUSE
 override export NMRPEAK_WHEELHOUSE_INPUT := $(if $(filter command line,$(origin WHEELHOUSE)),$(value WHEELHOUSE))
 override export NMRPEAK_WHEELHOUSE_INPUT_ORIGIN := $(origin WHEELHOUSE)
-override export NMRPEAK_ACQUISITION_ARCHIVE_INPUT := $(if $(filter command line,$(origin ACQUISITION_ARCHIVE)),$(value ACQUISITION_ARCHIVE))
-override export NMRPEAK_ACQUISITION_ISSUER_INPUT := $(if $(filter command line,$(origin ACQUISITION_ISSUER)),$(value ACQUISITION_ISSUER))
-unexport ACQUISITION_ARCHIVE ACQUISITION_ISSUER
 unexport NMRPEAK_DOCKER_CONTEXT_INPUT NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN
 override export NMRPEAK_DOCKER_CONTEXT_INPUT := $(if $(filter command line,$(origin DOCKER_CONTEXT)),$(value DOCKER_CONTEXT))
 override export NMRPEAK_DOCKER_CONTEXT_INPUT_ORIGIN := $(origin DOCKER_CONTEXT)
@@ -55,14 +52,17 @@ override NMRPEAK_TEST_COMPOSE = env \
 override NMRPEAK_TEST_NON_ROOT_GUARD = if [[ "$(NMRPEAK_TEST_UID)" == 0 || "$(NMRPEAK_TEST_GID)" == 0 || "$(NMRPEAK_TEST_UID)" == 65532 ]]; then printf '%s\n' 'Containerized tests require a non-root invoking user distinct from provider UID 65532.' >&2; exit 2; fi
 .DEFAULT_GOAL := help
 
-.PHONY: packages/acquisition-bootstrap/check packages/acquisition-bootstrap/refresh
-packages/acquisition-bootstrap/check:
-	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -P -B -m repository_checks.acquisition_bootstrap
+.PHONY: provider-tools/verify-checked-in-source-hashes provider-tools/update-checked-in-source-from-pinned-release provider-tools/import-checked-in-source
+provider-tools/verify-checked-in-source-hashes:
+	@$(PYTHON) -I -S -B bootstrap/acquisition/acquisition_tool/source_update.py verify --source-dir bootstrap/acquisition
 
-packages/acquisition-bootstrap/refresh:
-	@test -n "$$NMRPEAK_ACQUISITION_ARCHIVE_INPUT" || { echo 'Set ACQUISITION_ARCHIVE to the pinned release bundle on the make command line.' >&2; exit 2; }
-	@test -n "$$NMRPEAK_ACQUISITION_ISSUER_INPUT" || { echo 'Set ACQUISITION_ISSUER to the incoming release record on the make command line.' >&2; exit 2; }
-	@PYTHONPATH="$(REPOSITORY_ROOT)" $(PYTHON) -P -B -m repository_checks.acquisition_bootstrap --archive "$$NMRPEAK_ACQUISITION_ARCHIVE_INPUT" --issuer "$$NMRPEAK_ACQUISITION_ISSUER_INPUT"
+provider-tools/update-checked-in-source-from-pinned-release:
+	@$(PYTHON) -I -S -B bootstrap/acquisition/acquisition_tool/source_update.py update --source-dir bootstrap/acquisition --pin-file requirements.provider-tools-source.json
+
+provider-tools/import-checked-in-source: private export SOURCE_ARCHIVE_INPUT := $(if $(filter command line,$(origin INPUT_RELEASE_ARCHIVE)),$(value INPUT_RELEASE_ARCHIVE))
+provider-tools/import-checked-in-source:
+	@test -n "$${SOURCE_ARCHIVE_INPUT}" || { printf '%s\n' 'Set INPUT_RELEASE_ARCHIVE=<archive path> on the Make command line.' >&2; exit 2; }
+	@$(PYTHON) -I -S -B bootstrap/acquisition/acquisition_tool/source_update.py import --source-dir bootstrap/acquisition --pin-file requirements.provider-tools-source.json --archive "$${SOURCE_ARCHIVE_INPUT}"
 
 export BENCHMARK_DEVICES = $(or $(DEVICES),all)
 export BENCHMARK_MODELS = $(or $(MODELS),hf chf)
@@ -175,10 +175,11 @@ help:
 		'      Acquire the locked provider dependencies into the shared wheelhouse.' \
 		'  make provider/image/build WHEELHOUSE=<directory> DOCKER_CONTEXT=<name>' \
 		'      Build the provider from a clean checkout using the selected wheelhouse; dependency installation has no network.' \
-		'  make packages/acquisition-bootstrap/check' \
-		'      Verify the local acquisition bundle against the pinned SDK release.' \
-		'  make packages/acquisition-bootstrap/refresh ACQUISITION_ARCHIVE=<path> ACQUISITION_ISSUER=<record>' \
-		'      Refresh the acquisition bundle from the pinned release archive.' \
+		'  make provider-tools/verify-checked-in-source-hashes' \
+		'      Verify acquisition source offline against its embedded manifest.' \
+		'  make provider-tools/update-checked-in-source-from-pinned-release' \
+		'  make provider-tools/import-checked-in-source INPUT_RELEASE_ARCHIVE=<path>' \
+		'      With acquisitions/builds quiescent, replace source using the reviewed acquisition pin.' \
 		'  make packages/images/retire DOCKER_CONTEXT=<name>' \
 		'      Retire obsolete owned images while protecting retained deployments and containers.' \
 		'  make runner/lock/stage TARGET=<target> [NETWORK_INTERFACE=<name|system>]' \

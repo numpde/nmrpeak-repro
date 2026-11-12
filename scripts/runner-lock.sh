@@ -123,7 +123,7 @@ if [[ "$network_interface" != system ]]; then
     build_network=host
     run_network=host
     readonly ready_file="$tmp/proxy.port"
-    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -P -B -m repository_checks.acquisition_bootstrap
+    "$python" -I -S -B "$repo_root/bootstrap/acquisition/acquisition_tool/source_update.py" verify --source-dir "$repo_root/bootstrap/acquisition"
     "$python" -I -S -B "$repo_root/bootstrap/acquisition/acquisition_tool/dns.py" \
         --interface "$network_interface" --output "$tmp/resolv.conf"
     setsid "$python" "$repo_root/docker/bound_http_proxy.py" \

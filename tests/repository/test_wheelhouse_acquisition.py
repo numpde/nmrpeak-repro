@@ -14,10 +14,10 @@ class SharedAcquisitionAdapterTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         self.fixture = fixture
-        (fixture.repo / ".git/info/exclude").write_text("/bootstrap/\n/repository_checks/acquisition_bootstrap.py\n")
-        (fixture.repo / "repository_checks/acquisition_bootstrap.py").write_text("# verified in dedicated bootstrap tests\n")
+        (fixture.repo / ".git/info/exclude").write_text("/bootstrap/\n")
         owner = fixture.repo / "bootstrap/acquisition/acquisition_tool/owner.sh"
         owner.parent.mkdir(parents=True, exist_ok=True)
+        (owner.parent / "source_update.py").write_text("# Shared verifier exercised in its owning SDK tests.\n")
         owner.write_text('''
 acquisition_scope() {
     local receipt
@@ -51,7 +51,7 @@ acquisition_worker() {
 ''')
 
     def test_unverified_bundle_never_runs_owner(self):
-        (self.fixture.repo / "repository_checks/acquisition_bootstrap.py").write_text("raise SystemExit(1)\n")
+        (self.fixture.repo / "bootstrap/acquisition/acquisition_tool/source_update.py").write_text("raise SystemExit(1)\n")
         result = self.fixture.run_acquisition(0, 0, route=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Cannot verify the shared acquisition bootstrap", result.stderr)

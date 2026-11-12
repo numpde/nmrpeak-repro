@@ -80,7 +80,7 @@ fetch_tool() {
     acquisition_worker online status "$base" grants application || exit "$?"
     (( status == 0 )) || exit "$status"
 }
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root" "$python" -P -m repository_checks.acquisition_bootstrap || {
+"$python" -I -S -B "$repo_root/bootstrap/acquisition/acquisition_tool/source_update.py" verify --source-dir "$repo_root/bootstrap/acquisition" || {
     printf '%s\n' 'Cannot verify the shared acquisition bootstrap.' >&2; exit 2;
 }
 source "$repo_root/bootstrap/acquisition/acquisition_tool/owner.sh"

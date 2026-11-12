@@ -17,6 +17,7 @@ require_container()
 
 import argparse
 import ipaddress
+import logging
 import os
 import re
 import secrets
@@ -30,6 +31,8 @@ import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from provider_core.diagnostic_text import CredentialRedactingFormatter
 
 # Header admission owns this fixed byte ceiling independently of coalesced body
 # bytes; changing it would alter the bounded acquisition protocol.
@@ -381,6 +384,11 @@ def connect_bound(host: str, port: int, interface: str, *, dns_servers: tuple[st
     raise last_error or OSError("Cannot connect proxy destination: DNS returned no IPv4 address.")
 
 
+def log_failure(operation, error):
+    """Pass the original failure to the process's credential-scrubbing formatter."""
+    logging.getLogger("provider_core.proxy").error("%s failed", operation, exc_info=error)
+
+
 def relay(left: socket.socket, right: socket.socket) -> None:
     """Preserve TCP half-closes within the 120-second forwarding inactivity budget."""
 
@@ -392,18 +400,28 @@ def relay(left: socket.socket, right: socket.socket) -> None:
             raise TimeoutError("Cannot continue proxy relay: no forwarding completed within 120 seconds.")
         for source in readable:
             destination = right if source is left else left
-            source.settimeout(_remaining(deadline, "relay read"))
-            data = source.recv(BUFFER_BYTES)
-            if not data:
-                # EOF closes only this read direction. The opposite direction
-                # may still carry the response to a completed client upload.
-                readers.remove(source)
-                destination.shutdown(socket.SHUT_WR)
-                continue
-            # A writable peer may still stall after select. Bound sendall too,
-            # and reset inactivity only when actual forwarding completes.
-            destination.settimeout(_remaining(deadline, "relay write"))
-            destination.sendall(data)
+            direction = "client-to-upstream" if source is left else "upstream-to-client"
+            operation = "read bytes"
+            try:
+                source.settimeout(_remaining(deadline, "relay read"))
+                data = source.recv(BUFFER_BYTES)
+                if not data:
+                    # EOF closes only this direction; the reverse direction
+                    # can still carry a response to a completed client upload.
+                    readers.remove(source)
+                    operation = "half-close the destination after source EOF"
+                    destination.shutdown(socket.SHUT_WR)
+                    continue
+                operation = f"write {len(data)} bytes"
+                # select does not guarantee that a later write cannot stall.
+                destination.settimeout(_remaining(deadline, "relay write"))
+                destination.sendall(data)
+            except OSError as error:
+                # Keep the native exception and its traceback. The relay knows
+                # direction and operation, but cannot infer HTTP acceptance
+                # from encrypted bytes or claim a failed write delivered none.
+                error.add_note(f"Proxy relay {direction}: could not {operation}; delivery may be partial.")
+                raise
             # Only a write completed within the budget can renew inactivity.
             # Upstream resets immediately after sendall, accepting late success.
             # https://github.com/numpde/magnet-deploy/blob/2d4ee50b0359e71900fce9289ea01f46d0f41249/scripts/image-build-proxy.py#L296-L298
@@ -425,11 +443,14 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         return b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n"
 
     def report_failure(self, phase, error):
-        """Native causes may contain private request values; expose phase/type."""
-        sys.stderr.write(f"proxy {phase} failed: {type(error).__name__}\n")
+        """Report the original cause; the log formatter scrubs credentials."""
+        log_failure(f"Proxy {phase}", error)
+        if isinstance(error, ProxyResolutionFailed):
+            for failure in error.failures:
+                log_failure("Proxy DNS query", failure)
 
     def handle(self) -> None:
-        """Forward one request, reporting failures without private request values.
+        """Forward one request without dumping its headers or payload.
 
         A fixed HTTP error is emitted only before forwarding is attempted. Once
         a write starts, its completion may be uncertain and a second HTTP status
@@ -450,23 +471,23 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                 self.request.settimeout(RELAY_IDLE_SECONDS)
                 outbound.settimeout(RELAY_IDLE_SECONDS)
                 if method == "CONNECT":
+                    phase = "forwarding CONNECT acknowledgement to client"
                     self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 else:
+                    phase = "forwarding request headers to upstream"
                     outbound.sendall(forwarded_header)
                 if remainder:
+                    phase = "forwarding initial bytes to upstream"
                     outbound.sendall(remainder)
+                phase = "forwarding tunnel bytes"
                 relay(self.request, outbound)
         except (ConnectionError, OSError, UnicodeError, ValueError) as error:
             if phase == "request admission":
                 try:
                     self.request.settimeout(1)
                     self.request.sendall(self.admission_reply(error))
-                # silent-defaults: allow-contract -- A failed fixed 502 reply must still reach the original safe request-admission diagnostic; proof=packages/provider-core/tests/unit/normative/test_bound_http_proxy.py::BoundProxyTests.test_failed_admission_reply_preserves_original_safe_cause_and_unexpected_errors
-                except OSError:
-                    pass
-            # Native causes can contain request URLs, headers or other private
-            # values. The operator receives only the owned phase and class.
-            # https://github.com/numpde/magnet-deploy/blob/2d4ee50b0359e71900fce9289ea01f46d0f41249/repository_checks/test_image_build_proxy.py#L277
+                except OSError as reply_error:
+                    log_failure("Proxy admission failure reply", reply_error)
             self.report_failure(phase, error)
 
 
@@ -542,10 +563,8 @@ class ProxyServer(socketserver.ThreadingTCPServer):
             self._slots.release()
 
     def handle_error(self, _request: socket.socket, _client_address: tuple[str, int]) -> None:
-        """Replace socketserver's request-bearing traceback with a fixed diagnostic."""
-        # A worker exception must not bypass the handler's request privacy rule.
-        # https://github.com/numpde/magnet-deploy/blob/2d4ee50b0359e71900fce9289ea01f46d0f41249/scripts/image-build-proxy.py#L367-L370
-        sys.stderr.write("Cannot serve proxy request: its worker failed; request contents are not logged.\n")
+        """Keep the worker failure without socketserver's client-address dump."""
+        log_failure("Proxy worker", sys.exception())
 
 
 class UnixProxyServer(ProxyServer):
@@ -579,10 +598,9 @@ class UnixRelayHandler(socketserver.BaseRequestHandler):
                 try:
                     self.request.settimeout(1)
                     self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
-                # silent-defaults: allow-contract -- The relay is already failing; writing a synthetic 502 is best effort and the primary error is still logged.
-                except OSError:
-                    pass
-            sys.stderr.write(f"proxy relay {phase} failed: {type(error).__name__}\n")
+                except OSError as reply_error:
+                    log_failure("Proxy relay admission failure reply", reply_error)
+            log_failure(f"Proxy relay {phase}", error)
 
 
 class UnixRelayServer(ProxyServer):
@@ -654,6 +672,9 @@ def main() -> None:
     Unix gateway publishes its socket path; a loopback relay publishes its port.
     The launcher grants the worker only the relay's networkless namespace.
     """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(CredentialRedactingFormatter("%(levelname)s %(message)s"))
+    logging.basicConfig(level=logging.WARNING, handlers=[handler], force=True)
     parser = argparse.ArgumentParser()
     upstream = parser.add_mutually_exclusive_group(required=True)
     upstream.add_argument("--interface")
