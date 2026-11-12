@@ -712,6 +712,8 @@ def _validate_captured_runtime(
                 "--pull", "never", "--rm", "--network", "none", "--read-only", "--user", "65532:65532",
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "64",
                 "--cpus", "1", "--memory", "256m", "--env", "PROVIDER_CORE_IN_CONTAINER=1",
+                # TLS trust capture materializes lazy certificate directories in private scratch.
+                "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=65532,gid=65532",
                 "--mount", f"type=bind,source={captured},target={CONFIG_PATH.parent},readonly",
                 "--entrypoint", "/usr/local/bin/python3.12", image,
                 "-I", "-B", "-m", "nmrpeak_provider.deployment_runtime", *arguments,

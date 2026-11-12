@@ -365,6 +365,32 @@ class ProviderDeploymentTests(unittest.TestCase):
         self.assertEqual(command.call_count, 1)
         self.assertEqual(command.call_args.args[1][0], "create")
 
+    def test_captured_runtime_validation_has_private_disposable_tls_scratch(self) -> None:
+        with TemporaryDirectory() as temporary:
+            captured = Path(temporary)
+            with (
+                patch.object(provider_deployment, "_publish_retained_tree", return_value=captured),
+                patch.object(provider_deployment, "_run_owned_reader",
+                             return_value=subprocess.CompletedProcess((), 0, b"{}", b"")) as reader,
+            ):
+                result = provider_deployment._validate_captured_runtime(
+                    Path("/usr/bin/docker"), "image", {"api.json": b"{}"}, provider_host_uid=65532,
+                )
+            self.assertEqual({}, result)
+            reader.assert_called_once()
+            arguments = reader.call_args.args[3]
+            self.assertIn("--read-only", arguments)
+            self.assertEqual("none", arguments[arguments.index("--network") + 1])
+            self.assertEqual("65532:65532", arguments[arguments.index("--user") + 1])
+            self.assertEqual(
+                "/tmp:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=65532,gid=65532",
+                arguments[arguments.index("--tmpfs") + 1],
+            )
+            self.assertEqual(
+                f"type=bind,source={captured},target={provider_deployment.CONFIG_PATH.parent},readonly",
+                arguments[arguments.index("--mount") + 1],
+            )
+
     def test_unconfirmed_runtime_validation_retains_its_captured_inputs(self) -> None:
         with TemporaryDirectory() as temporary:
             retained = Path(temporary) / "retained"
