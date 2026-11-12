@@ -1,8 +1,8 @@
-"""NMRPeak stops admitting Jobs but retains an admitted Job until local handoff.
+"""Service stop retains admitted prose work through failure or COMPLETE handoff.
 
-The SDK owns HTTP-process cleanup and the Attempt's delivery obligation.
-These tests do not select an HTTP-helper implementation or prescribe how long
-a model request is allowed to run after the operator requests service stop.
+An unanswered request exhausts its model window and propagates privately.
+A response accepted before exhaustion creates a real COMPLETE obligation;
+local delivery must acknowledge it before the stopped service can exit.
 """
 
 import asyncio
@@ -11,22 +11,22 @@ from tests.fakes.prose_shutdown import ProseShutdownCase
 
 
 class ProviderProseShutdownTests(ProseShutdownCase):
-    async def test_stop_drains_the_admitted_prose_job_without_starting_the_next_job(self):
+    async def test_stop_preserves_exhausted_original_without_starting_next_job(self):
         await self.start_provider()
         await asyncio.wait_for(self.prose_server.request_seen.wait(), 3)
         self.provider.request_stop()
-        await self.assert_original_job_drained()
+        await self.assert_original_job_failed_privately()
         self.assertEqual(b"", await self.prose_server.wait_for_client_eof())
 
-    async def test_stop_waits_for_the_original_job_report_handoff_acknowledgement(self):
-        await self.start_provider(hold_delivery_ack=True)
+    async def test_stop_waits_for_original_complete_handoff_acknowledgement(self):
+        await self.start_provider(hold_delivery_ack=True, answer=True)
         await asyncio.wait_for(self.prose_server.request_seen.wait(), 3)
         self.provider.request_stop()
+        self.release_test_reply.set()
         await asyncio.wait_for(self.delivery_received.wait(), 4)
 
-        # The local delivery service received the Job's failure report but
-        # has not acknowledged accepting custody. NMRPeak cannot exit and
-        # must not start the next Job during that wait.
+        # The original successful report has reached the local delivery
+        # service. Custody remains with NMRPeak until that service accepts it.
         self.assertEqual(1, len(self.delivery_reports))
         self.assertFalse(self.provider_run.done())
         self.assertFalse(self.provider.shutdown_ready)
@@ -34,4 +34,3 @@ class ProviderProseShutdownTests(ProseShutdownCase):
 
         self.allow_delivery_ack.set()
         await self.assert_original_job_drained()
-        self.assertEqual(b"", await self.prose_server.wait_for_client_eof())
