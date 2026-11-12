@@ -369,8 +369,9 @@ async def _observe(
     observed_capability = _ObservedCapability(
         _LANES[variant.lane_name], inject_rejection=evaluation.mode == "forced_repair",
     )
-    configured = InputInterpreter((endpoint,), InterpreterPolicy(
-        interpretation_timeout_seconds=interpretation_timeout_seconds))
+    with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(observed_call,)):
+        configured = InputInterpreter((endpoint,), InterpreterPolicy(
+            interpretation_timeout_seconds=interpretation_timeout_seconds))
     session = configured.new_session()
 
     async def admit_interpretation(candidate):
@@ -381,8 +382,7 @@ async def _observe(
     unexpected_failure = None
     started = monotonic()
     try:
-        with patch("nmrpeak_provider.input_interpreter.endpoint_factories", return_value=(observed_call,)), \
-             patch("nmrpeak_provider.input_interpreter._InterpretationCapability", return_value=observed_capability):
+        with patch("nmrpeak_provider.input_interpreter._InterpretationCapability", return_value=observed_capability):
             await session.validate_freeform_input_async(
                 source=variant.source_text.encode(), lane=_LANES[variant.lane_name],
                 validate_input=admit_interpretation, execution_attempt_ref="model-behavior")
