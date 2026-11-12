@@ -6,19 +6,16 @@ from hashlib import sha256
 import json
 
 from provider_core.analysis import (
-    AnalysisFailure, AnalysisOutcomeUnresolved, AnalysisSuccess, ObservedWorkerCrash, PreparedAnalysis,
+    AnalysisFailure, AnalysisSuccess, ObservedWorkerCrash, PreparedAnalysis,
 )
 from provider_core.attempt_record import ProtectedEvidence
 from provider_core.task_boundary import contain_task_exit
 
 from .canonical_json import canonical_json_bytes
-from .diagnostic_text import diagnostic_text, exception_diagnostic
+from .diagnostic_text import exception_diagnostic
 from .failure_contract import ClassifiedPreparationFailure, FailureContractError
 from .input_issue_message import (
     render_direct_runner_rejection, render_source_issue,
-)
-from .interpreter import (
-    InterpreterUnavailable,
 )
 from .preparation_failure_policy import FailureKind
 from .product_input import InputRejected, is_structured_source, parse_job_input
@@ -82,24 +79,11 @@ class NmrpeakAnalysisSession:
         return self._prepared
 
     async def _prepare_prose(self, source, report_condition):
-        try:
-            return await self._interpretation.validate_freeform_input_async(
-                source=source, lane=self.generation.lane,
-                validate_input=partial(self._validate_input, report_condition=report_condition),
-                execution_attempt_ref=self._acknowledged.admission.execution_attempt_ref,
-            )
-        except InterpreterUnavailable as unavailable:
-            if not self.runner.quiescent:
-                raise AnalysisOutcomeUnresolved(
-                    "Cannot confirm NMR validation after the interpreter became unavailable"
-                ) from unavailable
-            return self._failure(
-                FailureKind.INTERPRETER_UNAVAILABLE,
-                "Interpretation could not be completed. Generation did not start.",
-                reason=unavailable.reason.value,
-                route=list(unavailable.attempted_configuration_ids),
-                cause=exception_diagnostic(unavailable, secrets=self.interpreter.diagnostic_secrets),
-            )
+        return await self._interpretation.validate_freeform_input_async(
+            source=source, lane=self.generation.lane,
+            validate_input=partial(self._validate_input, report_condition=report_condition),
+            execution_attempt_ref=self._acknowledged.admission.execution_attempt_ref,
+        )
 
     async def _validate_input(self, model_input, *, report_condition):
         digest = "sha256:" + sha256(canonical_json_bytes(model_input.wire_document())).hexdigest()

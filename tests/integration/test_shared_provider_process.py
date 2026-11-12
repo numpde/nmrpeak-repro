@@ -121,6 +121,44 @@ class SharedProviderProcessTests(unittest.IsolatedAsyncioTestCase):
             queue.close()
             await server.close()
 
+    async def test_prompt_failure_propagates_through_controller_without_publication(self):
+        prompt_failure = PermissionError(13, "Cannot read interpreter prompt: fixture-key")
+        observed = []
+        prepare = NmrpeakAnalysisSession.prepare
+
+        async def observe_prepare(session, *args, **kwargs):
+            try:
+                return await prepare(session, *args, **kwargs)
+            except InterpreterUnavailable as failure:
+                observed.append(failure)
+                raise
+
+        async with self._interpreter_executor_fixture(script=[]) as (
+                service, controller, pending, session, server, queue, accepted):
+            with patch("nmrpeak_provider.input_interpreter._read_prompt", side_effect=prompt_failure) as read_prompt, \
+                 patch.object(NmrpeakAnalysisSession, "prepare", observe_prepare):
+                with self.assertRaises(ControllerFailed) as caught:
+                    await asyncio.wait_for(controller.run(pending), 3)
+            original, = observed
+            self.assertIs(caught.exception, controller.last_failure)
+            self.assertIs(original, caught.exception.cause.cause)
+            self.assertIs(prompt_failure, original.__cause__)
+            self.assertIs(InterpreterUnavailableReason.PROMPT_UNAVAILABLE, original.reason)
+            read_prompt.assert_called_once()
+            self.assertTrue(controller.shutdown_ready)
+            self.assertIn(controller, service._claims.live_owners())
+            self.assertTrue(session._retirement.done())
+            self.assertIsNone(session._retirement.exception())
+            self.assertTrue(session._interpretation._closed)
+            self.assertTrue(session.runner.quiescent)
+            self.assertFalse(session.runner.retired)
+            self.assertEqual([], session.runner._channel.received_frames)
+            self.assertEqual([], server.requests)
+            self.assertFalse(accepted.is_set())
+            self.assertFalse(queue.inventory(controller.scope.api_origin, controller.scope.provider_ref))
+            backend = service.api._transport.api
+            self.assertFalse(any(path.endswith(("/fail", "/complete")) for _, path, _ in backend.calls))
+
     async def test_executor_retires_inflight_interpreter_http(self):
         release, endpoint_retired = asyncio.Event(), asyncio.Event()
         original_prepare_tasks = []

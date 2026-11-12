@@ -27,7 +27,7 @@ from nmrpeak_provider.product_input import InputIssue, InputRejectionReason
 from nmrpeak_provider.product_result import canonical_result_bytes
 from nmrpeak_provider.run_generation import run_generation_fingerprint
 from nmrpeak_provider.runner_session import (
-    NativeObservationRequired, RunnerSessionRetired, ScientificCallInterrupted,
+    NativeObservationRequired, RunnerInputRejected, RunnerSessionRetired, ScientificCallInterrupted,
 )
 from nmrpeak_provider.runner_protocol import RunnerRejectionReason, runner_rejection_diagnostic
 from nmrpeak_provider.text_provenance import ModelGeneratedText
@@ -310,45 +310,71 @@ class AnalysisSessionTests(unittest.IsolatedAsyncioTestCase):
                 configured, runner, _, model_input = await self.enterAsyncContext(scientific_lane("chf", rejected_validations=1))
                 translator = interpreter()
 
+                unavailable = InterpreterUnavailable(InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED, ("fixture",))
+
                 async def translate(**arguments):
                     rejection = await arguments["validate_input"](model_input)
-                    raise InterpreterUnavailable(InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED, ("fixture",))
+                    self.assertIs(RunnerInputRejected, type(rejection))
+                    raise unavailable
 
                 translator.validate_freeform_input_async.side_effect = translate
                 raw = b"Interpret these peaks." if prose else canonical_json_bytes(VALUE)
                 owner = NmrpeakAnalysisSession(configured, runner, translator)
                 acknowledged, instructions = admission(configured, raw)
-                outcome = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
-                self.assertIsInstance(outcome, AnalysisFailure)
-                await owner.retire()
+                try:
+                    if prose:
+                        with self.assertRaises(InterpreterUnavailable) as caught:
+                            await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
+                        self.assertIs(unavailable, caught.exception)
+                        translator.validate_freeform_input_async.assert_awaited_once()
+                    else:
+                        outcome = await owner.prepare(acknowledged, instructions, report_condition=phase_reporter())
+                        self.assertIsInstance(outcome, AnalysisFailure)
+                        translator.validate_freeform_input_async.assert_not_awaited()
+                finally:
+                    await owner.retire()
                 self.assertFalse(runner.retired)
+                translator.retire.assert_awaited_once()
+                translator.join.assert_awaited_once()
                 await runner.retire()
 
-    async def test_exhausted_interpreter_finishes_once_without_restarting_the_ladder(self):
-        for reason in (InterpreterUnavailableReason.DEADLINE_EXCEEDED,
-                       InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED):
+    async def test_unavailable_interpreter_propagates_once_without_restarting_the_ladder(self):
+        from nmrpeak_provider.diagnostic_text import exception_diagnostic
+
+        for reason in InterpreterUnavailableReason:
             with self.subTest(reason=reason):
                 configured, runner, channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
                 translator = interpreter()
                 translator.diagnostic_secrets = ("private-credential",)
-                unavailable = InterpreterUnavailable(reason)
+                cause = OSError(13, "Cannot read interpreter prompt: private-credential")
+                unavailable = InterpreterUnavailable(reason, ("fixture",))
+                unavailable.__cause__ = cause
                 unavailable.add_note("safe context, private-credential")
                 translator.validate_freeform_input_async.side_effect = unavailable
                 owner = NmrpeakAnalysisSession(configured, runner, translator)
                 acknowledged, instructions = admission(configured, b"Interpret these peaks.")
                 conditions = phase_reporter()
-                outcome = await owner.prepare(acknowledged, instructions, report_condition=conditions)
-                self.assertIsInstance(outcome, AnalysisFailure)
-                self.assertEqual(outcome.code, "interpretation_failed")
-                self.assertIn("could not be completed", outcome.message)
-                self.assertNotIn("private-credential", outcome.message)
-                evidence = json.loads(outcome.evidence.content)
-                self.assertIn("safe context", evidence["cause"])
-                self.assertNotIn("private-credential", evidence["cause"])
-                self.assertEqual(translator.validate_freeform_input_async.await_count, 1)
-                self.assertEqual(conditions.await_count, 0)
-                self.assertEqual(channel.received_frames, [])
-                await owner.retire()
+                try:
+                    with self.assertRaises(InterpreterUnavailable) as caught:
+                        await owner.prepare(acknowledged, instructions, report_condition=conditions)
+                    self.assertIs(unavailable, caught.exception)
+                    self.assertIs(cause, caught.exception.__cause__)
+                    self.assertIs(reason, caught.exception.reason)
+                    self.assertEqual(("fixture",), caught.exception.attempted_configuration_ids)
+                    self.assertEqual(["safe context, private-credential"], caught.exception.__notes__)
+                    diagnostic = exception_diagnostic(caught.exception, secrets=translator.diagnostic_secrets)
+                    self.assertIn("safe context", diagnostic)
+                    self.assertIn("Cannot read interpreter prompt", diagnostic)
+                    self.assertNotIn("private-credential", diagnostic)
+                    translator.validate_freeform_input_async.assert_awaited_once()
+                    self.assertEqual(0, conditions.await_count)
+                    self.assertEqual([], channel.received_frames)
+                finally:
+                    await owner.retire()
+                translator.retire.assert_awaited_once()
+                translator.join.assert_awaited_once()
+                self.assertTrue(runner.quiescent)
+                self.assertFalse(runner.retired)
 
     async def test_both_lanes_return_exact_results_and_release_healthy_warm_owner(self):
         for name, document in (("hf", HF_VALUE), ("chf", VALUE)):

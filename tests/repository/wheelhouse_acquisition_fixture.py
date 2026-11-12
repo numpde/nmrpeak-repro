@@ -24,6 +24,13 @@ class WheelhouseFixture(unittest.TestCase):
             directory.mkdir(parents=True)
         for name in ("runner-wheelhouse.sh", "network-interface.sh"):
             shutil.copyfile(ROOT / "scripts" / name, self.repo / "scripts" / name)
+        for name in ("containers/provider/Dockerfile", "containers/provider/Dockerfile.dockerignore",
+                     "bootstrap/acquisition/tools/inference_native.sh"):
+            destination = self.repo / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, destination)
+        installer = "bootstrap/acquisition/acquisition_tool/installer"
+        shutil.copytree(ROOT / installer, self.repo / installer)
         (self.repo / "repository_checks/__init__.py").touch()
         (self.repo / "repository_checks/wheelhouse_tool_asset.py").write_text('TOOL_NAME = "tool.pyz"\n')
         (self.repo / "repository_checks/image_wheel_report.py").write_text('# fixture report\n')
@@ -42,9 +49,35 @@ class WheelhouseFixture(unittest.TestCase):
                         'commit', '-qm', 'fixture', '-m', 'Capture the committed acquisition inputs.'], check=True)
         docker = root / 'docker'
         docker.write_text(f'''#!{sys.executable}
+from pathlib import Path
 import sys
-if sys.argv[3:5] == ["image", "inspect"]:
-    print("sha256:" + "a" * 64)
+
+arguments = sys.argv[1:]
+if arguments[:2] != ["--host", "unix:///tmp/fixture.sock"]:
+    raise SystemExit("unexpected Docker endpoint")
+while arguments[:2] == ["--host", "unix:///tmp/fixture.sock"]:
+    arguments = arguments[2:]
+installer_id = "sha256:" + "b" * 64
+if arguments[:2] == ["image", "inspect"]:
+    image, option, template = arguments[2:]
+    if option != "--format":
+        raise SystemExit("unexpected Docker image inspection")
+    if image == installer_id and template == "{{{{.Id}}}} {{{{.Os}}}}/{{{{.Architecture}}}}":
+        print(installer_id + " linux/amd64")
+    elif image.startswith("docker.io/library/python:") and template == "{{{{.Id}}}}":
+        print("sha256:" + "a" * 64)
+    else:
+        raise SystemExit("unexpected Docker image inspection")
+elif arguments[:8] == ["build", "--platform", "linux/amd64", "--pull=false",
+                       "--network", "none", "--target", "installer"]:
+    if len(arguments) != 13 or arguments[8] != "--iidfile" or arguments[10] != "--file":
+        raise SystemExit("unexpected installer build arguments")
+    context = Path(arguments[12])
+    dockerfile = context / "containers/provider/Dockerfile"
+    installer = context / "bootstrap/acquisition/acquisition_tool/installer"
+    if Path(arguments[11]) != dockerfile or not dockerfile.is_file() or not installer.is_dir():
+        raise SystemExit("installer build lacks its captured source inputs")
+    Path(arguments[9]).write_text(installer_id + "\\n")
 else:
     raise SystemExit("unexpected Docker command")
 ''')

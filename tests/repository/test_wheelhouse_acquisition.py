@@ -17,7 +17,7 @@ class SharedAcquisitionAdapterTests(unittest.TestCase):
         (fixture.repo / ".git/info/exclude").write_text("/bootstrap/\n/repository_checks/acquisition_bootstrap.py\n")
         (fixture.repo / "repository_checks/acquisition_bootstrap.py").write_text("# verified in dedicated bootstrap tests\n")
         owner = fixture.repo / "bootstrap/acquisition/acquisition_tool/owner.sh"
-        owner.parent.mkdir(parents=True)
+        owner.parent.mkdir(parents=True, exist_ok=True)
         owner.write_text('''
 acquisition_scope() {
     local receipt

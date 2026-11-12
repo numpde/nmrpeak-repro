@@ -8,7 +8,6 @@ central Jobs API publication receipt or claim native worker continuity.
 import asyncio
 from collections import Counter
 import json
-from math import floor
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,18 +16,19 @@ from urllib.parse import parse_qs
 
 from provider_core.attempt_record import TerminalOperation
 from provider_core.delivery_client import DeliveryEndpoint
+from provider_core.controller import ControllerFailed
 from provider_core.diagnostics import failure_evidence
 from provider_core.interpreter import ProseService
 
-from nmrpeak_provider.canonical_json import canonical_json_bytes
 from nmrpeak_provider.generation_runtime import GenerationRuntime
 from nmrpeak_provider.input_interpreter import InputInterpreter
 from nmrpeak_provider.interpreter_policy import InterpreterPolicy
+from nmrpeak_provider.interpreter import InterpreterUnavailable, InterpreterUnavailableReason
 from nmrpeak_provider.openai_chat_interpreter import OpenAIChatEndpointSpec
 from nmrpeak_provider.provider_config import ObservationPolicy, ProviderProcessPolicy
 from nmrpeak_provider.provider_process import ProviderAnnouncement, ProviderProcess
 from nmrpeak_provider.runner_protocol import GenerateFrame, ValidateFrame
-from tests.fakes.interpreter_values import HF_VALUE, VALUE
+from tests.fakes.interpreter_values import HF_VALUE
 from tests.fakes.model_http import LoopbackHTTP, reply
 from tests.fakes.shared_api import SharedApi
 from tests.unit.test_analysis_session import scientific_lane
@@ -130,10 +130,12 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
     # Allow real HTTPS child startup while keeping this positive model window
     # shorter than Retry-After, so the first Job cannot wait through the refusal.
     interpretation_seconds = 1.5
-    outage_seconds = 2.25
     typed_job = "job:typed-during-prose-outage"
 
-    async def start_provider(self, *, backlog):
+    async def start_provider(self, *, backlog, interpretation_seconds=None):
+        if interpretation_seconds is not None:
+            self.interpretation_seconds = interpretation_seconds
+        self.confirmed_provider_failure = None
         hf, hf_runner, hf_channel, _ = await self.enterAsyncContext(scientific_lane("hf"))
         chf, chf_runner, chf_channel, _ = await self.enterAsyncContext(scientific_lane("chf"))
         self.science = ((hf_runner, hf_channel), (chf_runner, chf_channel))
@@ -156,8 +158,10 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
             ),), InterpreterPolicy(interpretation_timeout_seconds=self.interpretation_seconds))
         self.prose_services = configured.services
         self.interpretation_failures = []
+        self.original_interpretation_failures = []
 
         def observe_failure(failure, **policy):
+            self.original_interpretation_failures.append(failure)
             evidence = failure_evidence(failure, **policy)
             self.interpretation_failures.append(evidence)
             return evidence
@@ -190,7 +194,30 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
     async def finish_provider(self):
         self.provider.request_stop()
         if self.provider_run is not None:
+            if self.confirmed_provider_failure is not None:
+                self.assertTrue(self.provider_run.done())
+                self.assertIs(self.confirmed_provider_failure, self.provider_run.exception())
+            else:
+                await asyncio.wait_for(asyncio.shield(self.provider_run), 8)
+
+    async def wait_for_operator_failure(self):
+        with self.assertRaises(BaseExceptionGroup) as caught:
             await asyncio.wait_for(asyncio.shield(self.provider_run), 8)
+        controller = self.provider.lanes[0].controller
+        retained = controller.last_failure
+        self.assertIs(ControllerFailed, type(retained))
+        self.assertIsNotNone(caught.exception.subgroup(lambda error: error is retained))
+        original = retained.cause.cause
+        self.assertIs(InterpreterUnavailable, type(original))
+        self.assertIs(InterpreterUnavailableReason.ENDPOINTS_EXHAUSTED, original.reason)
+        self.assertTrue(any(failure is original.__cause__ for failure in self.original_interpretation_failures))
+        self.assertTrue(controller.shutdown_ready)
+        self.assertIn(controller, self.provider._claims.live_owners())
+        self.assertTrue(self.provider.shutdown_ready)
+        self.assertFalse(any(item.job_ref == "job:prose-0" for item in self.reports))
+        self.assertFalse(any(path.endswith(("/fail", "/complete")) for _, path, _ in self.jobs_api.calls))
+        self.confirmed_provider_failure = caught.exception
+        return original
 
     async def wait_for_report(self, predicate, *, seconds):
         async def observe():
@@ -201,7 +228,12 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
                         return report
                 await self.report_changed.wait()
 
-        return await asyncio.wait_for(observe(), seconds)
+        try:
+            return await asyncio.wait_for(observe(), seconds)
+        except TimeoutError as failure:
+            raise AssertionError(
+                f"No matching local report arrived within {seconds} seconds; {self.evidence()}"
+            ) from failure
 
     async def wait_for_prose_refusal(self):
         service = self.prose_services[0]
@@ -218,7 +250,6 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
         return json.dumps({
             "retry_after_seconds": self.prose_server.retry_after_seconds,
             "interpretation_seconds": self.interpretation_seconds,
-            "outage_seconds": self.outage_seconds,
             "requests": [{**entry, "at": round(entry["at"] - first, 6)}
                          for entry in self.prose_server.received],
             "retry_observations": [{**entry, "at": round(entry["at"] - first, 6)}
@@ -232,58 +263,24 @@ class ProseOutageCase(unittest.IsolatedAsyncioTestCase):
     async def check_outage(self, *, backlog):
         await self.start_provider(backlog=backlog)
         await self.wait_for_prose_refusal()
-        first_request_at = self.prose_server.received[0]["at"]
-        # Offer healthy work after the actual client classified Retry-After.
-        # The CHF loop must discover it while HF is recovering.
-        self.jobs_api.inputs[self.typed_job] = (self.chf_kind, canonical_json_bytes(VALUE))
-        await self.wait_for_report(
-            lambda report: report.job_ref == self.typed_job and report.operation is TerminalOperation.COMPLETE,
-            seconds=1,
-        )
-        await asyncio.sleep(max(0, first_request_at + 1 - asyncio.get_running_loop().time()))
+        original = await self.wait_for_operator_failure()
+        self.assertEqual(("hf-prose-outage",), original.attempted_configuration_ids)
         self.assertEqual(1, len(self.prose_server.received), msg=self.evidence())
-        self.assertFalse(self.provider_run.done(), msg=self.evidence())
-        self.assertEqual([], self.science[0][1].received_frames, msg=self.evidence())
-
-        await asyncio.sleep(max(0, first_request_at + self.outage_seconds - asyncio.get_running_loop().time()))
-        unavailable_requests = tuple(self.prose_server.received)
-        # One HF lane uses this service. Its two-second Retry-After gives at
-        # most one initial request and one retry window during this outage,
-        # independently of the number of offered Jobs.
-        request_ceiling = 1 + floor(self.outage_seconds / self.prose_server.retry_after_seconds)
-        self.assertLessEqual(len(unavailable_requests), request_ceiling, msg=self.evidence())
-        for earlier, later in zip(unavailable_requests, unavailable_requests[1:]):
-            self.assertGreaterEqual(later["at"] - earlier["at"], self.prose_server.retry_after_seconds,
-                                    msg=self.evidence())
-
-        unstarted_jobs = set(self.jobs_api.inputs) - self.jobs_api.started.keys()
-        self.assertTrue(unstarted_jobs, msg=self.evidence())
-        self.prose_server.restore()
-        # Allow the remaining requested wait, the unchanged interpretation
-        # budget and two seconds for discovery, runner frames and local handoff.
-        recovery_seconds = self.prose_server.retry_after_seconds + self.interpretation_seconds + 2
-        recovered = await self.wait_for_report(
-            lambda report: report.job_ref in unstarted_jobs and report.operation is TerminalOperation.COMPLETE,
-            seconds=recovery_seconds,
-        )
-        self.assertEqual(self.jobs_api.started[recovered.job_ref], recovered.execution_attempt_ref)
-        self.assertLessEqual(asyncio.get_running_loop().time() - self.prose_server.restored_at,
-                             recovery_seconds, msg=self.evidence())
-        self.assertTrue(any(entry["job_ref"] == recovered.job_ref and entry["available"]
-                            for entry in self.prose_server.received), msg=self.evidence())
-        await self.finish_provider()
-        self.assertTrue(self.provider.shutdown_ready, msg=self.evidence())
+        self.assertEqual(["job:prose-0"], list(self.jobs_api.started), msg=self.evidence())
+        self.assertEqual([], self.reports, msg=self.evidence())
+        for _, channel in self.science:
+            self.assertEqual([], channel.received_frames, msg=self.evidence())
         self.assertTrue(all(entry["model"] == "local-prose-test-model"
                             for entry in self.prose_server.received), msg=self.evidence())
-        self.assertNotIn(self.typed_job, [entry["job_ref"] for entry in self.prose_server.received])
-        self.assert_reports_match_original_science()
+        self.assert_reports_match_original_science(held_jobs=("job:prose-0",))
 
-    def assert_reports_match_original_science(self):
-        """Every admitted Job settles once through the same scientific sessions."""
+    def assert_reports_match_original_science(self, *, held_jobs=()):
+        """Completed Jobs match their original science; held Jobs have no report."""
         starts = [body["job_ref"] for _, path, body in self.jobs_api.calls
                   if path.endswith("/execution-attempts/start")]
         self.assertEqual(Counter(starts), Counter(self.jobs_api.started.keys()), msg=self.evidence())
-        self.assertEqual(Counter(item.job_ref for item in self.reports), Counter(starts), msg=self.evidence())
+        self.assertEqual(Counter(starts), Counter(item.job_ref for item in self.reports) + Counter(held_jobs),
+                         msg=self.evidence())
         completed = Counter(item.execution_attempt_ref for item in self.reports
                             if item.operation is TerminalOperation.COMPLETE)
         validations = Counter(frame.correlation.attempt_ref for _, channel in self.science
