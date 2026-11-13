@@ -220,6 +220,20 @@ class RunnerSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ATTEMPT_REF, validate_frame.correlation.attempt_ref)
         self.assertIs(FACTS, session.result_facts)
 
+    async def test_validated_request_cannot_authorize_another_runner_boot(self) -> None:
+        first_channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame(), candidates=("CCO",))
+        second_channel = FakeRunnerChannel(CHF_RUNNER_CODEC, ready_frame(), candidates=("OCC",))
+        first = await self.enterAsyncContext(admit_fake_session(first_channel, FACTS, FRAME_DEADLINES, CHF_RUNNER_CODEC))
+        second = await self.enterAsyncContext(admit_fake_session(second_channel, FACTS, FRAME_DEADLINES, CHF_RUNNER_CODEC))
+        first_request = await first.join_science(validate(first))
+        await second.join_science(validate(second))
+
+        with self.assertRaises(RunnerSessionRetired):
+            await second.join_science(second.generate(first_request))
+        self.assertEqual(1, len(second_channel.received_frames))
+        result = await first.join_science(first.generate(first_request))
+        self.assertEqual(["CCO"], result.value)
+
     async def test_hf_session_uses_its_exact_ready_facts_and_model_input_codec(self) -> None:
         facts = ProviderResultFacts(
             identity=HF_RESULT_IDENTITY,
