@@ -23,8 +23,9 @@ from provider_core.chat_errors import ChatFailed
 from provider_core.interpreter import ModelReportedInterpretationProblem
 
 from nmrpeak_provider.canonical_json import canonical_json_bytes
-from nmrpeak_provider.input_interpreter import (
-    InputInterpreter, _InterpretationCapability,
+from nmrpeak_provider.input_interpreter import InputInterpreter
+from nmrpeak_provider.interpretation_capability import (
+    _InterpretationCapability,
     _REPORT_DESCRIPTION,
     _SUBMIT_DESCRIPTION,
     _value_schema_for,
@@ -382,7 +383,7 @@ async def _observe(
     unexpected_failure = None
     started = monotonic()
     try:
-        with patch("nmrpeak_provider.input_interpreter._InterpretationCapability", return_value=observed_capability):
+        with patch("nmrpeak_provider.interpretation_capability._InterpretationCapability", return_value=observed_capability):
             await session.validate_freeform_input_async(
                 source=variant.source_text.encode(), lane=_LANES[variant.lane_name],
                 validate_input=admit_interpretation, execution_attempt_ref="model-behavior")

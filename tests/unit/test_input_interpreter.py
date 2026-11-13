@@ -5,7 +5,8 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from nmrpeak_provider.input_interpreter import InputInterpreter, _value_schema_for
+from nmrpeak_provider.input_interpreter import InputInterpreter
+from nmrpeak_provider.interpretation_capability import _value_schema_for
 from nmrpeak_provider.interpreter import InterpreterUnavailable, InterpreterUnavailableReason
 from nmrpeak_provider.interpreter_policy import InterpreterPolicy
 from nmrpeak_provider.lifecycle_lane import CHF_LIFECYCLE_LANE, HF_LIFECYCLE_LANE

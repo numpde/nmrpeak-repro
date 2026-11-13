@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock
 
 from tests.fakes.model_http import LoopbackHTTP, Reply, reply
 
-from nmrpeak_provider.input_interpreter import InputInterpreter, _InterpretationCapability
+from nmrpeak_provider.input_interpreter import InputInterpreter
+from nmrpeak_provider.interpretation_capability import _InterpretationCapability
 from nmrpeak_provider.interpreter import (
     InterpreterUnavailable,
     InterpreterUnavailableReason,

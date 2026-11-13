@@ -232,7 +232,7 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
         session = configured.new_session()
         accepted = ValidatedRunnerRequest(object(), object())
         validate = AsyncMock(return_value=accepted)
-        with patch("nmrpeak_provider.input_interpreter._InterpretationCapability.construct_interpretation") as construct, \
+        with patch("nmrpeak_provider.interpretation_capability._InterpretationCapability.construct_interpretation") as construct, \
              patch.object(type(HF_LIFECYCLE_LANE), "bind_runner_input", return_value=object()):
             construct.return_value = object()
             result = await session.validate_freeform_input_async(
@@ -254,7 +254,7 @@ class SharedInterpreterAdapterTests(unittest.IsolatedAsyncioTestCase):
         def slow_bind(_lane, _candidate):
             time.sleep(0.1)
             return object()
-        with patch("nmrpeak_provider.input_interpreter._InterpretationCapability.construct_interpretation", return_value=object()), \
+        with patch("nmrpeak_provider.interpretation_capability._InterpretationCapability.construct_interpretation", return_value=object()), \
              patch.object(type(HF_LIFECYCLE_LANE), "bind_runner_input", slow_bind):
             with self.assertRaises(InterpreterUnavailable):
                 await session.validate_freeform_input_async(

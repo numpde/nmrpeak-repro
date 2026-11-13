@@ -28,6 +28,7 @@ nmrpeak_provider/identity_lock_hold.py
 nmrpeak_provider/input_interpreter.py
 nmrpeak_provider/input_issue_message.py
 nmrpeak_provider/inspection_document.py
+nmrpeak_provider/interpretation_capability.py
 nmrpeak_provider/interpreter.py
 nmrpeak_provider/interpreter_policy.py
 nmrpeak_provider/interpreter_settings.py

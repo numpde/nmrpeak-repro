@@ -10,7 +10,6 @@ from pathlib import Path
 import unicodedata
 
 from .diagnostic_text import diagnostic_text
-from .canonical_json import canonical_json_bytes
 from provider_core.conversation import ToolFinished, independent_interruption_failure
 from provider_core.chat_errors import ChatFailed
 from provider_core.diagnostics import failure_evidence
@@ -34,22 +33,19 @@ from .interpreter import (
     _read_prompt,
     _SYSTEM_PROMPT_PATH,
 )
-from .input_issue_message import render_candidate_correction
-from .lifecycle_lane import LifecycleLane
+from .lifecycle_lane import LifecycleLane  # Retain eager lane-policy initialization.
+from . import interpretation_capability
 from .openai_chat_interpreter import (
     OpenAIChatEndpointSpec,
     endpoint_factories,
     interpreter_tools,
 )
 from .interpreter_policy import InterpreterPolicy
-from .product import CHF_OFFERING, HF_OFFERING
 from .product_input import (
-    INPUT_SCHEMA_ID,
     InputRejected,
     InputRejectionReason,
     SUPPORTED_MULTIPLICITIES,
     is_structured_source,
-    parse_job_input,
 )
 from .provider_events import (
     InterpreterEndpointFailed,
@@ -68,90 +64,7 @@ INTERPRETER_CONFIG_DIRECTORY = Path(
     "/run/config/nmrpeak-provider/interpreter"
 )
 MAX_FREEFORM_INPUT_BYTES = 16_384
-_PROMPT_DIRECTORY = Path(__file__).with_name("prompts")
 _LOG = logging.getLogger(__name__)
-_PROMPT_PATHS = {
-    HF_OFFERING: _PROMPT_DIRECTORY / "hf_interpreter.md",
-    CHF_OFFERING: _PROMPT_DIRECTORY / "chf_interpreter.md",
-}
-_SUBMIT_DESCRIPTION = (
-    "Submit the complete HF or CHF NMRPeak request, copying every reported "
-    "scientific value from the source without correction or inference."
-)
-_REPORT_DESCRIPTION = (
-    "Report difficulty producing a complete, source-faithful interpretation. "
-    "Cite source evidence when available; a rejected candidate alone does not prove the source is wrong."
-)
-
-
-def _value_schema_for(lane: LifecycleLane) -> dict[str, object]:
-    """Describe the selected product shape; the typed parser remains authoritative."""
-
-    proton_peak = {
-        "type": "object",
-        "properties": {
-            "shift_lo": {"type": "string"},
-            "shift_hi": {"type": "string"},
-            "integral": {"type": "string"},
-            # Do not enum the vocabulary: unsupported source labels must not
-            # be silently substituted before the product parser can reject them.
-            "multiplicity": {"type": "string"},
-            "j_hz": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["shift_lo", "shift_hi", "integral", "multiplicity", "j_hz"],
-        "additionalProperties": False,
-    }
-    proton_spectrum = {
-        "type": "object",
-        "properties": {
-            "peaks": {"type": "array", "minItems": 1, "items": proton_peak}
-        },
-        "required": ["peaks"],
-        "additionalProperties": False,
-    }
-    spectra: dict[str, object] = {"1H": proton_spectrum}
-    if lane.offering is CHF_OFFERING:
-        spectra["13C"] = {
-            "type": "object",
-            "properties": {
-                "peaks": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {"shift": {"type": "string"}},
-                        "required": ["shift"],
-                        "additionalProperties": False,
-                    },
-                }
-            },
-            "required": ["peaks"],
-            "additionalProperties": False,
-        }
-    elif lane.offering is not HF_OFFERING:
-        raise AssertionError("NMRPeak tool schema requires a product-owned lane")
-    return {
-        "type": "object",
-        "properties": {
-            "schema_id": {"const": INPUT_SCHEMA_ID},
-            "model_input": {
-                "type": "object",
-                "properties": {
-                    "formula": {"type": "string"},
-                    "spectra": {
-                        "type": "object",
-                        "properties": spectra,
-                        "required": list(spectra),
-                        "additionalProperties": False,
-                    },
-                },
-                "required": ["formula", "spectra"],
-                "additionalProperties": False,
-            },
-        },
-        "required": ["schema_id", "model_input"],
-        "additionalProperties": False,
-    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,7 +160,7 @@ class InterpretationSession:
         if self._closed or self._shared is not None:
             raise RuntimeError("Cannot interpret input: this Attempt's interpretation session already ran or is retiring")
         source_text = _admit_source_text(source)
-        capability = _InterpretationCapability(lane, self.diagnostic_secrets)
+        capability = interpretation_capability._InterpretationCapability(lane, self.diagnostic_secrets)
         try:
             messages = [
                 {"role": "system", "content": _read_prompt(_SYSTEM_PROMPT_PATH)},
@@ -256,8 +169,9 @@ class InterpretationSession:
             ]
         except (OSError, UnicodeError, ValueError) as error:
             raise InterpreterUnavailable(InterpreterUnavailableReason.PROMPT_UNAVAILABLE) from error
-        tools = interpreter_tools(submit_description=_SUBMIT_DESCRIPTION, value_schema=_value_schema_for(lane),
-                                  report_description=_REPORT_DESCRIPTION)
+        tools = interpreter_tools(submit_description=interpretation_capability._SUBMIT_DESCRIPTION,
+                                  value_schema=interpretation_capability._value_schema_for(lane),
+                                  report_description=interpretation_capability._REPORT_DESCRIPTION)
         services = self._configured.services
         self._shared = Interpreter(services,
                                    timeout_seconds=self._configured.policy.interpretation_timeout_seconds,
@@ -386,29 +300,6 @@ class InterpretationSession:
             except Exception as failure:
                 if self.diagnostic_failure is None:
                     self.diagnostic_failure = failure
-
-
-@dataclass(frozen=True, slots=True)
-class _InterpretationCapability:
-    lane: LifecycleLane
-    diagnostic_secrets: tuple[str, ...] = ()
-
-    @property
-    def interpreter_prompt_path(self) -> Path:
-        return _PROMPT_PATHS[self.lane.offering]
-
-    def construct_interpretation(self, value: object, /) -> object:
-        try:
-            encoded = canonical_json_bytes(value)
-        except (TypeError, ValueError, UnicodeError) as error:
-            raise InterpreterProtocolError(str(error)) from error
-        try:
-            return parse_job_input(encoded, self.lane.offering, diagnostic_secrets=self.diagnostic_secrets)
-        except InputRejected as error:
-            raise InterpreterCandidateConstructionRejected(
-                render_candidate_correction(error.issue),
-                error.issue,
-            ) from error
 
 
 def _admit_source_text(source: bytes) -> UserProvidedText:
