@@ -2,12 +2,12 @@
   "acquisition_dependency_inputs": {
     "linux_idmap-0.3.3-py3-none-any.whl": "2f9b47529fe36acf636f3a6a8a62198bed41ee331002d95268fc8ba0c77e3dfc",
     "pip-26.2.2-py3-none-any.whl": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
-    "wheelhouse-tool-0.6.17.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
+    "wheelhouse-tool-0.6.18.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
   },
   "acquisition_source_files": {
     "acquisition-manifest.json": {
       "mode": 420,
-      "sha256": "8091023a6db9495305a6332086583e5d31c620076803ae303dacd143ac86ac30",
+      "sha256": "0afd69310bea961c189a9a462b0726e003523ee729bd544ef07c6e470cb236db",
       "size": 6887
     },
     "acquisition_tool/__init__.py": {
@@ -62,8 +62,8 @@
     },
     "acquisition_tool/source_update.py": {
       "mode": 420,
-      "sha256": "4649409591210cb3ee0dffae186bf10ccb23991f67a237d0444eb5c65064c4e1",
-      "size": 13895
+      "sha256": "28a110e4fd136a28af3dad5027557bedc3938757fc6f326c7aea8f8c0b2c0b2b",
+      "size": 14015
     },
     "compose/acquisition.yml": {
       "mode": 420,
@@ -177,8 +177,8 @@
     },
     "provider_core/bound_http_proxy.py": {
       "mode": 420,
-      "sha256": "0b69dbe569b8f976b208919a9f1bffd7c3214b811d01fd812f92a953c41821b3",
-      "size": 35517
+      "sha256": "f3534749430248f0d5cf3a56f85f57157d04ce3e6ec5a20c60d6c39a9ca1f7dc",
+      "size": 35586
     },
     "provider_core/container_guard.py": {
       "mode": 420,
@@ -227,12 +227,12 @@
     }
   },
   "files": {
-    "acquisition-owner-0.6.17.tar.gz": "883fb67e4a68e179df65e7c68cff3fb9ac937f0954e883ad9c966682d2bcf98c",
-    "provider_core-0.6.17-install.lock": "1f5fa71691e2ccd967b04a52ad5d2661a3b10c6e285a371a072f39a7505f92bf",
-    "provider_core-0.6.17-native-install.lock": "bc59bdc4096675d87fdcc42e9e88f7d8d459fe87038116726386a17f8f221453",
-    "provider_core-0.6.17-py3-none-any.whl": "98d9d323b6900575a70943979d5d52c849ecd97e9b655ab7f0bc735d5da35899",
-    "provider_core-0.6.17.tar.gz": "6aaa7c844ac746fccc0f3436b6bf9c4049e983d0d79a92bb2d0709732a4c78fc",
-    "wheelhouse-tool-0.6.17.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
+    "acquisition-owner-0.6.18.tar.gz": "072ecad6c0c19906017e1a1877ed509895a739b43fc20f9fee7f2236f85673d1",
+    "provider_core-0.6.18-install.lock": "b89469e3082c0375a2596a8e0a99c69359ae210ee0afe6f53bab944127f08738",
+    "provider_core-0.6.18-native-install.lock": "1fd02d8b1b641f16f27bced9008a470ea2ef983916e337b41a5bba13e51e89b8",
+    "provider_core-0.6.18-py3-none-any.whl": "46e7f60135c3f6c90c9375af0982859616ce3c739626e98b2132429ef3d915b3",
+    "provider_core-0.6.18.tar.gz": "0e2e8348b9403ad6fa4dd9b4271fa5457a9e6d812c3983eef0e06291c568b30f",
+    "wheelhouse-tool-0.6.18.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
   },
   "source_files": {
     "MANIFEST.in": {
@@ -247,7 +247,7 @@
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "9554c229681ab199c6534d557f315a5ce08c9c451548cff843a473289b12eb5f",
+      "sha256": "4c0c1eeceb04309d6a45a306d52bc12db705bbabea1d898b59a7840ef946a6ed",
       "size": 589
     },
     "src/provider_core/__init__.py": {
@@ -307,8 +307,8 @@
     },
     "src/provider_core/bound_http_proxy.py": {
       "mode": 420,
-      "sha256": "0b69dbe569b8f976b208919a9f1bffd7c3214b811d01fd812f92a953c41821b3",
-      "size": 35517
+      "sha256": "f3534749430248f0d5cf3a56f85f57157d04ce3e6ec5a20c60d6c39a9ca1f7dc",
+      "size": 35586
     },
     "src/provider_core/chat.py": {
       "mode": 420,
@@ -502,8 +502,8 @@
     },
     "src/provider_core/network.py": {
       "mode": 420,
-      "sha256": "5483139f48cf044253d2685da888a15c6890159e7b1c1dee5e0dcd1347ccdecf",
-      "size": 12406
+      "sha256": "02ece07f758f0e77c967f8fe4d66774ed34ebd5949d0d8930b34439e373b9405",
+      "size": 14368
     },
     "src/provider_core/ownership.py": {
       "mode": 420,
@@ -542,8 +542,8 @@
     },
     "src/provider_core/result_verbosity.py": {
       "mode": 420,
-      "sha256": "a3447394fc8e20c308d087cae1c85729417a0916a783be1ff35ca39679d8e383",
-      "size": 870
+      "sha256": "e87e76b87790fd4ca5cd9a70e9575ed979559bcefad254dc2c6e33364ec8f231",
+      "size": 887
     },
     "src/provider_core/runner.py": {
       "mode": 420,
@@ -612,8 +612,8 @@
     },
     "src/provider_core/transport.py": {
       "mode": 420,
-      "sha256": "4ae9dba662587e77993ed289835aeb3c3710e30ad4ff2a181d960928080dc9e4",
-      "size": 33661
+      "sha256": "f70c79c33313e822a17b4ff67253225c4252182a579a4e839455e7008e98b914",
+      "size": 34157
     },
     "src/provider_core/transport_errors.py": {
       "mode": 420,
@@ -885,6 +885,11 @@
       "sha256": "c72f19da58f8ebf4046f6e7f35788d8652c9546992b974c7043593a6c0a014ff",
       "size": 11742
     },
+    "tests/fakes/tls_shutdown.py": {
+      "mode": 420,
+      "sha256": "e28c21e1ae919bca5b362d7307e635a8b047574189390adb6ccc84555b526f09",
+      "size": 6650
+    },
     "tests/fakes/transport.py": {
       "mode": 420,
       "sha256": "732f55584d76d849b163f5543701f8b127bfc92399e55a0f2ed15923e581a363",
@@ -897,8 +902,8 @@
     },
     "tests/fakes/unix_proxy.py": {
       "mode": 420,
-      "sha256": "cd1ed7e15e7db337a031bd177607d9e1b0b8de95e279647643961a6b1c34e027",
-      "size": 3965
+      "sha256": "03604d1f3106aca76e93edf2c84df2aabe4a6b80697dac47ccd45acab295dacb",
+      "size": 4363
     },
     "tests/fakes/upload_child_session.py": {
       "mode": 420,
@@ -1300,6 +1305,16 @@
       "sha256": "282302529180b5c1e1875e8718f26aeab4fe54b1056613d0b6cbd59a322b86df",
       "size": 73
     },
+    "tests/integration/transport/adversarial/test_fuzz_ragged_tls_shutdown.py": {
+      "mode": 420,
+      "sha256": "d78762231a57f5126a843f3670831e1e527e6aa3a9a8a3c137bab2ed138ef1fe",
+      "size": 2712
+    },
+    "tests/integration/transport/adversarial/test_ragged_tls_shutdown.py": {
+      "mode": 420,
+      "sha256": "e51fd8d119ad843415ac127051abc50fbbefcf360b1369e2dcdf02438e5ff124",
+      "size": 11372
+    },
     "tests/integration/transport/adversarial/test_response_head.py": {
       "mode": 420,
       "sha256": "77a4b0b3f96ea2b1568275949fe80fedfc55d772a153a742b8e7ffe038fa6244",
@@ -1325,10 +1340,20 @@
       "sha256": "d39b7c7fdca3c28a3b4875f0984ca92ab07817a2a55985865d5f28c72012c7eb",
       "size": 16316
     },
+    "tests/integration/transport/normative/test_fuzz_ragged_tls_shutdown.py": {
+      "mode": 420,
+      "sha256": "71b2a2b2cdb961f95702a151c589989411b596c8ee40e7b24d1ccbecf7e607c8",
+      "size": 2177
+    },
     "tests/integration/transport/normative/test_fuzz_retirement.py": {
       "mode": 420,
       "sha256": "0f1f012ac0036fc6cb46c73c6f1b771c3badaaa8661c812d380f76205d08616b",
       "size": 3510
+    },
+    "tests/integration/transport/normative/test_ragged_tls_shutdown.py": {
+      "mode": 420,
+      "sha256": "35b418b448dc78602be8347aba27a27f0141473543cee132c95f72049a3c2f7f",
+      "size": 5192
     },
     "tests/integration/transport/normative/test_response_file.py": {
       "mode": 420,
@@ -1647,8 +1672,8 @@
     },
     "tests/unit/adversarial/test_result_verbosity.py": {
       "mode": 420,
-      "sha256": "011440a7382fd2ad96f693a9a451f7b73ec1f93fcf0ac179996fb966e5968b3c",
-      "size": 631
+      "sha256": "c481c9a7724675b62812feea7f2e94b03bd2e9b759f7ac6e79fa3ff4aa78fd1e",
+      "size": 1090
     },
     "tests/unit/adversarial/test_runner.py": {
       "mode": 420,
@@ -2007,8 +2032,8 @@
     },
     "tests/unit/normative/test_proxy_logging.py": {
       "mode": 420,
-      "sha256": "4d83d19d122014aa08e4f89327510fe5c48cfdb06e8a3823fc0c994746f2a9a4",
-      "size": 4214
+      "sha256": "fc0fe2535d104c759e42f2165ea79016751d2b7d72a3798df0f271bc9e6f6bb6",
+      "size": 4325
     },
     "tests/unit/normative/test_result_verbosity.py": {
       "mode": 420,
@@ -2131,7 +2156,7 @@
       "size": 5770
     }
   },
-  "source_revision": "1546fbb3fa6b03700e4bf20f393368f0d870cafb",
+  "source_revision": "429901aeb3a422fb361842c9a9187a57ff818370",
   "tool_source_files": {
     "__init__.py": {
       "mode": 420,
