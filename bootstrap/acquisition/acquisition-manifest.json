@@ -1,8 +1,8 @@
 {
   "dependency_inputs": {
-    "linux_idmap-0.3.3-py3-none-any.whl": "2f9b47529fe36acf636f3a6a8a62198bed41ee331002d95268fc8ba0c77e3dfc",
+    "linux_idmap-0.3.4-py3-none-any.whl": "a1f8aedcf56dd55b52f9224613ac2e92eead12227a599ec931a95da865ee4d75",
     "pip-26.2.2-py3-none-any.whl": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
-    "wheelhouse-tool-0.6.17.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
+    "wheelhouse-tool-0.6.19.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
   },
   "payload_files": {
     "acquisition_tool/__init__.py": {
@@ -27,8 +27,8 @@
     },
     "acquisition_tool/identity_main.py": {
       "mode": 420,
-      "sha256": "784bcc9e1a2fc7a847dcc2e663f501253ef2ffe76d4f0dce3c4c77bf250fb249",
-      "size": 3166
+      "sha256": "f8980ce95d445e857f369a269e5bf684a8683b8328d6298fbb169804f291f220",
+      "size": 5711
     },
     "acquisition_tool/installer/requirements/installer-release.json": {
       "mode": 420,
@@ -52,40 +52,40 @@
     },
     "acquisition_tool/owner.sh": {
       "mode": 420,
-      "sha256": "7ad3c6c065bf28e049e30b7853a7274d5f1afa9f56d7cca7d8cf51260b3e1474",
-      "size": 34270
+      "sha256": "7a7009786cb1c94eb67457c1e1a7c094ae41d72c76008dfdaca3b642e31cdf3a",
+      "size": 38007
     },
     "acquisition_tool/source_update.py": {
       "mode": 420,
-      "sha256": "4649409591210cb3ee0dffae186bf10ccb23991f67a237d0444eb5c65064c4e1",
-      "size": 13895
+      "sha256": "28a110e4fd136a28af3dad5027557bedc3938757fc6f326c7aea8f8c0b2c0b2b",
+      "size": 14015
     },
     "compose/acquisition.yml": {
       "mode": 420,
       "sha256": "5f7df79602be9d636197ce9e16e724925427e0daedc9121097792e15f5916838",
       "size": 3107
     },
-    "linux_idmap-0.3.3.dist-info/METADATA": {
+    "linux_idmap-0.3.4.dist-info/METADATA": {
       "mode": 420,
-      "sha256": "02cc26769597e5f3800a161227fa8c845667db058ff93e5e5b916a9b9d52cb60",
-      "size": 4743
+      "sha256": "7034abfe094c7bd37e1f6daf49100e9ff960fea944c17e3a7deadfcfe3023f93",
+      "size": 4982
     },
-    "linux_idmap-0.3.3.dist-info/RECORD": {
+    "linux_idmap-0.3.4.dist-info/RECORD": {
       "mode": 420,
-      "sha256": "d4253a7a8b9c3ca66a3607c5d42f06f03281a52cbebb76c15e89cdddb77a01fb",
+      "sha256": "f72cbb13b755dd43943eaf48c45fb88e560007d7458c9c1a5d1ef4f62093f747",
       "size": 1616
     },
-    "linux_idmap-0.3.3.dist-info/WHEEL": {
+    "linux_idmap-0.3.4.dist-info/WHEEL": {
       "mode": 420,
       "sha256": "d7a7dcffd469f39e122dc761683123af4bbae69d1edc5859c6284d81c9c213df",
       "size": 91
     },
-    "linux_idmap-0.3.3.dist-info/entry_points.txt": {
+    "linux_idmap-0.3.4.dist-info/entry_points.txt": {
       "mode": 420,
       "sha256": "2e8e446dd453eb528c7c95d34f92628e353c0a80c821096e97cbaf1673c4303d",
       "size": 60
     },
-    "linux_idmap-0.3.3.dist-info/top_level.txt": {
+    "linux_idmap-0.3.4.dist-info/top_level.txt": {
       "mode": 420,
       "sha256": "8b8b78a28949cf75bdbef6321369638eaed53ca04cc48c26463bb58fcfc801c4",
       "size": 12
@@ -97,8 +97,8 @@
     },
     "linux_idmap/_cli.py": {
       "mode": 420,
-      "sha256": "db97e00d67ea39fdeadf29c3206d178ebf03b56e77b65a9b01d301d7c93a5046",
-      "size": 6577
+      "sha256": "d487ec0498b1255c8a192e39083757f922504e2bb698066a2d38643dea035c45",
+      "size": 7019
     },
     "linux_idmap/_command.py": {
       "mode": 420,
@@ -172,8 +172,8 @@
     },
     "provider_core/bound_http_proxy.py": {
       "mode": 420,
-      "sha256": "0b69dbe569b8f976b208919a9f1bffd7c3214b811d01fd812f92a953c41821b3",
-      "size": 35517
+      "sha256": "f3534749430248f0d5cf3a56f85f57157d04ce3e6ec5a20c60d6c39a9ca1f7dc",
+      "size": 35586
     },
     "provider_core/container_guard.py": {
       "mode": 420,
@@ -196,6 +196,6 @@
       "size": 23751
     }
   },
-  "release_version": "0.6.17",
-  "source_revision": "1546fbb3fa6b03700e4bf20f393368f0d870cafb"
+  "release_version": "0.6.19",
+  "source_revision": "37cf5484ba77eb8b74d89648367004cf0fabc442"
 }

@@ -1,17 +1,17 @@
-"""Check host-to-container UID translation for wheelhouse operations."""
+"""Check operator mapping delegates to the selected-engine identity owner."""
 
 import unittest
+from unittest.mock import patch
 
-from deployment.operator_container_uid import container_uid
-from deployment.provider_deployment import DeploymentOperationRejected
+from deployment import operator_container_uid
 
 
 class OperatorContainerUidTests(unittest.TestCase):
-    def test_translates_rootful_and_rootless_mappings(self):
-        self.assertEqual(container_uid(1000, ((0, 0, 65536),)), 1000)
-        self.assertEqual(container_uid(1000, ((0, 1000, 1), (1, 100000, 65536))), 0)
-
-    def test_rejects_unmapped_or_ambiguous_host_identity(self):
-        for mappings in (((0, 0, 100),), ((0, 1000, 1), (100, 1000, 1))):
-            with self.subTest(mappings=mappings), self.assertRaises(DeploymentOperationRejected):
-                container_uid(1000, mappings)
+    def test_requests_inverse_mapping_for_the_host_operator(self):
+        with patch.object(operator_container_uid.sys, "argv", ["operator", "image"]), \
+             patch.object(operator_container_uid, "docker_host", return_value="unix:///engine"), \
+             patch.object(operator_container_uid, "project_uids", return_value=(0,)) as project, \
+             patch("builtins.print") as output:
+            operator_container_uid.main()
+        project.assert_called_once_with("unix:///engine", "image", (operator_container_uid.os.geteuid(),), inverse=True)
+        output.assert_called_once_with(0)

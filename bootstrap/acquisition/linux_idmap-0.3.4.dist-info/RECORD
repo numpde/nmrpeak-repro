@@ -1,5 +1,5 @@
 linux_idmap/__init__.py,sha256=3gzBFkSa4KNx5gv7-Iww5qXRGfQS4cKQEkfYsbHDF8k,257
-linux_idmap/_cli.py,sha256=25fgDWfqOf3q3ynDIG0Xjr8DtW53tlqbAdMB18k6UEY,6577
+linux_idmap/_cli.py,sha256=1IfsBJixJVyKGS45CDdX-SJQTiu2mAZqLThkPeoDXEU,7019
 linux_idmap/_command.py,sha256=0nAvy7BRBWnroTu6O1KFwVZBX0BgpUtoVRSwqgNe1fI,9481
 linux_idmap/_confinement.py,sha256=ljfqb8l-ejb_pDZu2e5Ywdis6f47HCGbGW_1lUhkxRA,1431
 linux_idmap/_docker.py,sha256=_zI8GEphr3I4y8f0doYZxucIPWvltVI37l4h5BuG51I,16609
@@ -13,8 +13,8 @@ linux_idmap/_procfs.py,sha256=ffhTvk3uUK8kb5nhOPMH00V6GAHuKTg9rpe8uybOHts,9758
 linux_idmap/core.py,sha256=p3qKKtOCGlaNk1AT-0VAoKzx4N2jgZ7mbqLhF81Yfvo,3876
 linux_idmap/probe.py,sha256=7YMpjV4_ta5C_diTkFvUXFeXYmYgXBNnsWZIOTWzi_I,1591
 linux_idmap/process.py,sha256=BUpeBrrqjNmyHFao6JoCHTDP5wybuPsSQuzoP1DDxGw,1015
-linux_idmap-0.3.3.dist-info/METADATA,sha256=AswmdpWX5fOAChYSJ_qMhFZn2wWP-T5eW5Fqm51Sy2A,4743
-linux_idmap-0.3.3.dist-info/WHEEL,sha256=16fc_9Rp854SLcdhaDEjr0u65p0e3FhZxihNgcnCE98,91
-linux_idmap-0.3.3.dist-info/entry_points.txt,sha256=Lo5EbdRT61KMfJXTT5JijjU8CoDIIQlul8uvFnPEMD0,60
-linux_idmap-0.3.3.dist-info/top_level.txt,sha256=i4t4oolJz3W9vvYyE2ljjq7VPKBMxIwmRju1j8_IAcQ,12
-linux_idmap-0.3.3.dist-info/RECORD,,
+linux_idmap-0.3.4.dist-info/METADATA,sha256=cDSr_glMe9N-H22vSRAOn_lg_qlEwX46ferfz-MCP5M,4982
+linux_idmap-0.3.4.dist-info/WHEEL,sha256=16fc_9Rp854SLcdhaDEjr0u65p0e3FhZxihNgcnCE98,91
+linux_idmap-0.3.4.dist-info/entry_points.txt,sha256=Lo5EbdRT61KMfJXTT5JijjU8CoDIIQlul8uvFnPEMD0,60
+linux_idmap-0.3.4.dist-info/top_level.txt,sha256=i4t4oolJz3W9vvYyE2ljjq7VPKBMxIwmRju1j8_IAcQ,12
+linux_idmap-0.3.4.dist-info/RECORD,,

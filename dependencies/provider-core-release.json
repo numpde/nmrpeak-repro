@@ -1,13 +1,13 @@
 {
   "acquisition_dependency_inputs": {
-    "linux_idmap-0.3.3-py3-none-any.whl": "2f9b47529fe36acf636f3a6a8a62198bed41ee331002d95268fc8ba0c77e3dfc",
+    "linux_idmap-0.3.4-py3-none-any.whl": "a1f8aedcf56dd55b52f9224613ac2e92eead12227a599ec931a95da865ee4d75",
     "pip-26.2.2-py3-none-any.whl": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
-    "wheelhouse-tool-0.6.18.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
+    "wheelhouse-tool-0.6.19.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
   },
   "acquisition_source_files": {
     "acquisition-manifest.json": {
       "mode": 420,
-      "sha256": "0afd69310bea961c189a9a462b0726e003523ee729bd544ef07c6e470cb236db",
+      "sha256": "ff6be770d01c75694779335f3fa9042b4927fe05b457cc60e7d80551427a41f1",
       "size": 6887
     },
     "acquisition_tool/__init__.py": {
@@ -32,8 +32,8 @@
     },
     "acquisition_tool/identity_main.py": {
       "mode": 420,
-      "sha256": "784bcc9e1a2fc7a847dcc2e663f501253ef2ffe76d4f0dce3c4c77bf250fb249",
-      "size": 3166
+      "sha256": "f8980ce95d445e857f369a269e5bf684a8683b8328d6298fbb169804f291f220",
+      "size": 5711
     },
     "acquisition_tool/installer/requirements/installer-release.json": {
       "mode": 420,
@@ -57,8 +57,8 @@
     },
     "acquisition_tool/owner.sh": {
       "mode": 420,
-      "sha256": "7ad3c6c065bf28e049e30b7853a7274d5f1afa9f56d7cca7d8cf51260b3e1474",
-      "size": 34270
+      "sha256": "7a7009786cb1c94eb67457c1e1a7c094ae41d72c76008dfdaca3b642e31cdf3a",
+      "size": 38007
     },
     "acquisition_tool/source_update.py": {
       "mode": 420,
@@ -70,27 +70,27 @@
       "sha256": "5f7df79602be9d636197ce9e16e724925427e0daedc9121097792e15f5916838",
       "size": 3107
     },
-    "linux_idmap-0.3.3.dist-info/METADATA": {
+    "linux_idmap-0.3.4.dist-info/METADATA": {
       "mode": 420,
-      "sha256": "02cc26769597e5f3800a161227fa8c845667db058ff93e5e5b916a9b9d52cb60",
-      "size": 4743
+      "sha256": "7034abfe094c7bd37e1f6daf49100e9ff960fea944c17e3a7deadfcfe3023f93",
+      "size": 4982
     },
-    "linux_idmap-0.3.3.dist-info/RECORD": {
+    "linux_idmap-0.3.4.dist-info/RECORD": {
       "mode": 420,
-      "sha256": "d4253a7a8b9c3ca66a3607c5d42f06f03281a52cbebb76c15e89cdddb77a01fb",
+      "sha256": "f72cbb13b755dd43943eaf48c45fb88e560007d7458c9c1a5d1ef4f62093f747",
       "size": 1616
     },
-    "linux_idmap-0.3.3.dist-info/WHEEL": {
+    "linux_idmap-0.3.4.dist-info/WHEEL": {
       "mode": 420,
       "sha256": "d7a7dcffd469f39e122dc761683123af4bbae69d1edc5859c6284d81c9c213df",
       "size": 91
     },
-    "linux_idmap-0.3.3.dist-info/entry_points.txt": {
+    "linux_idmap-0.3.4.dist-info/entry_points.txt": {
       "mode": 420,
       "sha256": "2e8e446dd453eb528c7c95d34f92628e353c0a80c821096e97cbaf1673c4303d",
       "size": 60
     },
-    "linux_idmap-0.3.3.dist-info/top_level.txt": {
+    "linux_idmap-0.3.4.dist-info/top_level.txt": {
       "mode": 420,
       "sha256": "8b8b78a28949cf75bdbef6321369638eaed53ca04cc48c26463bb58fcfc801c4",
       "size": 12
@@ -102,8 +102,8 @@
     },
     "linux_idmap/_cli.py": {
       "mode": 420,
-      "sha256": "db97e00d67ea39fdeadf29c3206d178ebf03b56e77b65a9b01d301d7c93a5046",
-      "size": 6577
+      "sha256": "d487ec0498b1255c8a192e39083757f922504e2bb698066a2d38643dea035c45",
+      "size": 7019
     },
     "linux_idmap/_command.py": {
       "mode": 420,
@@ -227,12 +227,12 @@
     }
   },
   "files": {
-    "acquisition-owner-0.6.18.tar.gz": "072ecad6c0c19906017e1a1877ed509895a739b43fc20f9fee7f2236f85673d1",
-    "provider_core-0.6.18-install.lock": "b89469e3082c0375a2596a8e0a99c69359ae210ee0afe6f53bab944127f08738",
-    "provider_core-0.6.18-native-install.lock": "1fd02d8b1b641f16f27bced9008a470ea2ef983916e337b41a5bba13e51e89b8",
-    "provider_core-0.6.18-py3-none-any.whl": "46e7f60135c3f6c90c9375af0982859616ce3c739626e98b2132429ef3d915b3",
-    "provider_core-0.6.18.tar.gz": "0e2e8348b9403ad6fa4dd9b4271fa5457a9e6d812c3983eef0e06291c568b30f",
-    "wheelhouse-tool-0.6.18.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
+    "acquisition-owner-0.6.19.tar.gz": "700b586bd1892f20a5188ec3ce4df354056589ec3fd4028624af11d12616ebbd",
+    "provider_core-0.6.19-install.lock": "37eec3ae29a559e81073da3c0b7c657bdb463e41cc4b59ed08344941b7c2719f",
+    "provider_core-0.6.19-native-install.lock": "a4fe4ea31f41c1727f69845dd954ed79016aa456eb041e7693340ba4e89c320d",
+    "provider_core-0.6.19-py3-none-any.whl": "cd4b58d353218dd5b895bd404f213c156e3813e19ad187d10eb52d632a00a761",
+    "provider_core-0.6.19.tar.gz": "75d3b6914d1656d5ad7666ae2a8d27b6df293ae77c2bc9f02edc55ad3722c9db",
+    "wheelhouse-tool-0.6.19.pyz": "8c8ad0ca2c1ee6147e6da525bc302254935b606726bfe4b0ec1ee9021371d58c"
   },
   "source_files": {
     "MANIFEST.in": {
@@ -247,7 +247,7 @@
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "4c0c1eeceb04309d6a45a306d52bc12db705bbabea1d898b59a7840ef946a6ed",
+      "sha256": "fdb32841b54c3dfbfbd1a25ec0dd4d0db4a6f33e63fb91945d586ab1936438b0",
       "size": 589
     },
     "src/provider_core/__init__.py": {
@@ -1697,8 +1697,8 @@
     },
     "tests/unit/adversarial/test_transport.py": {
       "mode": 420,
-      "sha256": "82734b5b1479b6d5a9953c992545c8490808bbab755b8f5b7640b51571c1b12f",
-      "size": 29617
+      "sha256": "e1145ddb68152861da4bf0b85ec67af96f240f62724f74f97afa96d6f425b0f6",
+      "size": 29903
     },
     "tests/unit/adversarial/test_upload_acquisition.py": {
       "mode": 420,
@@ -1737,8 +1737,8 @@
     },
     "tests/unit/normative/test_api_network_availability.py": {
       "mode": 420,
-      "sha256": "b6eb83b6872641dabc80d4aaa86c8f65783e0b0d42869315111488a52f4fd773",
-      "size": 21256
+      "sha256": "a5b7c147ff73db6b85ced4682d472e15fdd4162b1323c880557a4498ce690c7f",
+      "size": 21766
     },
     "tests/unit/normative/test_api_publication_material.py": {
       "mode": 420,
@@ -1792,8 +1792,8 @@
     },
     "tests/unit/normative/test_chat_process_contract.py": {
       "mode": 420,
-      "sha256": "a51a82a8209711e55d97348e6e0b12ed9d6369b18ff23a73173eb186f4c57465",
-      "size": 19389
+      "sha256": "b8ad60fd3ee6bde2464f8d3b7f514211b3f8043cb33841c5c995f99c5ac2361e",
+      "size": 20247
     },
     "tests/unit/normative/test_condition_retry_after.py": {
       "mode": 420,
@@ -2156,7 +2156,7 @@
       "size": 5770
     }
   },
-  "source_revision": "429901aeb3a422fb361842c9a9187a57ff818370",
+  "source_revision": "37cf5484ba77eb8b74d89648367004cf0fabc442",
   "tool_source_files": {
     "__init__.py": {
       "mode": 420,

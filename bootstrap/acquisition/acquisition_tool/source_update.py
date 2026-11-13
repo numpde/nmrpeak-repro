@@ -76,9 +76,9 @@ def read_manifest(data):
         path = _relative_name(name)
         if any(parent.as_posix() in entries for parent in path.parents):
             raise ValueError(f"Acquisition payload file conflicts with a parent path: {name!r}.")
-        if (type(entry) is not dict or set(entry) != {"sha256", "size", "mode"}
-                or not _checksum(entry["sha256"]) or type(entry["size"]) is not int or entry["size"] < 0
-                or type(entry["mode"]) is not int or entry["mode"] not in (0o644, 0o755)):
+        if not (type(entry) is dict and set(entry) == {"sha256", "size", "mode"}
+                and _checksum(entry["sha256"]) and type(entry["size"]) is int and 0 <= entry["size"]
+                and type(entry["mode"]) is int and entry["mode"] in (0o644, 0o755)):
             raise ValueError(f"Acquisition payload has invalid file metadata: {name!r}.")
     dependencies = manifest["dependency_inputs"]
     if type(dependencies) is not dict or any(
@@ -220,13 +220,16 @@ def _import_verified_old(source, pin, archive):
     payload, manifest = _admit_archive(data, pin)
     stage = Path(tempfile.mkdtemp(prefix=".acquisition-next-", dir=source.parent))
     try:
-        for name, content in payload.items():
+        manifest_path = stage / "acquisition-manifest.json"
+        with manifest_path.open("xb") as stream:
+            stream.write(payload["acquisition-manifest.json"])
+        manifest_path.chmod(0o644)
+        for name, entry in manifest["payload_files"].items():
             path = stage / name
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("xb") as stream:
-                stream.write(content)
-            mode = 0o644 if name == "acquisition-manifest.json" else manifest["payload_files"][name]["mode"]
-            path.chmod(mode)
+                stream.write(payload[name])
+            path.chmod(entry["mode"])
         for root, _directories, _files in os.walk(stage):
             Path(root).chmod(0o755)
         verify(stage)

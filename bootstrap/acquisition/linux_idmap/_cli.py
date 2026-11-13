@@ -58,6 +58,7 @@ def _emit(payload: dict, *, values_mode: bool):
 
 def main(argv: list[str] | None = None) -> int:
     handlers = {}
+    cancellation = _SignalCancellation()
     arguments = list(sys.argv[1:] if argv is None else argv)
     # --values routes parse errors to stderr before parsing can complete; no numbers are emitted on failure; tests/test_cli.py::CliTests.test_values_parse_failure_keeps_stdout_empty.
     values_mode = "--values" in arguments
@@ -81,7 +82,6 @@ def main(argv: list[str] | None = None) -> int:
             if any(value is None for value in ceilings):
                 raise StepError("invalid-policy", "supply all three probe resource ceilings")
             request = replace(request, resources=ProbeResources(*ceilings))
-        cancellation = _SignalCancellation()
         for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             handlers[number] = signal.signal(number, cancellation.request)
         result = probe_identity(request, cancel=cancellation)
@@ -102,7 +102,6 @@ def main(argv: list[str] | None = None) -> int:
                 Retirement(ResourceState.RETIRED, result.container_id),
             )
         _emit(payload, values_mode=values_mode)
-        return 0
     # silent-defaults: allow-exception-outcome -- Structured operation failure always produces a positive exit status and never releases maps; tests/test_cli.py::CliTests.
     except ProbeFailure as failure:
         _emit(failure.as_dict(), values_mode=values_mode)
@@ -118,6 +117,16 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         for number, previous in handlers.items():
             signal.signal(number, previous)
+    # A late signal must veto success after output and handler restoration.
+    # Preserve a failure already observed; callers gate stdout on this status.
+    if cancellation.is_set():
+        failure = ProbeFailure(
+            Problem("cancelled", "operation was cancelled while publishing output"),
+            Retirement(ResourceState.RETIRED, result.container_id),
+        )
+        _emit(failure.as_dict(), values_mode=True)
+        return 130
+    return 0
 
 
 if __name__ == "__main__":

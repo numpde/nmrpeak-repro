@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: linux-idmap
-Version: 0.3.3
+Version: 0.3.4
 Summary: Read Linux process ID maps and observe host IDs for local Docker images
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
@@ -106,8 +106,11 @@ Repeat `--uid` and `--gid` as needed. Add `--inverse` to interpret these numbers
 as host UIDs/GIDs and return container IDs (e.g. the invoking host owner for
 a bind-mounted private directory); without it, projection remains
 container-to-host. The probe uses the same engine and namespace policy in
-both directions. With `--values`, success prints UIDs then GIDs;
-failure leaves stdout empty and writes JSON to stderr. Without it, stdout is JSON.
+both directions. With `--values`, success prints UIDs then GIDs; a failure before
+output leaves stdout empty and writes JSON to stderr. Without it, stdout is JSON.
+Use stdout only after the command has exited successfully. Cancellation or an
+output error can leave partial or complete output with a nonzero exit status;
+those bytes do not authorize filesystem grants or subsequent work.
 Check the exit status: `0` success, `1` settled failure, `2` invalid arguments or
 policy, `3` unresolved resource, `130` cancellation. See `--help` for options.
 

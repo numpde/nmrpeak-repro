@@ -77,16 +77,121 @@ _acq_capture() {
     _acq_private_receipt_below_limit "$_acq_capture_file"         && _acq_private_receipt_below_limit "$_acq_capture_file.stderr"
 }
 
-# The helper writes host-owner mapping only after its qualified probe retires.
+# Project one observation through the shared Python owner. The external receipt
+# confirms both probe and native-client retirement, independently of exit status.
+acquisition_project_ids() {
+    if [[ $# -lt 5 ]]; then
+        printf '%s\n' 'Identity projection requires an output array, count, endpoint, image and retirement receipt path.' >&2
+        return 2
+    fi
+    local _acq_project_name=$1 _acq_project_count=$2 _acq_project_endpoint=$3 _acq_project_image=$4 _acq_project_receipt=$5
+    shift 5
+    if [[ ! $_acq_project_name =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ || ! $_acq_project_count =~ ^[1-9][0-9]{0,2}$ ]] \
+        || (( _acq_project_count > 512 )) || [[ -z $_acq_project_endpoint || -z $_acq_project_image ]]; then
+        printf '%s\n' 'Identity projection requires an output array, 1 to 512 values, and an explicit endpoint and image.' >&2
+        return 2
+    fi
+    # Bash locals are dynamically scoped; these names belong to this helper
+    # and its native owner, so they cannot also name the caller's output.
+    if [[ $_acq_project_name == _acq_project_* || $_acq_project_name == inference_* ]]; then
+        printf '%s\n' 'Identity projection output names must not use the reserved _acq_project_ or inference_ prefixes.' >&2
+        return 2
+    fi
+    local -n _acq_project_output=$_acq_project_name
+    local -a _acq_project_candidates=()
+    local _acq_project_in_scope=false _acq_project_bundle _acq_project_directory _acq_project_status=0
+    local _acq_project_diagnostic= _acq_project_line= _acq_project_value
+    local inference_retirement_confirmed=true inference_cancellation_status=0 inference_diagnostic=
+    if [[ -v _acq_active ]]; then
+        case $_acq_active in
+            true) _acq_project_in_scope=true ;;
+            false) ;;
+            *) printf '%s\n' 'Cannot map identity: acquisition scope state is invalid.' >&2; return 2 ;;
+        esac
+    fi
+    if [[ $_acq_project_in_scope == true ]]; then
+        if [[ ! -v _acq_endpoint || $_acq_project_endpoint != "$_acq_endpoint" ]]; then
+            printf '%s\n' 'Identity projection endpoint must match its active acquisition scope.' >&2
+            return 2
+        fi
+        if [[ $_acq_identity_unsettled == true || $_acq_native_retired != true ]]; then
+            _acq_fail 'Cannot dispatch identity projection: prior retirement is unconfirmed.'
+            return 2
+        fi
+    fi
+    _acq_project_bundle=$(_acq_bundle_path) || return 2
+    source "$_acq_project_bundle/tools/inference_native.sh"
+    _acq_project_directory=$(umask 077; mktemp -d /tmp/acquisition-map.XXXXXXXX) || return 2
+    if controller_native 'acquisition identity probe' untimed stdio bash -eu -c '
+        output=$1; shift; umask 077; exec "$@" > "$output" 2> "$output.stderr"
+    ' bash "$_acq_project_directory/output" python3 -I -S -B "$_acq_project_bundle/acquisition_tool/identity.py"         --endpoint "$_acq_project_endpoint" --image "$_acq_project_image"         "$@"         --retired-receipt "$_acq_project_directory/retired"; then :; else _acq_project_status=$?; fi
+    _acq_project_diagnostic=$inference_diagnostic
+    if [[ -s $_acq_project_directory/output.stderr ]]; then
+        _acq_project_diagnostic+=$(<"$_acq_project_directory/output.stderr")
+        _acq_project_diagnostic+=$'\n'
+    fi
+    if [[ $_acq_project_in_scope == true ]]; then _acq_diagnostic+=$_acq_project_diagnostic; fi
+    if ! "$inference_retirement_confirmed" || ! cmp -s "$_acq_project_directory/retired" <(printf 'retired\n'); then
+        if [[ $_acq_project_in_scope == true ]]; then _acq_identity_unsettled=true; _acq_failed=true; fi
+        if [[ $_acq_project_in_scope == true ]]; then
+            printf -v _acq_diagnostic '%sCannot confirm identity probe retirement; retained evidence at %q.\n' "$_acq_diagnostic" "$_acq_project_directory"
+        else
+            printf '%s' "$_acq_project_diagnostic" >&2
+            printf 'Cannot confirm identity probe retirement; retained evidence at %q.\n' "$_acq_project_directory" >&2
+        fi
+        if [[ $inference_cancellation_status != 0 ]]; then
+            if [[ $_acq_project_in_scope == true ]]; then
+                _acq_cancelled=$inference_cancellation_status; exit "$_acq_cancelled"
+            fi
+            return "$inference_cancellation_status"
+        fi
+        return 2
+    fi
+    if [[ $_acq_project_status == 0 && $inference_cancellation_status == 0 ]]; then
+        IFS=' ' read -r -a _acq_project_candidates < "$_acq_project_directory/output" || _acq_project_status=2
+        if [[ ${#_acq_project_candidates[@]} != "$_acq_project_count" ]]; then _acq_project_status=2; fi
+        for _acq_project_value in "${_acq_project_candidates[@]}"; do
+            if [[ ! $_acq_project_value =~ ^(0|[1-9][0-9]{0,9})$ ]] || (( _acq_project_value > 4294967294 )); then
+                _acq_project_status=2
+            fi
+        done
+        printf -v _acq_project_line '%s ' "${_acq_project_candidates[@]}"
+        if ! cmp -s "$_acq_project_directory/output" <(printf '%s\n' "${_acq_project_line% }"); then
+            _acq_project_status=2
+        fi
+        if [[ $_acq_project_status != 0 ]]; then
+            _acq_project_diagnostic+=$'Identity probe output does not match the requested count of canonical Linux IDs.\n'
+            if [[ $_acq_project_in_scope == true ]]; then
+                _acq_diagnostic+=$'Identity probe output does not match the requested count of canonical Linux IDs.\n'
+            fi
+        fi
+    fi
+    if [[ $inference_cancellation_status != 0 ]]; then _acq_project_status=$inference_cancellation_status; fi
+    if rm -rf -- "$_acq_project_directory"; then :; else
+        [[ $_acq_project_status != 0 ]] || _acq_project_status=2
+    fi
+    if [[ -n $_acq_project_receipt ]]; then
+        if (umask 077; set -o noclobber; printf 'retired\n' > "$_acq_project_receipt"); then :; else
+            [[ $_acq_project_status != 0 ]] || _acq_project_status=2
+        fi
+    fi
+    if [[ $_acq_project_in_scope == false ]]; then printf '%s' "$_acq_project_diagnostic" >&2; fi
+    if [[ $_acq_project_in_scope == true && ( $_acq_project_status == 129 || $_acq_project_status == 130 || $_acq_project_status == 143 ) ]]; then
+        _acq_cancelled=$_acq_project_status; exit "$_acq_project_status"
+    fi
+    [[ $_acq_project_status == 0 ]] || return "$_acq_project_status"
+    _acq_project_output=("${_acq_project_candidates[@]}")
+}
+
+# Preserve the acquisition owner's host UID/GID interface.
 acquisition_map_owner() {
     [[ $# == 3 || $# == 5 ]] || {
         printf '%s\n' 'Identity mapping requires output names, an image, and optionally a host UID and GID pair.' >&2
         return 2
     }
     local _acq_uid_name=$1 _acq_gid_name=$2 _acq_map_image=$3
-    local _acq_host_uid _acq_host_gid _acq_map_in_scope=false
-    local _acq_map_endpoint _acq_map_bundle _acq_map_directory _acq_map_status=0 _acq_map_uid= _acq_map_gid= _acq_map_diagnostic=
-    local inference_retirement_confirmed=true inference_cancellation_status=0 inference_diagnostic=
+    local _acq_host_uid _acq_host_gid _acq_map_in_scope=false _acq_map_endpoint
+    local -a _acq_owner_values=()
     if [[ $# == 3 ]]; then
         _acq_host_uid=$(id -u) || return "$?"
         _acq_host_gid=$(id -g) || return "$?"
@@ -120,46 +225,10 @@ acquisition_map_owner() {
         _acq_map_endpoint=$NMR_SELECTED_DOCKER_ENDPOINT
     fi
     [[ -n $_acq_map_endpoint ]] || { printf '%s\n' 'Identity mapping requires an explicitly selected endpoint.' >&2; return 2; }
-    _acq_map_bundle=$(_acq_bundle_path) || return 2
-    source "$_acq_map_bundle/tools/inference_native.sh"
-    _acq_map_directory=$(umask 077; mktemp -d /tmp/acquisition-map.XXXXXXXX) || return 2
-    if controller_native 'acquisition identity probe' untimed stdio bash -eu -c '
-        output=$1; shift; umask 077; exec "$@" > "$output" 2> "$output.stderr"
-    ' bash "$_acq_map_directory/output" python3 -I -S -B "$_acq_map_bundle/acquisition_tool/identity.py"         --endpoint "$_acq_map_endpoint" --image "$_acq_map_image"         --host-uid "$_acq_host_uid" --host-gid "$_acq_host_gid"         --retired-receipt "$_acq_map_directory/retired"; then :; else _acq_map_status=$?; fi
-    _acq_map_diagnostic=$inference_diagnostic
-    if [[ -s $_acq_map_directory/output.stderr ]]; then
-        _acq_map_diagnostic+=$(<"$_acq_map_directory/output.stderr")
-        _acq_map_diagnostic+=$'\n'
-    fi
-    if [[ $_acq_map_in_scope == true ]]; then _acq_diagnostic+=$_acq_map_diagnostic; fi
-    if ! "$inference_retirement_confirmed" || ! cmp -s "$_acq_map_directory/retired" <(printf 'retired\n'); then
-        if [[ $_acq_map_in_scope == true ]]; then _acq_identity_unsettled=true; _acq_failed=true; fi
-        if [[ $_acq_map_in_scope == true ]]; then
-            printf -v _acq_diagnostic '%sCannot confirm identity probe retirement; retained evidence at %q.\n' "$_acq_diagnostic" "$_acq_map_directory"
-        else
-            printf '%s' "$_acq_map_diagnostic" >&2
-            printf 'Cannot confirm identity probe retirement; retained evidence at %q.\n' "$_acq_map_directory" >&2
-        fi
-        if [[ $inference_cancellation_status != 0 ]]; then
-            if [[ $_acq_map_in_scope == true ]]; then
-                _acq_cancelled=$inference_cancellation_status; exit "$_acq_cancelled"
-            fi
-            return "$inference_cancellation_status"
-        fi
-        return 2
-    fi
-    if [[ $_acq_map_status == 0 ]]; then
-        IFS=' ' read -r _acq_map_uid _acq_map_gid < "$_acq_map_directory/output" || _acq_map_status=2
-        if [[ ! $_acq_map_uid =~ ^[0-9]+$ || ! $_acq_map_gid =~ ^[0-9]+$ ]]             || ! cmp -s "$_acq_map_directory/output" <(printf '%s %s\n' "$_acq_map_uid" "$_acq_map_gid"); then _acq_map_status=2; fi
-    fi
-    rm -rf -- "$_acq_map_directory" || return 2
-    if [[ $_acq_map_in_scope == false ]]; then printf '%s' "$_acq_map_diagnostic" >&2; fi
-    if [[ $_acq_map_in_scope == true && ( $_acq_map_status == 129 || $_acq_map_status == 130 || $_acq_map_status == 143 ) ]]; then
-        _acq_cancelled=$_acq_map_status; exit "$_acq_map_status"
-    fi
-    [[ $_acq_map_status == 0 ]] || return "$_acq_map_status"
-    printf -v "$_acq_uid_name" '%s' "$_acq_map_uid"
-    printf -v "$_acq_gid_name" '%s' "$_acq_map_gid"
+    acquisition_project_ids _acq_owner_values 2 "$_acq_map_endpoint" "$_acq_map_image" '' \
+        --host-uid "$_acq_host_uid" --host-gid "$_acq_host_gid" || return "$?"
+    printf -v "$_acq_uid_name" '%s' "${_acq_owner_values[0]}"
+    printf -v "$_acq_gid_name" '%s' "${_acq_owner_values[1]}"
 }
 
 _acq_create() {

@@ -399,8 +399,12 @@ def relay(left: socket.socket, right: socket.socket) -> None:
         if not readable:
             raise TimeoutError("Cannot continue proxy relay: no forwarding completed within 120 seconds.")
         for source in readable:
-            destination = right if source is left else left
-            direction = "client-to-upstream" if source is left else "upstream-to-client"
+            if source is left:
+                destination = right
+                direction = "client-to-upstream"
+            else:
+                destination = left
+                direction = "upstream-to-client"
             operation = "read bytes"
             try:
                 source.settimeout(_remaining(deadline, "relay read"))
